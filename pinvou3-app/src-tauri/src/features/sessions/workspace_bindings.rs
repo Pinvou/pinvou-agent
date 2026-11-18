@@ -35,7 +35,7 @@
 //! no-op (missing file returns immediately).
 
 use std::collections::HashMap;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -200,7 +200,12 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
             // Log hygiene (review #463 round-13 M3): the path embeds
             // sessions/<id>/, so only the error kind is logged — the same
             // rule the rebind write-path logs below follow (8fc7f7201).
-            eprintln!(
+            // writeln! not eprintln!: a packaged-Windows build with an
+            // invalid stderr handle makes eprintln! panic (lib.rs carries
+            // the same note for its writes); a failed diagnostic must not
+            // take the fork/probe task down.
+            let _ = writeln!(
+                std::io::stderr(),
                 "[sessions] read workspace binding sidecar failed: {:?}",
                 error.kind()
             );
@@ -213,14 +218,19 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
             // Same log-hygiene rule as the io arm above (review #463 round-14
             // should-fix 5): the path embeds sessions/<id>/, so it stays out
             // of the log; the version number carries the diagnostic.
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "[sessions] workspace binding sidecar version {} above supported {}, ignored",
-                sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
+                sidecar.version,
+                SESSION_WORKSPACE_SIDECAR_VERSION,
             );
             None
         }
         Err(error) => {
-            eprintln!("[sessions] parse workspace binding sidecar failed: {error}");
+            let _ = writeln!(
+                std::io::stderr(),
+                "[sessions] parse workspace binding sidecar failed: {error}"
+            );
             None
         }
     }
@@ -258,6 +268,84 @@ impl SessionStore {
             .sessions_dir()
             .join(id)
             .join(SESSION_WORKSPACE_SIDECAR_FILE)
+    }
+
+    /// 三态 fork 源绑定探测。读路径 [`Self::session_workspace_binding`] 的
+    /// `None` 同时覆盖「无绑定」与「sidecar 损坏/不可读/版本超前」——后者
+    /// 对 fork 不可接受：绑定复刻会把「读失败」当「无绑定」放行，分支静默
+    /// 失去绑定（引擎 cwd 与 mode_state 安全姿态都随绑定走）。fork 必须区分：
+    /// Bound 复刻、Unbound 保持无绑定、Unknown fail-closed 拒绝。缓存命中
+    /// 给出绑定路径（缓存只存已绑定路径），但**仍回读 sidecar 取 roots**：
+    /// 绑定与 roots 必须来自同一份快照（compose 车道的 keychain 单读纪律），
+    /// 且 warm 缓存下 sidecar 损坏/不可读不得把 roots 折叠成空集——那是
+    /// 三态探测要堵的同一类 fail-open（review r2：缓存 Bound + sidecar 损坏
+    /// + `session_workspace_roots` 的 `unwrap_or_default` = 静默空 roots 绑定）。
+    /// 缓存命中而 sidecar 已被删除（NotFound）属陈旧缓存，按既有 roots
+    /// 口径给空集。未命中时按 [`read_workspace_sidecar`] 的同一日志卫生
+    /// 口径分类（路径含 sessions/<id>/，日志只留错误种类）。
+    pub(super) fn session_workspace_binding_probe(&self, id: &str) -> WorkspaceBindingProbe {
+        let cached_path = self.session_workspaces.read().get(id).cloned();
+        if validate_session_id(id).is_err()
+            || !self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+        {
+            return WorkspaceBindingProbe::Unbound;
+        }
+        let payload = match std::fs::read(self.session_workspace_sidecar_path(id)) {
+            Ok(payload) => payload,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                // sidecar 不存在：缓存命中时绑定仍以缓存为准（roots 与
+                // provenance 空集），否则确认无绑定。
+                return match cached_path {
+                    Some(path) => WorkspaceBindingProbe::Bound(path, Vec::new(), Vec::new()),
+                    None => WorkspaceBindingProbe::Unbound,
+                };
+            }
+            Err(error) => {
+                // writeln! not eprintln!: this is the probe the fork task
+                // runs (fork.rs), and these three arms are exactly its
+                // fail-closed refusal conditions — a packaged-Windows build
+                // with an invalid stderr handle makes eprintln! panic inside
+                // the fork's spawn_blocking closure, replacing the clean
+                // Unknown refusal with "task failed" and zero log trace.
+                // Same rationale and log-hygiene rule as
+                // `read_workspace_sidecar` above.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[sessions] read workspace binding sidecar failed: {:?}",
+                    error.kind()
+                );
+                return WorkspaceBindingProbe::Unknown;
+            }
+        };
+        match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
+            Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => {
+                WorkspaceBindingProbe::Bound(
+                    backfill_workspace_binding_cache(&self.session_workspaces, id, sidecar.path),
+                    sidecar.workspace_roots,
+                    sidecar.explicit_ancestor_roots,
+                )
+            }
+            Ok(sidecar) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[sessions] workspace binding sidecar version {} above supported {}, ignored",
+                    sidecar.version,
+                    SESSION_WORKSPACE_SIDECAR_VERSION,
+                );
+                WorkspaceBindingProbe::Unknown
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[sessions] parse workspace binding sidecar failed: {error}"
+                );
+                WorkspaceBindingProbe::Unknown
+            }
+        }
     }
 
     /// Binds the session working directory and atomically persists it to the

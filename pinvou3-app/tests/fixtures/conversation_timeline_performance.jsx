@@ -234,6 +234,56 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       scrollMargin: Number(host.querySelector('[data-conversation-virtual-timeline]')?.dataset.conversationScrollMargin || 0),
     };
   },
+  async runSelectedCompletion() {
+    commitSessionId('selected-completion-session');
+    followOutputRef.current = true;
+    const base = turns(1000);
+    const lastIndex = base.length - 1;
+    const initialText = Array.from({ length: 40 }, (_, index) => `Line ${index} selected paragraph.`).join('\n\n');
+    base[lastIndex] = {
+      ...base[lastIndex], status: 'running',
+      items: [{ ...base[lastIndex].items[0], status: 'in_progress', text: initialText }],
+    };
+    commitConversation(base, true);
+    await new Promise(resolve => { setTimeout(resolve, 350); });
+    await nextPaint();
+    const tail = host.querySelector('[data-conversation-live-tail]');
+    const walker = document.createTreeWalker(tail, NodeFilter.SHOW_TEXT);
+    let textNode;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.data.includes('Line 39')) { textNode = node; break; }
+    }
+    const start = textNode.data.indexOf('selected');
+    window.getSelection().setBaseAndExtent(textNode, start, textNode, start + 'selected'.length);
+    const initialTop = scrollElementRef.current.scrollTop;
+    const grown = base.slice();
+    grown[lastIndex] = {
+      ...base[lastIndex],
+      items: [{ ...base[lastIndex].items[0], text: `${initialText}\n\n${'More output.\n\n'.repeat(15)}` }],
+    };
+    commitConversation(grown, true);
+    await new Promise(resolve => { setTimeout(resolve, 350); });
+    await nextPaint();
+    const beforeTop = scrollElementRef.current.scrollTop;
+    const beforeGap = scrollElementRef.current.scrollHeight - scrollElementRef.current.clientHeight - beforeTop;
+    const beforeSelectionTop = window.getSelection().getRangeAt(0).getBoundingClientRect().top;
+    const done = grown.slice();
+    done[lastIndex] = {
+      ...grown[lastIndex], status: 'completed',
+      items: [{ ...grown[lastIndex].items[0], status: 'completed' }],
+    };
+    commitConversation(done, false);
+    await nextPaint();
+    const result = {
+      initialTop, beforeTop, beforeGap, beforeSelectionTop,
+      afterSelectionTop: window.getSelection().getRangeAt(0).getBoundingClientRect().top,
+      afterTop: scrollElementRef.current.scrollTop,
+      afterGap: scrollElementRef.current.scrollHeight - scrollElementRef.current.clientHeight - scrollElementRef.current.scrollTop,
+      selected: window.getSelection().toString(),
+    };
+    window.getSelection().removeAllRanges();
+    return result;
+  },
   async runCompletionMigration() {
     // A fresh session id keeps every row key unseen by this virtualizer, so the
     // completing row's first estimate really flows through the live-tail seed

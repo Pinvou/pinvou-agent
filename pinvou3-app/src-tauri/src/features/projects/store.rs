@@ -691,8 +691,14 @@ impl ProjectStore {
     pub fn begin_rebind(&self) -> std::result::Result<RebindGate, String> {
         let mut flag = self.rebind_gate.lock();
         if *flag {
+            // Holder-agnostic copy: the flag is held by directory rebinds
+            // AND fenced writers (fork, project edit/move, codex
+            // set_workspace), so naming "a directory rebind" misattributes
+            // when the holder is a writer — the marker stays stable for the
+            // frontend mapping, only the human tail changes.
             return Err(
-                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+                "REBIND_IN_PROGRESS: another workspace binding rebind or fenced writer is already running"
+                    .to_string(),
             );
         }
         *flag = true;
@@ -716,8 +722,14 @@ impl ProjectStore {
     pub fn rebind_fence(&self) -> std::result::Result<RebindFence, String> {
         let mut flag = self.rebind_gate.lock();
         if *flag {
+            // Holder-agnostic copy: the flag is held by directory rebinds
+            // AND fenced writers (fork, project edit/move, codex
+            // set_workspace), so naming "a directory rebind" misattributes
+            // when the holder is a writer — the marker stays stable for the
+            // frontend mapping, only the human tail changes.
             return Err(
-                "REBIND_IN_PROGRESS: another directory rebind is already running".to_string(),
+                "REBIND_IN_PROGRESS: another workspace binding rebind or fenced writer is already running"
+                    .to_string(),
             );
         }
         // Hold the gate for the writer's duration: mutually exclusive with

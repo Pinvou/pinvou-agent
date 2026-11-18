@@ -21,6 +21,33 @@ const files = [
   // refactored to symbolic labels first; disclosed rather than smuggled
   // past an allowlist.
   'src/features/chat/session-mention.js',
+  // Computer-use consent surfaces (virtual-display wave): every string comes
+  // from uiComputerUse in shared/i18n (zh/en/ja), including the virtual
+  // banner note (bannerNoteVirtual) and the target-aware dialog copy.
+  // Scope of the pin below: this scanner enforces the CJK-IDEOGRAPH half of
+  // that claim (quoted [\u4e00-\u9fff] literals); a hardcoded English or
+  // kana-only literal here would pass it — full parity is the i18n key
+  // tests' job.
+  'src/features/computer-use/ComputerUseConsent.jsx',
+  // Pure view-function logic for the same feature: carries no UI copy.
+  'src/features/computer-use/computer-use-logic.js',
+  // Endpoint model picker wave (round-4): the shared picker component, its
+  // JSX-free logic module, and the ACP provider form all source every UI
+  // string from shared/i18n (verified: the scanner reports 0 active CJK
+  // quoted literals in each, so adding them keeps the guard green).
+  'src/features/settings/endpoint-model-picker.jsx',
+  'src/features/settings/endpoint-model-picker-logic.js',
+  'src/features/settings/ProviderFormModal.jsx',
+  // SettingsView is NOT listed: the scanner reports 2 pre-existing CJK
+  // literals in it — the language picker's endonym labels ('中文', '日本語' on
+  // the SSegmented options line), which are DELIBERATE: a language selector
+  // names every language in its own script, so these are not single-language
+  // UI copy and localizing them would be wrong. Re-evaluated in round-4:
+  // still exactly those 2 hits, so adding the file would fail this guard on
+  // disclosed literals (ChatView precedent); the scanner itself is
+  // quote-scoped (JSX text nodes are out of its contract), but the failure
+  // alone keeps the file out until an endonym exemption exists. All other
+  // SettingsView copy goes through shared/i18n.
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。

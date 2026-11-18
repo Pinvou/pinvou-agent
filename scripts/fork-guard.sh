@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 99 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 100 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,9 +8,10 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135,
 # CodeWhale#136/#142/#148/#150/#152 (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29),
-# and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation) merged.
-EXPECTED_HEAD="8e8d52fdb4a418bf4310db4b5d03dce5345c54d5"
-EXPECTED_COMMITS=99
+# and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
+# and CodeWhale#157 (session-reader read-only classification) merged.
+EXPECTED_HEAD="687358f7efde6abd3592737b8ec48adc74ba5a84"
+EXPECTED_COMMITS=100
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -414,6 +415,17 @@ fingerprints=(
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
   "APP|chainable panic-hook registry module       |pinvou3-app/src-tauri/src/core/panic_hooks.rs|pub(crate) fn chain("
   "APP|worker panic redaction behavior regression |pinvou3-app/src-tauri/src/features/computer_use/backend.rs|fn worker_thread_panics_are_redacted_and_other_panics_forwarded"
+  # Scheduled-session EngineCumulative accounting kernel (registered in
+  # docs/fork-modifications.md §11): the variant is producer-unwired
+  # (tests-only) until an app-side follow-up lands, and main's 60dba2f64
+  # dead-code sweep already deleted its single-variant predecessor once.
+  # The regression test keeps the official build's name (deliberately not
+  # forkguard_-renamed), so these fingerprints pull the kernel, the shared
+  # lifetime encoding, and the test's existence into the sub-second layer —
+  # a sweep or alignment sync that silently removes them turns red here.
+  "APP|scheduled EngineCumulative accounting variant         |pinvou3-app/src-tauri/src/features/sessions/scheduled.rs|EngineCumulative {"
+  "APP|shared scheduled lifetime-total encoding              |pinvou3-app/src-tauri/src/features/sessions/retention.rs|fn scheduled_lifetime_total(base_total_tokens: u64, engine_total_tokens: u64) -> u64"
+  "APP|scheduled token-accounting contract regression       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts"
 )
 
 for fp in "${fingerprints[@]}"; do

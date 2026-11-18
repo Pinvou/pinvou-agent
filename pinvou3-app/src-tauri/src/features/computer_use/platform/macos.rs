@@ -110,16 +110,16 @@ use objc2_foundation::{NSPoint, NSSize, NSString};
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS,
     MACOS_UNICODE_STRING_UTF16_UNITS, MAX_NAME_CHARS, MAX_TREE_DEPTH, MAX_TREE_NODES,
-    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
-    sanitize_name, screening_hit, split_type_runs, utf16_chunks,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors,
+    drag_waypoints, map_scroll, map_xcap_err, normalize_typed_newlines, ordered_chord_keys,
+    pick_monitor, release_reverse, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -232,11 +232,15 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {err}"))
 }
 
-fn screen_recording_granted() -> bool {
+// TCC preflights + error strings are `pub(super)` so the virtual-display
+// backend (features/computer_use/platform/virtual_display/macos_virtual.rs)
+// reuses the exact same grant checks and user-facing guidance instead of a
+// drifting copy (extraction is visibility-only, no behavior change).
+pub(super) fn screen_recording_granted() -> bool {
     CGPreflightScreenCaptureAccess()
 }
 
-fn accessibility_granted() -> bool {
+pub(super) fn accessibility_granted() -> bool {
     // SAFETY: no arguments, purely queries this process's TCC grant state,
     // shows no dialog, callable on any thread.
     unsafe { AXIsProcessTrusted() }
@@ -251,11 +255,11 @@ pub fn permission_status() -> Option<(bool, bool)> {
     Some((screen_recording_granted(), accessibility_granted()))
 }
 
-fn screen_recording_error() -> ComputerUseError {
+pub(super) fn screen_recording_error() -> ComputerUseError {
     ComputerUseError::unavailable(SCREEN_RECORDING_DENIED)
 }
 
-fn accessibility_error() -> ComputerUseError {
+pub(super) fn accessibility_error() -> ComputerUseError {
     ComputerUseError::unavailable(ACCESSIBILITY_DENIED)
 }
 
@@ -435,6 +439,9 @@ unsafe fn try_new_application(pid: libc::pid_t) -> Option<CFRetained<AXUIElement
     // SAFETY: AXUIElementCreateApplication returns a +1 top-level
     // accessibility object for the pid, or NULL.
     let ret = unsafe { AXUIElementCreateApplication(pid) };
+    // SAFETY: from_raw consumes exactly the +1 the call above transferred
+    // (per its C contract, documented on this fn); the pointer is non-NULL
+    // (the map arm only runs on Some).
     ret.map(|ptr| unsafe { CFRetained::from_raw(ptr) })
 }
 
@@ -860,16 +867,6 @@ fn move_event_type(held: &[MouseButton]) -> (u32, u32) {
     } else {
         (CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT)
     }
-}
-
-/// Press modifiers before character/named keys (stable order otherwise):
-/// enigo's macOS backend attaches its accumulated modifier flags only to the
-/// keys pressed after the modifier (review finding: `s+ctrl` used to inject a
-/// bare `s` followed by a lone ctrl press).
-fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
-    let mut ordered = keys.to_vec();
-    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
-    ordered
 }
 
 /// Password field detection: the authoritative signal is subrole
@@ -1734,17 +1731,22 @@ impl MacosComputerUseBackend {
         // Chunk the hold so a stop/timeout cancel flag is polled within
         // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold (up to
         // 30 s). The keys are always released, whether the hold ran out or
-        // was cancelled.
+        // was cancelled — and a FAILED release is surfaced, never the
+        // all-clear (the shared combine_hold_errors merge — the same helper
+        // the virtual stacks and the other physical paths use, R18).
         let mut remaining = hold;
         while remaining > Duration::ZERO {
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = release_reverse(&pressed, enigo);
-                return Err(ComputerUseError::unavailable(
-                    "hold was cancelled (caller timeout or stop); the keys have been released",
-                ));
+                return combine_hold_errors(
+                    Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop)",
+                    )),
+                    release_reverse(&pressed, enigo)
+                        .map_err(|err| map_input_err("key release", err)),
+                );
             }
             let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
             sleep(step);
@@ -1803,6 +1805,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             screenshot: true,
             input: true,
             ui_tree: true,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
             notes: "macos: all input coordinates are CGEvent global points (screenshot px / \
                     backing scale factor); mouse events are posted as native CGEvents and \
                     keyboard/wheel go through enigo; Screen Recording + Accessibility TCC \
@@ -2239,6 +2243,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             SelfShadow::SelfOwned => return Err(self_owned_ax_error("element_at_point")),
             SelfShadow::Unproven => return Err(unproven_owner_ax_error("element_at_point")),
             SelfShadow::Foreign { pid } => {
+                // SAFETY: try_new_application only wraps
+                // AXUIElementCreateApplication — a plain object creation
+                // valid for any pid; this pid is the Foreign arm's verified
+                // owner of the window that owns the point.
                 let Some(app) = (unsafe { try_new_application(pid) }) else {
                     return Err(unpinnable_target_ax_error("element_at_point"));
                 };
@@ -2915,5 +2923,124 @@ mod tests {
         // Already-ordered input is unchanged (stable sort).
         let pre = ordered_chord_keys(&[Key::Shift, Key::Char('a')]);
         assert_eq!(pre, vec![Key::Shift, Key::Char('a')]);
+    }
+
+    /// The self-target guard IS the crash fix: `ensure_not_self_owned` is
+    /// fully unit-tested as a predicate, but no test drives real AX reads,
+    /// so a refactor that deletes one of the wired call sites — or moves a
+    /// site behind the reads it protects — would keep every behavioral test
+    /// green while reopening the WebKit abort (review follow-up W1). These
+    /// pins make each wiring site load-bearing: the needles are unique
+    /// source lines, so deleting a site or reordering it after its read
+    /// turns this test red.
+    #[test]
+    fn self_target_guard_call_sites_precede_the_reads_they_protect() {
+        // Bound the search to the production region so these needles can
+        // never be satisfied by this test's own string literals.
+        let source = include_str!("macos.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production region precedes the test module");
+
+        let pos = |needle: &str| {
+            production
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing needle: {needle}"))
+        };
+
+        // ui_tree: the app-level guard sits between the focused-application
+        // probe (disclosed as application-level, not web-view dispatching)
+        // and the first window attribute read.
+        let app_guard = pos("ensure_not_self_owned(element_pid(&app), self_pid(), \"ui_tree\")?");
+        assert!(
+            app_guard > pos("let Some(app) = focused_application(&system, &names)"),
+            "the ui_tree guard must run after the focused-application probe"
+        );
+        assert!(
+            app_guard < pos("let root = focused_window_root(app, &names)"),
+            "the ui_tree guard must precede the focused-window read"
+        );
+
+        // write_tree_node: every node re-checks before ANY of its attribute
+        // reads, and the recursion propagates a self-owned child as an error.
+        let node_guard =
+            pos("ensure_not_self_owned(element_pid(element), self_pid(), \"ui_tree\")?");
+        assert!(
+            node_guard
+                < pos(
+                    "let info = read_node_info(element, names, &mut writer.errors, depth < max_depth)"
+                ),
+            "the per-node guard must precede the node attribute reads"
+        );
+        assert!(
+            node_guard < pos("match ax_array(element, &names.children)"),
+            "the per-node guard must precede the children read"
+        );
+        assert!(
+            production
+                .contains("write_tree_node(&child, depth + 1, max_depth, names, writer, out)?;"),
+            "the tree recursion must propagate a refused child as an error"
+        );
+
+        // element_at_point: the pre-hit-test shadow rules plus the
+        // second-line guard before the hit element's attribute reads.
+        assert!(
+            production.contains(
+                "SelfShadow::SelfOwned => return Err(self_owned_ax_error(\"element_at_point\"))"
+            ),
+            "the hit-test must refuse a self-shadowed point"
+        );
+        assert!(
+            production.contains(
+                "SelfShadow::Unproven => return Err(unproven_owner_ax_error(\"element_at_point\"))"
+            ),
+            "the hit-test must refuse an unproven point fail-closed"
+        );
+        let point_guard =
+            pos("ensure_not_self_owned(element_pid(&element), self_pid(), \"element_at_point\")?");
+        // The hit element's read sits between this guard and the (later,
+        // separately guarded) focused_element chain, so slicing on the next
+        // action string isolates element_at_point's read.
+        let focused_app_guard =
+            pos("ensure_not_self_owned(element_pid(&app), self_pid(), \"focused_element\")?");
+        let point_read = production[point_guard..focused_app_guard]
+            .find("read_node_info(&element, &names, &mut errors, true)")
+            .expect("element_at_point must read the hit element after its guard");
+        assert!(
+            point_read > 0,
+            "element_at_point's attribute read must follow its guard"
+        );
+
+        // focused_element: each chain level re-checks the reply-derived
+        // token before the next attribute read (the pids are
+        // reply-controlled — see the module docs). The chain is ordered
+        // within the slice that starts at the app guard: earlier fns spell
+        // the same reads identically (focused_window_root also reads the
+        // app's focused window), so a whole-file first-occurrence search
+        // would alias them.
+        let chain = &production[focused_app_guard..];
+        let chain_pos = |needle: &str| {
+            chain
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing chain needle: {needle}"))
+        };
+        let window_read = chain_pos("ax_ui_element(&app, &names.focused_window)");
+        let window_guard = chain_pos(
+            "ensure_not_self_owned(element_pid(&window), self_pid(), \"focused_element\")?",
+        );
+        let element_read = chain_pos("ax_ui_element(&window, &names.focused_ui_element)");
+        let element_guard = chain_pos(
+            "ensure_not_self_owned(element_pid(&element), self_pid(), \"focused_element\")?",
+        );
+        let final_read =
+            chain_pos("let info = read_node_info(&element, &names, &mut errors, true)");
+        assert!(
+            window_read < window_guard
+                && window_guard < element_read
+                && element_read < element_guard
+                && element_guard < final_read,
+            "each focused_element chain level must re-check ownership before its attribute read"
+        )
     }
 }

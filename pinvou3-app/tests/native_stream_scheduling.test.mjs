@@ -268,3 +268,21 @@ test('timer-only hosts publish current streams within their fallback budget', ()
 test('the host wires activation refresh before subscriber publication', () => {
   assert.match(nativeStreamSources.host, /refreshActiveStreamRender = chatEventsFeature\.refreshActiveStreamRender/);
 });
+
+
+test('rendered source stays with throttled HTML while live text advances', () => {
+  const h = createNativeStreamHarness();
+  h.emit('s0', 'chat:delta', { text: 'Prefix <span' });
+  assert.equal(h.state.chatItems[0].htmlSource, 'Prefix <span');
+  h.advance(40);
+  h.emit('s0', 'chat:delta', { text: '>' });
+  assert.equal(h.state.chatItems[0].text, 'Prefix <span>');
+  assert.equal(h.state.chatItems[0].htmlSource, 'Prefix <span');
+  assert.equal(h.state.chatItems[0].html, marked.parse('Prefix <span'));
+  h.advance(180);
+  assert.equal(h.state.chatItems[0].htmlSource, 'Prefix <span>');
+  assert.equal(h.state.chatItems[0].html, marked.parse(h.state.chatItems[0].htmlSource));
+  h.emit('s0', 'chat:delta', { text: 'word</span> span tail' });
+  h.emit('s0', 'chat:done', { status: 'Completed' });
+  assert.equal(h.state.chatItems[0].htmlSource, h.state.chatItems[0].text);
+});

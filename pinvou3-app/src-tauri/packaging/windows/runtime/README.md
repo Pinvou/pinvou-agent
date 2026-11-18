@@ -36,11 +36,19 @@ ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/
 SHA-256 和目标平台，作为 submodule 源校验元数据缓存：Stage 模式命中缓存时只按 lock 复核源文件大小，跳过逐文件
 SHA-256；Validate 模式仍对全部锁定源文件重新哈希。lock 文件或 submodule 身份（commit、gitlink、origin、工作树状态）
 变化都会使该缓存失效；身份校验失败会直接报错终止，通过后才执行上一句所述的 Stage 大小复核或 Validate 整体重哈希。
-staging 内的 `.verified-lock` 绑定 runtime commit、manifest SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json`
-则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化或使用 `-Force`，都会自动回退到原子 staging。当仅缓存元数据
-命中而暂存产物需要重建时，会先对源文件重新执行完整 SHA-256 校验再复制。runtime descriptor、Tauri overlay 和 ONNX 开发
-descriptor 以临时文件加原子替换写入，避免并发或中断留下半写文件。已验证并解包的 payload 以及 ASR 主模型不会留在
+staging 内的 `.verified-lock`（schema 5）绑定 runtime commit、manifest SHA-256、lock 文件 SHA-256、目标平台，以及
+staging 自身清单 `.stage-manifest.json` 的 SHA-256；`.verified-stage.json` 则记录全部展开文件的路径、大小和
+SHA-256。`Test-VerifiedStageReusable` 复用 staging 前会以 lock 的 `stagedFiles` 为信任锚逐文件复核：路径穿越、
+大小写或重复条目、根级元数据文件不一致都会判定不可复用；marker 与清单本身视为可改写的缓存元数据，二者一起伪造
+也无法绕过对真实内容的哈希复核。任一暂存产物变化或使用 `-Force`，都会自动回退到原子 staging；复用判定失败而触发
+重建时（`Stage-Submodule -Rebuild`）总是完整重建，跳过对旧树的整树哈希。当仅缓存元数据命中而暂存产物需要重建时，
+会先对源文件重新执行完整 SHA-256 校验再复制。runtime descriptor、Tauri overlay 和 ONNX 开发 descriptor 以临时
+文件加原子替换写入，避免并发或中断留下半写文件。已验证并解包的 payload 以及 ASR 主模型不会留在本仓库产出的
 staging 中。
+
+`.stage-manifest.json`（schema 2）的读取端（`Test-StageManifest`、`Test-StagedFilesAgainstTrustedManifest`）在本仓库；
+写入端 `Write-StageManifest` 在本仓库仅被测试调用（生产流水线不产出 `.stage-manifest.json`）——payload 完整保留（`payload/vc_redist/` 等不清理）的 stage 由外部流水线
+产出，其 descriptor 会优先记录 payload 路径（`runtime:windows:stage` 对该布局同样先信任锚复核再复用）。
 
 验证后的运行时写入：
 

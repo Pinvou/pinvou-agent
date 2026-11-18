@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  GitBranch,
   Sparkles,
   Terminal,
   Wrench,
@@ -35,11 +36,10 @@ import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMess
 import {
   codeBlockCopyLabels,
   copyCodeBlockFromButton,
-  ensureCodeCopyButtons,
   findCodeCopyButton,
-  observeCodeCopyButtons,
 } from './code-block-copy.js';
-import { applyStreamFade } from './stream-fade.js';
+import { commitRichTextFrame } from './rich-text-dom.js';
+import { hasRichTextSelection } from './rich-text-selection.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 import {
@@ -124,25 +124,11 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
   const html = useMemo(() => renderMarkdown(renderText), [renderText, syntaxVersion]);
   const containerRef = useRef(null);
   const copyLabels = useMemo(() => codeBlockCopyLabels(c), [c]);
-  // 渲染 HTML 经 dangerouslySetInnerHTML 注入,代码块复制按钮只能在提交后挂到 DOM;
-  // 流式期间 html 每次 throttle 都整体替换,ensureCodeCopyButtons 幂等补装新块。
-  // 但 innerHTML 可能在 effect 不重新触发的情况下被整体替换(冷启动语法高亮注册、
-  // Suspense/懒注册重提交等),仅靠 [html] 依赖会漏装,因此挂 MutationObserver 自愈:
-  // 容器内任何结构变化都幂等补装,卸载时断开。
-  useEffect(() => {
-    ensureCodeCopyButtons(containerRef.current, copyLabels);
-    // Wrap text streamed since the previous throttled render in one-shot fade
-    // spans; seen text never re-animates (offset bookkeeping in
-    // stream-fade.js). Runs before the observer below is (re)installed and the
-    // cleanup already disconnected the previous one, so the wrap's own
-    // mutations are not self-observed. `streaming` joins the deps because the
-    // completion flush may coincide with no html change (final text already
-    // rendered) and the streaming=false pass must still run to forget the
-    // fade bookkeeping. `html` lets the pass skip its whole-tree walk when
-    // this string is unchanged (React skipped the write, DOM is identical).
-    applyStreamFade(containerRef.current, { streaming, html });
-    return observeCodeCopyButtons(containerRef.current, copyLabels);
-  }, [html, copyLabels, streaming]);
+  // Reconcile sanitized output before paint. Existing text and copy controls
+  // keep their DOM identity while the current paragraph/code continues growing.
+  useLayoutEffect(() => commitRichTextFrame(containerRef.current, html, {
+    streaming, copyLabels, markdownSource: renderText,
+  }), [html, renderText, copyLabels, streaming]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -172,7 +158,6 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
       ref={containerRef}
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
       onClick={onClick}
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }
@@ -937,6 +922,8 @@ function ConversationTurnView({
   onOpenResource,
   agentLabel = 'Agent',
   assistantAvatar,
+  forkOrdinal = null,
+  onForkTurn,
   copy,
 }) {
   const c = conversationCopy(copy);
@@ -973,8 +960,24 @@ function ConversationTurnView({
   // turns carrying a terminal footer (badge/duration/usage/error).
   const assistantFooterVisible = !running
     && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error);
+  // 「从此轮分叉」入口（forkOrdinal 由宿主按 turn 序号换算的稳定原始值；
+  // 命令在 Rust 侧落盘新会话并切过去）。渲染判定独立于 assistantFooterVisible：
+  // footer 可见性还要求生命周期已知/有回复/已完结，而序号表对纯用户轮
+  // （steered 空回复轮、尚未获回复的末轮）照样编号——按钮随 footer 隐藏
+  // 会让这些轮失去本可用的分叉入口（Rust 端照样可分叉）。此类轮以独立的
+  // 分叉行渲染在头像行之外，头像行的「不得只剩头像」口径不受影响。
+  const forkTurnVisible = Boolean(onForkTurn && forkOrdinal != null);
   const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
   const retryHandler = retryHandlerForTurn(onRetry, turn);
+  const forkButton = forkTurnVisible && (
+    <button type="button" data-testid="conversation-fork-turn"
+      onClick={() => onForkTurn(turn.id, forkOrdinal)}
+      title={c.forkTurnTip}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-black/5 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/10 transition-colors">
+      <GitBranch size={12} />
+      {c.forkTurn}
+    </button>
+  );
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length || userQuotes.length)
@@ -1052,6 +1055,7 @@ function ConversationTurnView({
                 onRetry={retryHandler}
               />
             )}
+            {forkButton}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}
@@ -1087,6 +1091,14 @@ function ConversationTurnView({
           </AssistantMessageFooter>}
         </div>
       </div>
+      )}
+      {/* footer 隐藏但该轮有分叉入口时，独立分叉行渲染在头像行之外：头像行
+          的可见性口径（steered 空回复轮/无助手内容轮不得渲染只剩头像的行）
+          不被打破，而这些轮的分叉入口照常可用。 */}
+      {!assistantFooterVisible && forkTurnVisible && (
+        <div className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2" data-testid="conversation-fork-row">
+          {forkButton}
+        </div>
       )}
     </section>
   );
@@ -1231,7 +1243,7 @@ export function ConversationTimeline({
     let firstFrame = 0;
     let secondFrame = 0;
     const stickToBottom = () => {
-      if (followOutputRef?.current !== true) return false;
+      if (followOutputRef?.current !== true || hasRichTextSelection(scrollElement)) return false;
       scrollElement.scrollTop = scrollElement.scrollHeight;
       return true;
     };
@@ -1257,6 +1269,12 @@ export function ConversationTimeline({
     virtualizer.measure();
   }, [conversationKey, virtualizer]);
 
+  // forkEntries（Map）不随 props 下发到每个 turn：新 Map 身份会让 memo
+  // 比较器全数失配，一次入口表更新即整条时间线重渲。这里把它解出，换算成
+  // 每个 turn 的稳定原始值 forkOrdinal（number|null，Object.is 稳定）。
+  const { forkEntries: forkEntriesProp, ...turnProps } = props;
+  const forkOrdinalFor = (turn) => (forkEntriesProp ? (forkEntriesProp.get(turn.id) ?? null) : null);
+
   if (!virtualized) {
     return (
       <>
@@ -1266,7 +1284,8 @@ export function ConversationTimeline({
             {/* Regenerate targets the newest turn only, so older turns never render a retry control. */}
             <ConversationTurn
               turn={turn}
-              {...props}
+              {...turnProps}
+              forkOrdinal={forkOrdinalFor(turn)}
               virtualized={false}
               onRetry={index === turns.length - 1 ? props.onRetry : undefined}
             />
@@ -1298,7 +1317,8 @@ export function ConversationTimeline({
         {beforeTurn}
         <ConversationTurn
           turn={turn}
-          {...props}
+          {...turnProps}
+          forkOrdinal={forkOrdinalFor(turn)}
           virtualized
           onRetry={virtualRow.index === turns.length - 1 ? props.onRetry : undefined}
         />
@@ -1320,7 +1340,8 @@ export function ConversationTimeline({
         {renderBeforeTurn?.(liveTurn, liveTurnIndex)}
         <ConversationTurn
           turn={liveTurn}
-          {...props}
+          {...turnProps}
+          forkOrdinal={forkOrdinalFor(liveTurn)}
           virtualized
           onRetry={liveTurnIndex === turns.length - 1 ? props.onRetry : undefined}
         />

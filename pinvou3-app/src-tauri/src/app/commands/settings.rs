@@ -103,40 +103,66 @@ pub(super) fn apply_model_credential(
     // inside the transaction would leave the model configured-but-secretless
     // when the save then fails — the same defect class `delete_model` fixed.
     let mut deferred_delete: Option<CredentialReference> = None;
-    match action {
-        CredentialEditAction::KeepExisting => {
-            if let Some(old) = old {
-                model.credential_ref = old.credential_ref.clone();
-                model.credential_state = old.credential_state;
-                model.has_secret = old.has_secret;
-            } else if model.api_key.trim().is_empty() {
-                model.mark_missing();
-            } else {
-                let reference = model.credential_reference();
-                store
-                    .set(&reference, model.api_key.trim())
-                    .map_err(|e| e.user_message())?;
-                model.mark_configured(reference);
-            }
+    // Defense in depth: a keyless declaration is the endpoint's contract —
+    // no credential may be materialized for the record, whatever the client
+    // action says. The GUI scopes its delete/replace to the same posture,
+    // so this only fires for a legacy or alternate writer that sends
+    // keep_existing (or a typed key) while declaring `auth_mode = "none"`:
+    // the dual state the read-side ladder already neutralizes must not be
+    // able to persist. Removal rides the same post-commit deferral as the
+    // explicit Delete arm; a record with no live credential and no typed
+    // key just stays missing (the GUI's clean keyless save keeps its shape —
+    // no keyring touch at all).
+    if model.declares_keyless_auth() {
+        let live_reference = model
+            .credential_ref
+            .clone()
+            .or_else(|| old.and_then(|m| m.credential_ref.clone()));
+        let typed_key = !model.api_key.trim().is_empty();
+        model.mark_missing();
+        if live_reference.is_some() || typed_key {
+            // Even with no recorded reference, the deterministic model
+            // reference is where a legacy writer's store.set would have
+            // landed — attempt the removal (a benign miss downgrades to the
+            // post-commit warning).
+            deferred_delete = Some(live_reference.unwrap_or_else(|| model.credential_reference()));
         }
-        CredentialEditAction::Replace => {
-            let key = model.api_key.trim().to_string();
-            if key.is_empty() {
-                model.mark_missing();
-            } else {
-                let reference = model.credential_reference();
-                store.set(&reference, &key).map_err(|e| e.user_message())?;
-                model.mark_configured(reference);
+    } else {
+        match action {
+            CredentialEditAction::KeepExisting => {
+                if let Some(old) = old {
+                    model.credential_ref = old.credential_ref.clone();
+                    model.credential_state = old.credential_state;
+                    model.has_secret = old.has_secret;
+                } else if model.api_key.trim().is_empty() {
+                    model.mark_missing();
+                } else {
+                    let reference = model.credential_reference();
+                    store
+                        .set(&reference, model.api_key.trim())
+                        .map_err(|e| e.user_message())?;
+                    model.mark_configured(reference);
+                }
             }
-        }
-        CredentialEditAction::Delete => {
-            let reference = model
-                .credential_ref
-                .clone()
-                .or_else(|| old.and_then(|m| m.credential_ref.clone()))
-                .unwrap_or_else(|| model.credential_reference());
-            model.mark_missing();
-            deferred_delete = Some(reference);
+            CredentialEditAction::Replace => {
+                let key = model.api_key.trim().to_string();
+                if key.is_empty() {
+                    model.mark_missing();
+                } else {
+                    let reference = model.credential_reference();
+                    store.set(&reference, &key).map_err(|e| e.user_message())?;
+                    model.mark_configured(reference);
+                }
+            }
+            CredentialEditAction::Delete => {
+                let reference = model
+                    .credential_ref
+                    .clone()
+                    .or_else(|| old.and_then(|m| m.credential_ref.clone()))
+                    .unwrap_or_else(|| model.credential_reference());
+                model.mark_missing();
+                deferred_delete = Some(reference);
+            }
         }
     }
     model.clear_plaintext_key();
@@ -162,7 +188,29 @@ fn saved_model_for_probe<'a>(
 /// read. Each caller maps the read failure to its own result shape (the
 /// local-kind probe swallows it and continues credential-less; the
 /// connection/image probes surface a typed error).
-fn resolve_probe_key(api_key: &str, model_id: Option<&str>) -> Result<Option<String>, String> {
+///
+/// `no_auth` is the form's keyless posture (the "no API key needed"
+/// declaration active in the modal). It short-circuits the whole ladder:
+/// neither the typed key nor the record's saved credential may ride the
+/// probe — the test must exercise the same posture the form will save
+/// (mirrors `bridge::api_key`'s declaration-before-env/keyring ordering;
+/// the frontend already sends an empty key, this closes the saved-credential
+/// fallback it cannot see).
+///
+/// Boundary (round-5 review): the declaration short-circuit lives in the
+/// `no_auth` FLAG, which only form-flow callers send. A legacy caller that
+/// passes a typed key with `no_auth = false` on a declared record sends that
+/// typed credential — deliberate: the saved-credential leg (the only leg a
+/// record posture can govern) IS server-guarded below, and a caller asking
+/// to probe WITH a key is overriding the posture explicitly.
+fn resolve_probe_key(
+    api_key: &str,
+    model_id: Option<&str>,
+    no_auth: bool,
+) -> Result<Option<String>, String> {
+    if no_auth {
+        return Ok(None);
+    }
     let provided = api_key.trim();
     if !provided.is_empty() {
         return Ok(Some(provided.to_string()));
@@ -171,16 +219,33 @@ fn resolve_probe_key(api_key: &str, model_id: Option<&str>) -> Result<Option<Str
 }
 
 fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
+    resolve_saved_model_key_with(&SystemCredentialStore::new(), model_id)
+}
+
+fn resolve_saved_model_key_with(
+    store: &dyn CredentialStore,
+    model_id: Option<&str>,
+) -> Result<Option<String>, String> {
     let prefs = UserPrefs::load();
     let Some(model) = saved_model_for_probe(&prefs, model_id) else {
         return Ok(None);
     };
+    // Server-side backstop: a record that itself declares the endpoint keyless
+    // must never surface a stored credential through this ladder, regardless
+    // of which caller (or client version) is asking. The frontend posture flag
+    // covers the form flow, but a hand-edited settings.json can carry both
+    // `auth_mode = "none"` and a live `credential_ref` (normalization clears
+    // the declaration only for local/managed records, never the credential),
+    // and the vision-model picker probes a *different* saved record whose
+    // posture the edited form cannot know. Mirrors `bridge::api_key`'s
+    // declaration-before-keyring ordering.
+    if codewhale_config::auth_mode_disables_api_key(model.auth_mode.as_deref()) {
+        return Ok(None);
+    }
     let Some(reference) = &model.credential_ref else {
         return Ok(None);
     };
-    SystemCredentialStore::new()
-        .get(reference)
-        .map_err(|e| e.user_message())
+    store.get(reference).map_err(|e| e.user_message())
 }
 
 #[tauri::command]
@@ -212,6 +277,86 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
+/// Effective-credential-state display. A keyless declaration is the endpoint
+/// contract — no code path reads a credential for such a route — so an env
+/// key override must not render as the record's credential state (or list
+/// `api_key` among the live env overrides); the record state (normally
+/// Missing after the keyless save deleted the credential) is the truthful
+/// display. Undeclared records keep the historical env-override precedence.
+fn credential_state_for_display(
+    env_api_key: bool,
+    declares_no_auth: bool,
+    record_state: CredentialState,
+) -> CredentialState {
+    if env_api_key && !declares_no_auth {
+        CredentialState::EnvOverride
+    } else {
+        record_state
+    }
+}
+
+/// Shared tail of [`get_effective_model_config`]: the display construction
+/// over an already-resolved bridge. Extracted so the keyless wiring
+/// (declaration → credential state + env-override list) is unit-pinnable,
+/// not just the pure display helper — a refactor that stops threading the
+/// declaration into this construction must fail a test, not a review.
+fn build_effective_model_config(
+    bridge: &crate::features::assistant::platform::bridge::Pinvou3Bridge,
+    env_api_key: bool,
+) -> EffectiveModelConfig {
+    let mut env_overrides = Vec::new();
+    if std::env::var("DEEPSEEK_MODEL").is_ok() {
+        env_overrides.push("model".to_string());
+    }
+    if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
+        env_overrides.push("base_url".to_string());
+    }
+    let declares_no_auth = bridge.effective_model_declares_no_auth();
+    if env_api_key && !declares_no_auth {
+        env_overrides.push("api_key".to_string());
+    }
+    if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
+        env_overrides.push("provider".to_string());
+    }
+    let effective = bridge.effective_model_owned();
+    let preset = effective
+        .as_ref()
+        .map(|model| model.preset)
+        .unwrap_or_default()
+        .as_str();
+    // 运行时模型准备固定 passthrough（无后台托管凭据），是否要求用户 Key
+    // 完全由 bridge 的鉴权判定（provider + base_url）决定。
+    let requires_user_api_key = bridge.api_key_required();
+    EffectiveModelConfig {
+        preset: preset.to_string(),
+        model: bridge.model(),
+        base_url: bridge.base_url(),
+        api_key: String::new(),
+        credential_state: credential_state_for_display(
+            env_api_key,
+            declares_no_auth,
+            effective
+                .as_ref()
+                .map(|model| model.credential_state)
+                .unwrap_or(CredentialState::Missing),
+        ),
+        has_secret: effective
+            .as_ref()
+            .map(|model| model.has_secret)
+            .unwrap_or(false),
+        provider: bridge.provider(),
+        provider_kind: effective
+            .as_ref()
+            .and_then(|model| model.provider_kind.clone()),
+        vendor: effective.as_ref().and_then(|model| model.vendor.clone()),
+        endpoint_mode: effective
+            .as_ref()
+            .and_then(|model| model.endpoint_mode.clone()),
+        requires_user_api_key,
+        env_overrides,
+    }
+}
+
 #[tauri::command]
 pub async fn get_effective_model_config(
     session_id: Option<String>,
@@ -227,59 +372,10 @@ pub async fn get_effective_model_config(
     bridge.session_model = session_model_id
         .as_deref()
         .and_then(|id| bridge.prefs.model_by_id(id).cloned());
-    let mut env_overrides = Vec::new();
-    if std::env::var("DEEPSEEK_MODEL").is_ok() {
-        env_overrides.push("model".to_string());
-    }
-    if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
-        env_overrides.push("base_url".to_string());
-    }
     let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
-    if env_api_key {
-        env_overrides.push("api_key".to_string());
-    }
-    if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
-        env_overrides.push("provider".to_string());
-    }
-    let effective = bridge.effective_model_owned();
-    let preset = effective
-        .as_ref()
-        .map(|model| model.preset)
-        .unwrap_or_default()
-        .as_str();
-    // 运行时模型准备固定 passthrough（无后台托管凭据），是否要求用户 Key
-    // 完全由 bridge 的鉴权判定（provider + base_url）决定。
-    let requires_user_api_key = bridge.api_key_required();
-    Ok(EffectiveModelConfig {
-        preset: preset.to_string(),
-        model: bridge.model(),
-        base_url: bridge.base_url(),
-        api_key: String::new(),
-        credential_state: if env_api_key {
-            CredentialState::EnvOverride
-        } else {
-            effective
-                .as_ref()
-                .map(|model| model.credential_state)
-                .unwrap_or(CredentialState::Missing)
-        },
-        has_secret: effective
-            .as_ref()
-            .map(|model| model.has_secret)
-            .unwrap_or(false),
-        provider: bridge.provider(),
-        provider_kind: effective
-            .as_ref()
-            .and_then(|model| model.provider_kind.clone()),
-        vendor: effective.as_ref().and_then(|model| model.vendor.clone()),
-        endpoint_mode: effective
-            .as_ref()
-            .and_then(|model| model.endpoint_mode.clone()),
-        requires_user_api_key,
-        env_overrides,
-    })
+    Ok(build_effective_model_config(&bridge, env_api_key))
 }
 
 /// 「添加模型」方案:列出已保存模型 + 当前全局默认 id(前端高亮)。
@@ -349,6 +445,7 @@ pub async fn probe_local_server_kind(
     base_url: String,
     api_key: Option<String>,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<String, String> {
     if !crate::features::assistant::platform::bridge::base_url_uses_local_or_private(&base_url) {
         return Ok("generic".to_string());
@@ -358,7 +455,16 @@ pub async fn probe_local_server_kind(
     // not block the probe (continue as credential-less) — with credentials
     // missing the probe still identifies auth-free endpoints; authenticated
     // endpoints 401 into generic, the same semantics as an unreachable probe.
-    let bearer = match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref()) {
+    // `no_auth` is the form's keyless posture (absent = false, matching the
+    // other probe commands for older web/remote-control callers): while the
+    // declaration is active, neither the retained form key nor the record's
+    // saved credential may ride the automatic tier probe — it hits the very
+    // URL the user is declaring keyless, before any save.
+    let bearer = match resolve_probe_key(
+        api_key.as_deref().unwrap_or(""),
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    ) {
         Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
         // Includes the swallowed credential-read failure: continue
         // credential-less rather than blocking the probe.
@@ -384,6 +490,9 @@ pub async fn probe_local_server_kind(
 
 /// 用户在编辑模型弹窗里主动点击“显示”时，读取该模型已保存的 API Key。
 /// 环境变量覆盖的凭据不回显，避免给出一个前端并不拥有、保存也不会覆盖的值。
+/// 边界（round-5 review）：这里刻意不查 keyless 声明——「显示」回答的是
+/// 「这条记录的钥匙串里存了什么」，而正常 UI 流程下声明记录的密钥行已隐藏、
+/// 按钮不可达；残留凭据（手改 settings.json 的双状态）如实回显。
 #[tauri::command]
 pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> {
     let prefs = refresh_safe_prefs(UserPrefs::load());
@@ -695,8 +804,15 @@ pub async fn test_model_connection(
     base_url: String,
     api_key: String,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<ModelConnectionTestResult, String> {
-    Ok(probe_model_connection(&base_url, &api_key, model_id.as_deref()).await)
+    Ok(probe_model_connection(
+        &base_url,
+        &api_key,
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    )
+    .await)
 }
 
 /// 连接探测核心:GET models probe URL 验证服务可达与凭据可用。
@@ -705,6 +821,7 @@ pub async fn probe_model_connection(
     base_url: &str,
     api_key: &str,
     model_id: Option<&str>,
+    no_auth: bool,
 ) -> ModelConnectionTestResult {
     let url = crate::core::model_endpoint::models_probe_url(base_url);
     let parsed_url = match reqwest::Url::parse(&url) {
@@ -737,7 +854,7 @@ pub async fn probe_model_connection(
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
-    let key = match resolve_probe_key(api_key, model_id) {
+    let key = match resolve_probe_key(api_key, model_id, no_auth) {
         Ok(Some(key)) => key,
         Ok(None) => String::new(),
         Err(e) => {
@@ -1121,6 +1238,7 @@ pub async fn run_image_capability_probe(
     base_url: &str,
     api_key: &str,
     model_id: Option<&str>,
+    no_auth: bool,
 ) -> ImageCapabilityTestResult {
     let model = model.trim().to_string();
     if model.is_empty() {
@@ -1160,7 +1278,7 @@ pub async fn run_image_capability_probe(
             return image_capability_result("error", false, format!("测试初始化失败: {e}"), None);
         }
     };
-    let key = match resolve_probe_key(api_key, model_id) {
+    let key = match resolve_probe_key(api_key, model_id, no_auth) {
         Ok(Some(key)) => key,
         Ok(None) => String::new(),
         Err(e) => {
@@ -1237,8 +1355,16 @@ pub async fn test_image_input_capability(
     base_url: String,
     api_key: String,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<ImageCapabilityTestResult, String> {
-    Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
+    Ok(run_image_capability_probe(
+        &model,
+        &base_url,
+        &api_key,
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    )
+    .await)
 }
 
 /// Field-level patch for the notification switches: a partial update must not
@@ -2007,6 +2133,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         let active = SavedModel {
+            auth_mode: None,
             id: "saved-active".to_string(),
             name: "active".to_string(),
             alias: None,
@@ -2043,6 +2170,393 @@ mod tests {
             Some("saved-active"),
             "未指定 id 时保留激活模型回退(显式测试连接的既有语义)"
         );
+    }
+
+    #[test]
+    fn keyless_posture_suppresses_probe_key_fallback() {
+        // 免鉴权声明生效的表单,探测必须与保存后的鉴权形态一致:类型化 key 与
+        // 已保存凭据都不得外发(no_auth 短路整个 ladder,先于任何凭据读取)。
+        // 两条腿都不触 UserPrefs / 钥匙串 —— 短路发生在 load 之前。
+        assert_eq!(
+            resolve_probe_key("typed-key", Some("unused-id"), true).unwrap(),
+            None,
+            "no_auth 生效时类型化 key 也不得外发(防前端口径回退)"
+        );
+        assert_eq!(
+            resolve_probe_key("", Some("unused-id"), true).unwrap(),
+            None,
+            "no_auth 生效时已保存凭据回退必须被抑制(残留 key 不得发往新 URL)"
+        );
+        // 反方向:无声明的表单保持既有 ladder(类型化 key 优先),防过度短路。
+        assert_eq!(
+            resolve_probe_key("typed-key", None, false).unwrap(),
+            Some("typed-key".to_string()),
+            "无声明时类型化 key 优先的既有语义不变"
+        );
+    }
+
+    #[test]
+    fn effective_model_config_wiring_is_keyless_aware() {
+        // wiring 钉:纯函数钉守不住命令侧构造 —— 把 declaration 停止接入构造
+        // (调用点改传 false)的重构必须在这里变红,而不是靠评审肉眼。
+        use super::build_effective_model_config as build;
+        use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_model = std::env::var_os("DEEPSEEK_MODEL");
+        let old_base = std::env::var_os("DEEPSEEK_BASE_URL");
+        let old_provider = std::env::var_os("DEEPSEEK_PROVIDER");
+        let old_key = std::env::var_os("DEEPSEEK_API_KEY");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_MODEL");
+            std::env::remove_var("DEEPSEEK_BASE_URL");
+            std::env::remove_var("DEEPSEEK_PROVIDER");
+            std::env::remove_var("DEEPSEEK_API_KEY");
+            std::env::set_var("DEEPSEEK_API_KEY", "env-injected-key");
+        }
+        let mut bridge = Pinvou3Bridge::test_fixture(None);
+        bridge.prefs.advanced.saved_models = vec![SavedModel {
+            auth_mode: Some("none".to_string()),
+            id: "wiring-model".to_string(),
+            name: "wiring".to_string(),
+            alias: None,
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "wiring-model-name".to_string(),
+            base_url: "https://wiring.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: Default::default(),
+            has_secret: false,
+            credential_action: None,
+        }];
+        bridge.prefs.advanced.active_model_id = Some("wiring-model".to_string());
+        let config = build(&bridge, true);
+        assert_eq!(
+            config.credential_state,
+            CredentialState::Missing,
+            "免鉴权声明生效时 env key 不得把显示状态改写为 EnvOverride(wiring)"
+        );
+        assert!(
+            !config.env_overrides.contains(&"api_key".to_string()),
+            "免鉴权声明生效时 env_overrides 不得列出 api_key: {:?}",
+            config.env_overrides
+        );
+        // 反方向:同一构造在无声明时保持 env 覆盖的既有显示语义。
+        bridge.prefs.advanced.saved_models[0].auth_mode = None;
+        let config = build(&bridge, true);
+        assert_eq!(
+            config.credential_state,
+            CredentialState::EnvOverride,
+            "无声明记录的 env 覆盖显示语义不变(wiring)"
+        );
+        assert!(config.env_overrides.contains(&"api_key".to_string()));
+        if let Some(value) = old_model {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_MODEL", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        }
+        if let Some(value) = old_base {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_BASE_URL", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        }
+        if let Some(value) = old_provider {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_PROVIDER", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        }
+        if let Some(value) = old_key {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        }
+    }
+
+    #[test]
+    fn credential_state_display_respects_keyless_declaration() {
+        use super::credential_state_for_display as display;
+        // 免鉴权声明是端点契约:任何代码路径都不会为该路由读取凭据,env 覆盖
+        // 不得伪装成记录的凭据状态(无凭据可覆盖),记录自身状态才是真实显示。
+        assert_eq!(
+            display(true, true, CredentialState::Missing),
+            CredentialState::Missing,
+            "声明免鉴权时 env key 不得显示为 EnvOverride"
+        );
+        // 反方向矩阵:未声明记录保持 env 覆盖优先;无 env 时一律记录状态。
+        assert_eq!(
+            display(true, false, CredentialState::Missing),
+            CredentialState::EnvOverride,
+            "未声明记录的 env 覆盖显示语义不变"
+        );
+        assert_eq!(
+            display(true, false, CredentialState::Configured),
+            CredentialState::EnvOverride
+        );
+        assert_eq!(
+            display(false, true, CredentialState::Missing),
+            CredentialState::Missing
+        );
+        assert_eq!(
+            display(false, false, CredentialState::Configured),
+            CredentialState::Configured
+        );
+    }
+
+    #[test]
+    fn keyless_record_suppresses_saved_credential_in_probe_ladder() {
+        // 服务端兜底:记录自身声明免鉴权时,resolve_saved_model_key 不得返回已存
+        // 凭据 —— 无论哪个调用方/客户端版本询问。手改 settings.json 可以同时携带
+        // 声明与活着的 credential_ref(load 归一化只清 local/managed 记录的声明,
+        // 从不清凭据),视觉模型选择器探测的还是「另一条」表单姿态覆盖不到的记录,
+        // 所以防线必须落在 ladder 里而不是前端口径上。
+        use super::resolve_saved_model_key_with as ladder;
+        use crate::platform::credential_store::CredentialError;
+        struct SeededStore;
+        impl CredentialStore for SeededStore {
+            fn get(
+                &self,
+                reference: &CredentialReference,
+            ) -> Result<Option<String>, CredentialError> {
+                // Exact match, not a suffix test: the unseeded fixture arm
+                // uses "ladder-unseeded", which a `ends_with("seeded")`
+                // predicate would silently seed too (round-7 review); the
+                // seeded arm's full account is `model:ladder-seeded`
+                // (`CredentialReference::for_model`).
+                let seeded = reference.account == "model:ladder-seeded";
+                if seeded {
+                    Ok(Some("sk-residual-stored-key".to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+            fn set(
+                &self,
+                _reference: &CredentialReference,
+                _value: &str,
+            ) -> Result<(), CredentialError> {
+                Ok(())
+            }
+            fn delete(&self, _reference: &CredentialReference) -> Result<(), CredentialError> {
+                Ok(())
+            }
+        }
+        let record = |auth_mode: Option<&str>, ref_seeded: bool| SavedModel {
+            auth_mode: auth_mode.map(str::to_string),
+            id: "ladder-fixtured".to_string(),
+            name: "fixture".to_string(),
+            alias: None,
+            // Cloud preset on purpose: the declaration only survives
+            // normalization on non-local, non-managed records (local_vllm
+            // clears it on save by design, which would mute this fixture).
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "fixture-model".to_string(),
+            base_url: "https://fixture.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: Some(CredentialReference::for_model(if ref_seeded {
+                "ladder-seeded"
+            } else {
+                "ladder-unseeded"
+            })),
+            credential_state: Default::default(),
+            has_secret: ref_seeded,
+            credential_action: None,
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-probe-ladder-keyless-guard-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let persist = |model: SavedModel| {
+            UserPrefs::update_transaction(|initial| {
+                initial.migrate_models();
+                initial.advanced.saved_models = vec![model];
+                initial.advanced.active_model_id = Some("ladder-fixtured".to_string());
+                Ok(())
+            })
+            .expect("ladder fixture should save");
+        };
+        // 同义词档位("DISABLED ")与裸声明同一口径:守卫在 store 读取之前命中,
+        // 残留 credential_ref 不得外发(ladder 从磁盘加载,落盘的声明才生效)。
+        persist(record(Some("DISABLED "), true));
+        assert_eq!(
+            ladder(&SeededStore, Some("ladder-fixtured")).unwrap(),
+            None,
+            "免鉴权声明必须服务端抑制已存凭据(防前端口径回退)"
+        );
+        // 反方向:无声明时既有行为不变 —— 已存凭据照常解析,防守卫过度短路。
+        persist(record(None, true));
+        assert_eq!(
+            ladder(&SeededStore, Some("ladder-fixtured"))
+                .unwrap()
+                .as_deref(),
+            Some("sk-residual-stored-key"),
+            "无声明记录的已存凭据解析语义不变"
+        );
+
+        if let Some(value) = old_home {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("PINVOU3_HOME", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn keyless_save_forces_residual_credential_deletion() {
+        // 服务端纵深防御:记录声明免鉴权时,save 的凭据动作必须收敛为「删除」——
+        // 旧客户端/其他写入方可以在声明 auth_mode="none" 的同时送 keep_existing
+        // 或带类型化 key(GUI 的 delete/replace 已与开关同口径,不会走到这里),
+        // 「声明+活凭据」双态不得落盘(读侧 ladder 只能把双态变惰性,写侧必须
+        // 收敛)。删除仍走 post-commit 延迟通道,这里只断言返回的引用与状态;
+        // 干净记录(无引用、无 key)保持原形态,完全不触碰 keyring。
+        struct RecordingStore {
+            ops: std::cell::RefCell<Vec<String>>,
+        }
+        impl RecordingStore {
+            fn new() -> Self {
+                Self {
+                    ops: std::cell::RefCell::new(Vec::new()),
+                }
+            }
+        }
+        impl CredentialStore for RecordingStore {
+            fn get(
+                &self,
+                _reference: &CredentialReference,
+            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
+            {
+                Ok(None)
+            }
+            fn set(
+                &self,
+                reference: &CredentialReference,
+                _value: &str,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                self.ops
+                    .borrow_mut()
+                    .push(format!("set:{}", reference.account));
+                Ok(())
+            }
+            fn delete(
+                &self,
+                reference: &CredentialReference,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                self.ops
+                    .borrow_mut()
+                    .push(format!("delete:{}", reference.account));
+                Ok(())
+            }
+        }
+        let record = |auth_mode: Option<&str>, api_key: &str, ref_id: Option<&str>| SavedModel {
+            auth_mode: auth_mode.map(str::to_string),
+            id: "save-fixtured".to_string(),
+            name: "fixture".to_string(),
+            alias: None,
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "fixture-model".to_string(),
+            base_url: "https://fixture.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: api_key.to_string(),
+            credential_ref: ref_id.map(CredentialReference::for_model),
+            credential_state: Default::default(),
+            has_secret: false,
+            credential_action: None,
+        };
+        let store = RecordingStore::new();
+        // 旧写入方送 keep_existing(缺省动作)但记录带声明:残留引用必须收敛为
+        // missing + 延迟删除,且不落任何新 keyring 写。
+        let old = record(None, "", Some("old-fixtured"));
+        let (saved, deferred) = apply_model_credential(
+            record(Some("none"), "", Some("stale-on-record")),
+            Some(&old),
+            &store,
+        )
+        .unwrap();
+        assert!(
+            saved.credential_ref.is_none(),
+            "声明免鉴权的记录不得携带活引用"
+        );
+        assert_eq!(
+            deferred.map(|r| r.account),
+            // 与显式 Delete 臂同一优先级:记录自身的引用先于旧记录的引用。
+            Some("model:stale-on-record".to_string()),
+            "残留引用必须进 post-commit 延迟删除"
+        );
+        assert!(
+            saved.has_secret == false && matches!(saved.credential_state, CredentialState::Missing)
+        );
+        assert!(
+            store.ops.borrow().iter().all(|op| !op.starts_with("set:")),
+            "免鉴权声明下不得物化任何凭据: {:?}",
+            store.ops.borrow()
+        );
+        // 带类型化 key 的声明记录:不得落 store,连同确定性引用一起延迟删除。
+        let (saved, deferred) =
+            apply_model_credential(record(Some("none"), "sk-typed-legacy", None), None, &store)
+                .unwrap();
+        assert!(saved.credential_ref.is_none());
+        assert_eq!(
+            deferred.map(|r| r.account),
+            Some("model:save-fixtured".to_string()),
+            "类型化 key 也不得物化;确定性引用进延迟删除"
+        );
+        assert!(store.ops.borrow().iter().all(|op| !op.starts_with("set:")));
+        // 反方向:GUI 的干净免鉴权保存(replace 空 key)不触碰 keyring,原形态不变。
+        let mut clean = record(Some("none"), "", None);
+        clean.credential_action = Some(CredentialEditAction::Replace);
+        let (saved, deferred) = apply_model_credential(clean, None, &store).unwrap();
+        assert!(deferred.is_none(), "干净免鉴权保存不得产生 keyring 删除");
+        assert!(matches!(saved.credential_state, CredentialState::Missing));
+        // 过度抑制守卫:无声明记录的 keep_existing 语义原样保留。
+        let old = record(None, "", Some("kept-on-record"));
+        let (saved, deferred) =
+            apply_model_credential(record(None, "", Some("kept-on-record")), Some(&old), &store)
+                .unwrap();
+        assert_eq!(
+            saved.credential_ref.map(|r| r.account),
+            Some("model:kept-on-record".to_string()),
+            "无声明记录的 keep_existing 不得被免鉴权分支吞掉"
+        );
+        assert!(deferred.is_none());
+        assert!(store.ops.borrow().iter().all(|op| !op.starts_with("set:")));
     }
 
     #[test]

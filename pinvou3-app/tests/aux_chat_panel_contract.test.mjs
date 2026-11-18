@@ -207,7 +207,7 @@ test('aux timeline scroll mirrors the main conversation autoScrollRef pattern (r
   assert.match(auxChatPanel, /transitionConversationScrollState\(\{/);
   assert.match(auxChatPanel, /autoScrollRef\.current = transition\.following;/);
   assert.match(auxChatPanel, /autoScrollRef\.current = true;\s*\}, \[view\.auxId\]\);/);
-  assert.match(auxChatPanel, /if \(el && autoScrollRef\.current\) el\.scrollTop = el\.scrollHeight;\s*\}, \[view\.auxId, view\.snapshot\]\);/);
+  assert.match(auxChatPanel, /if \(el && autoScrollRef\.current && !hasRichTextSelection\(el\)\) el\.scrollTop = el\.scrollHeight;\s*\}, \[view\.auxId, view\.snapshot\]\);/);
 });
 
 test('the scroll-follow listener is keyed on view.auxId so it attaches once the dock portal exists (round-28 B2)', () => {

@@ -1384,7 +1384,15 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             if not duplicate else
             "A pending message with this same idempotency identity already "
             "existed; it has been REPLACED by this one (same spool file) — "
-            "the newest body is the one applied — a mid-delivery swap re-queues it, so both bodies can land inside the ≤30s window (the contract §6 disclosure)."
+            "the newest body is the one applied. Under commit-time steer "
+            "finalization the double-dispatch window is the armed-steer "
+            "span: a materially-different replacement releases the armed "
+            "steer at the stale-release gate (delivers that same pass), or "
+            "if the swap lands inside the delivering pass itself the "
+            "re-verify re-queues the newest body after one retry backoff "
+            "— while a semantically-equal resubmission is "
+            "held without re-dispatching until the earlier body's terminal "
+            "event (the contract §6 disclosure)."
         ),
     }, None
 

@@ -156,12 +156,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # The pre-T11 engine face the interim window is blessed against; see
-# test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-14 onto the
-# deps/lint follow head 8e8d52fdb (#156): the pinned sanitizer face
-# (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the previously
-# blessed 11cba403d, verified via the layer-2 source assertions on a
-# populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "8e8d52fdb4a418bf4310db4b5d03dce5345c54d5"
+# test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-15 onto the
+# session-reader follow head 687358f7e (#157): #157 only extends the
+# registry read-only helper list and its test data — the pinned sanitizer
+# face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
+# previously blessed 8e8d52fdb, verified via the layer-2 source assertions
+# on a populated tree before flipping the pin.
+_PINNED_CODEWHALE_GITLINK = "687358f7efde6abd3592737b8ec48adc74ba5a84"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 

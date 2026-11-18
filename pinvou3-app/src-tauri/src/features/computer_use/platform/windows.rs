@@ -77,15 +77,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS,
     MAX_TREE_DEPTH, MAX_TREE_NODES, MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun,
-    combine_drag_errors, drag_waypoints, map_scroll, map_xcap_err, normalize_typed_newlines,
-    pick_monitor, release_reverse, sanitize_name, screening_hit, split_type_runs,
+    combine_drag_errors, combine_hold_errors, drag_waypoints, map_scroll, map_xcap_err,
+    normalize_typed_newlines, pick_monitor, release_reverse, sanitize_name, screening_hit,
+    split_type_runs,
 };
 
 /// Defensive cap for climbing from the focused element up to its owning window.
@@ -905,7 +906,9 @@ impl WindowsComputerUseBackend {
         // Chunk the hold so a stop/timeout latches within HOLD_CANCEL_POLL_MS
         // instead of waiting out the whole hold (up to 30 s). The keys are
         // always released by the common release below, whether the hold ran
-        // out or was cancelled.
+        // out or was cancelled — and a FAILED release is surfaced, never the
+        // all-clear (the shared combine_hold_errors merge — the same helper
+        // the virtual stacks and the other physical paths use, R18).
         let mut remaining = hold;
         while remaining > Duration::ZERO {
             if self
@@ -913,10 +916,13 @@ impl WindowsComputerUseBackend {
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = release_reverse(&pressed, &mut self.enigo);
-                return Err(ComputerUseError::unavailable(
-                    "hold was cancelled (caller timeout or stop); the keys have been released",
-                ));
+                return combine_hold_errors(
+                    Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop)",
+                    )),
+                    release_reverse(&pressed, &mut self.enigo)
+                        .map_err(|err| map_input_err("key release", err)),
+                );
             }
             let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
             sleep(step);
@@ -977,6 +983,8 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             input: true,
             ui_tree: true,
             notes,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
         }
     }
 

@@ -36,6 +36,9 @@
     "scripts/**/*.{js,mjs}",
     "tests/**/*.{js,mjs}"
   ],
+  "paths": {
+    "/src/*": ["./src/*"]
+  },
   "ignore": [
     "src/vendor/**"
   ],

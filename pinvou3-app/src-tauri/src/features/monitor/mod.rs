@@ -68,6 +68,19 @@ pub struct GpuSnapshot {
 pub struct CpuSnapshot {
     pub name: String,
     pub total_usage_pct: Option<f64>,
+    /// Per-process CPU usage (from `process_usage_pct` in `cpu_math.rs`,
+    /// fed by the platform samplers). `None` until the second
+    /// sample, when the probe fails, or when the raw counter moves
+    /// backwards (wraparound); an idle interval reports `Some(0.0)`.
+    /// Process-wide across all threads (getrusage/GetProcessTimes/procfs
+    /// all aggregate the whole process).
+    pub process_usage_pct: Option<f64>,
+    /// Parallelism available to this process
+    /// (`std::thread::available_parallelism`: respects affinity masks and,
+    /// on Linux, cgroup CPU quotas — it can be lower than the host's
+    /// logical core count). Denominator for per-core normalization;
+    /// `0` when probing fails.
+    pub logical_processors: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

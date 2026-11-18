@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.10.18",
+  "version": "1.0.1",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -36,6 +36,7 @@
     "build:nsis": "node scripts/tauri/build.js build --bundles nsis",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
+    "test:tauri-config-schema": "node tests/tauri_config_schema.test.js",
     "test:startup-window": "node tests/startup_window_logic.test.mjs",
     "perf:engine-startup": "node scripts/engine-startup-report.mjs",
     "perf:native-stream": "node scripts/native-stream-performance.mjs",

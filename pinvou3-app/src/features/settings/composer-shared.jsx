@@ -3,7 +3,7 @@
 // 留在 SettingsView.jsx 里,SettingsView(3389 行)就永远进不了独立懒加载
 // chunk。抽到本模块后 SettingsView 可整体懒加载,共享件随主 chunk 常驻。
 // 组件实现与 SettingsView.jsx 原版逐字节一致。
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -14,7 +14,10 @@ import { can } from '../../shared/platform.js';
 import { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS } from './composer-tool-menu-logic.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
+  ARTIFACT_PREVIEW_REQUEST_SIZE,
+  artifactPreviewContentSizeFromMessage,
   artifactPreviewExternalUrlFromMessage,
+  artifactPreviewFrameWheelFromMessage,
   buildArtifactPreviewDocument,
 } from '../artifacts/artifact-preview-navigation.js';
 import {
@@ -271,31 +274,28 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
+      const openRelayLastAtRef = useRef(0); // 外链打开中继的限速时钟（见消息监听器）
       const [box, setBox] = useState(null); // { w, h, scale }
       const [ready, setReady] = useState(false);
       const managedZoom = zoomMode !== 'auto-width';
       const canvasW = managedZoom ? 1440 : null;
-      const measure = () => {
+      const measure = useCallback(() => {
         try {
-          const fr = frameRef.current, wrap = wrapRef.current;
-          if (!fr || !wrap || !fr.contentWindow) return;
-          const doc = fr.contentWindow.document;
-          const de = doc.documentElement, bd = doc.body;
+          const wrap = wrapRef.current;
+          if (!wrap) return;
           const panelW = wrap.clientWidth;
           const panelH = wrap.clientHeight;
           // 内容自然尺寸只在面板参考宽度下测量一次并缓存；后续仅依据面板尺寸重算缩放。
           // 若把「已按自然宽度撑开的 iframe 视口」每次再喂回测量，弹层里的 vw/vh 与
           // 溢出内容（如 right:-120px 的绝对定位元素）会让 scrollWidth/scrollHeight 随 iframe
           // 被撑大而继续放大，触发 ResizeObserver 无限反馈 → 预览无限放大。
-          let nat = naturalRef.current;
-          if (!nat) {
-            const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
-            const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
-            nat = { w: cw, h: ch };
-            // iframe 内容可能尚未真正加载(scrollWidth=0 或 scrollHeight=0)：这种空测量不写入缓存，
-            // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
-            if (cw > 0 && ch > 0) naturalRef.current = nat;
-          }
+          //
+          // sandbox 收紧后（allow-scripts，无 allow-same-origin）帧是跨源的，
+          // contentDocument 不可读：自然尺寸由帧内 bootstrap 自报
+          // （artifact-preview-navigation.js reportSize），只在首条非空上报时
+          // 写入缓存，空测量/后续上报不再改写，保持同一防反馈语义。
+          const nat = naturalRef.current;
+          if (!nat) return;
           const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
           const h = nat.h;
           let scale = 1;
@@ -322,8 +322,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           ));
           if (onScaleChange) onScaleChange(scale);
         } catch { /* not ready/cross-origin; ignore */ }
-      };
+      }, [managedZoom, canvasW, zoomMode, customScale, onScaleChange]);
       useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]); // eslint-disable-line react-hooks/set-state-in-effect -- an html switch means a different artifact; synchronously clear measurement state
+      // 这两个 effect 刻意沿用参数列表而不是 measure 身份：今天唯一的
+      // onScaleChange 是稳定 setter（ArtifactsPanel 的 setHtmlScale），identity
+      // 驱动并不会多跑；真正每渲染换身份的是 onCustomScaleChange（不进 measure
+      // 依赖）。若将来调用方改传 inline onScaleChange，identity 驱动会让它们
+      // 每渲染重跑（重挂 observer/re-measure），churn 大于收益。消息监听器
+      // 一侧才需要 identity 驱动（见下）。
       // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; re-measure only when the zoom parameters change
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {
@@ -333,11 +339,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         return () => ro.disconnect();
       // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; rebuild the observer only when the zoom parameters change
       }, [zoomMode, customScale]);
-      const applyWheelZoom = deltaY => {
+      const applyWheelZoom = useCallback(deltaY => {
         const base = box ? box.scale : customScale;
         const next = clampPreviewScale(base + (deltaY < 0 ? 0.1 : -0.1));
         if (onCustomScaleChange) onCustomScaleChange(next);
-      };
+      }, [box, customScale, onCustomScaleChange]);
       const handleWheel = event => {
         if (!managedZoom || !event.ctrlKey) return;
         event.preventDefault();
@@ -345,35 +351,48 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         applyWheelZoom(event.deltaY);
       };
       useEffect(() => {
-        const fr = frameRef.current;
-        if (!managedZoom || !fr || !fr.contentWindow) return;
-        let doc = null;
-        try {
-          doc = fr.contentWindow.document;
-        } catch {
-          return;
-        }
-        if (!doc) return;
-        const handleFrameWheel = event => {
-          if (!event.ctrlKey) return;
-          event.preventDefault();
-          event.stopPropagation();
-          applyWheelZoom(event.deltaY);
-        };
-        doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
-        return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- applyWheelZoom is an in-component closure; the box && box.scale compound expression is intentional so nothing is reattached while box is null
-      }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
-      useEffect(() => {
         const handlePreviewMessage = event => {
           const frameWindow = frameRef.current && frameRef.current.contentWindow;
           if (!frameWindow || event.source !== frameWindow) return;
-          const url = artifactPreviewExternalUrlFromMessage(event.data);
-          if (url && onOpenExternal) onOpenExternal(url);
+          const data = event.data;
+          // 帧内自报的内容自然尺寸：首个非空上报写入缓存（防反馈语义见 measure）。
+          const size = artifactPreviewContentSizeFromMessage(data);
+          if (size) {
+            if (!naturalRef.current) {
+              naturalRef.current = size;
+              measure();
+            }
+            return;
+          }
+          // ctrl+滚轮转发：sandbox 收紧后无法把 wheel 监听挂进帧文档，
+          // 帧内 bootstrap 将 ctrl 滚轮转回父窗口的受控缩放。
+          const deltaY = artifactPreviewFrameWheelFromMessage(data);
+          if (deltaY != null) {
+            if (managedZoom) applyWheelZoom(deltaY);
+            return;
+          }
+          const url = artifactPreviewExternalUrlFromMessage(data);
+          if (url && onOpenExternal) {
+            // 打开中继限速（r8）：外链由后端直接 spawn 系统浏览器打开，没有
+            // 弹窗拦截器兜底——恶意页面可在循环里 postMessage 刷开浏览器。
+            // 帧侧的点击门槛父窗口无法校验（合成 click 与真实 click 不可分），
+            // 限速是父窗口侧唯一可执行的节制：同组件 1.5s 内只放行一次。
+            const now = Date.now();
+            if (now - openRelayLastAtRef.current >= 1500) {
+              openRelayLastAtRef.current = now;
+              onOpenExternal(url);
+            }
+          }
         };
         window.addEventListener('message', handlePreviewMessage);
         return () => window.removeEventListener('message', handlePreviewMessage);
-      }, [onOpenExternal]);
+      // applyWheelZoom/measure 是 useCallback 化的组件内闭包：列入依赖让
+      // 监听器闭包始终新鲜（zoomMode/customScale 变化 → applyWheelZoom/
+      // measure 身份变化 → 重挂）。此前只依赖 onOpenExternal，注释称
+      // 「mounts once / forwards via refs」并不成立——stable onOpenExternal
+      // 的调用方一旦切换 zoomMode，ctrl+滚轮转发与缩放步进就会用到过期
+      // 闭包（重挂成本与既有调用点的每渲染重挂相同）。
+      }, [onOpenExternal, managedZoom, applyWheelZoom, measure]);
       const scaled = box && box.scale !== 1;
       const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
       const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
@@ -404,7 +423,18 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           {!ready && <div className="h-[480px] bg-white dark:bg-[#15171a]"></div>}
           <div data-testid="artifact-html-preview-stage" style={managedZoom ? stageStyle : (box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative' } : { width: '100%', height: '100%' })}>
             <div style={box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative', flex: '0 0 auto' } : (managedZoom && box ? { width: box.w + 'px', height: box.h + 'px', flex: '0 0 auto' } : { width: '100%', height: '100%' })}>
-              <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" title={title || 'Artifact preview'} data-testid="artifact-html-preview-frame" onLoad={() => { measure(); if (onFrameLoad) { onFrameLoad(frameRef.current); } setTimeout(() => setReady(true), 80); }}
+              {/* allow-scripts only: 导入的产物是第三方可控输入，allow-same-origin 会让
+                  srcdoc 脚本共享主窗口源并直达 window.parent.__TAURI__。测量/缩放/
+                  design runtime 均走 postMessage 通道（见上方消息监听与
+                  artifact-preview-navigation.js bootstrap）。 */}
+              <iframe ref={frameRef} sandbox="allow-scripts" title={title || 'Artifact preview'} data-testid="artifact-html-preview-frame" onLoad={() => {
+                try {
+                  const fw = frameRef.current && frameRef.current.contentWindow;
+                  if (fw) fw.postMessage({ type: ARTIFACT_PREVIEW_REQUEST_SIZE }, '*');
+                } catch { /* frame not ready */ }
+                if (onFrameLoad) { onFrameLoad(frameRef.current); }
+                setTimeout(() => setReady(true), 80);
+              }}
                 className={`border-0 block bg-white dark:bg-[#15171a] [color-scheme:light] dark:[color-scheme:dark] transition-opacity duration-300 ${ready ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'}`}
                 data-zoom-mode={zoomMode}
                 data-zoom-scale={box ? String(box.scale) : ''}

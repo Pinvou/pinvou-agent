@@ -120,6 +120,7 @@ command_protocol!(
         "computer_use_confirm",
         "computer_use_deny",
         "computer_use_set_enabled",
+        "computer_use_set_virtual_display_preference",
         "computer_use_request_permissions",
         "computer_use_permission_status"
     ]
@@ -244,6 +245,7 @@ command_protocol!(
         "kb_search",
         "kb_stats",
         "kb_model_status",
+        "kb_model_cancel",
         "kb_model_load_after_first_frame",
         "kb_model_download"
     ]
@@ -462,11 +464,13 @@ command_protocol!(
     [
         "list_sessions",
         "list_archived_sessions",
+        "fork_session",
         "create_session",
         "get_session_workspace_binding",
         "load_session",
         "delete_session",
         "export_session",
+        "import_session_archive",
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
@@ -497,6 +501,7 @@ command_protocol!(
         "get_session_model_id",
         "get_image_input_capability",
         "test_model_connection",
+        "probe_endpoint_models",
         "test_image_input_capability",
         "update_settings",
         "update_search_settings",

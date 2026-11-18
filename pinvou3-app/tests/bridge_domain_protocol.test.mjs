@@ -367,15 +367,18 @@ const expectedProtocolHashes = {
   // set_global_shortcut_config invoke (the dedicated command owns both the
   // plugin registration and the prefs persistence; update_settings stays
   // untouched).
-  settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
-  // Recomputed for the dead-code cleanup: the never-emitted
-  // remote_control:status / remote_control:session_created listeners were
-  // removed, and the update:progress listener plus its coalescing timer
-  // machinery were deleted with it (the backend download loop no longer has a
-  // frontend progress consumer; completion still flips updateProgress to 100
-  // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
-  // removed along with the machinery it pinned.
-  updater: 'e5d3ffaed0548bca3a40ee4c8138a59f9a2add9474477d924d4ecd7b8efd73e6',
+  // Recomputed for the keyless-aware tier probe: probe_local_server_kind's
+  // invoke payload gains `noAuth` (the form's keyless posture suppresses the
+  // retained form key and the saved-credential fallback for the automatic
+  // probe, same caliber as the two test commands).
+  settings: 'cded938320d66a29d605f1a3c2fb0f880f489409861bfc7c24d741f1c6e67fd1',
+  // Recomputed for the reintroduced update:progress listener: the 200 ms
+  // download-progress coalescing machinery (trailing throttle, completion
+  // flush, cancel/failure cleanup) is back as the frontend contract for the
+  // backend resuming `update:progress` emission; completion still flips
+  // updateProgress to 100 in downloadAndInstallUpdate.
+  // tests/updater_progress_state.test.mjs re-pins the machinery.
+  updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
@@ -447,7 +450,11 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // record time (sid) instead of reading state.activeSessionId at fire time, so
 // the queued write cannot drift into a session the user switched to while the
 // chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
-const expectedSharedBaseHash = '26c590a7fff0b912eeacb4bf60028211be302fc965da4a484342369f2806b28f';
+// Recomputed for the keyless-probe-posture wave: the test_model_connection /
+// test_image_input_capability invokes gained the form's noAuth posture arg
+// (the backend probe ladder must skip the saved-credential fallback while the
+// keyless declaration is active).
+const expectedSharedBaseHash = 'a8f7fb4ba64b2869897a9332995a5eeb6dd7ca38a3b3eedf54d7a06daae7eca4';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

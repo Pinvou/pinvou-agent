@@ -311,6 +311,17 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/feedback/**'
               - 'pinvou3-app/src-tauri/src/features/personas/**'
               - 'pinvou3-app/src-tauri/src/features/pet/**'
+              # platform/prefs/ defines the SavedModel schema the CLI reads
+              # and writes (pinvou-cli path-depends on pinvou3-tauri and
+              # constructs SavedModel literals in models.rs, so a schema
+              # field addition is a CLI compile input). Today a prefs change
+              # already fires the CLI legs transitively via rust_full (any
+              # src-tauri .rs matches); this entry asserts the coverage
+              # directly — same discipline as the feedback/personas/pet
+              # entries above — so the CLI suite keeps gating schema changes
+              # even if rust_full ever gains a prefs exclusion the way it
+              # excludes those leaf features.
+              - 'pinvou3-app/src-tauri/src/platform/prefs/**'
               # The CLI compiles the connector lock tables in with
               # `include_str!` (src-tauri/src/platform/connector_lock.rs), so
               # editing or deleting one is a CLI source change in all but
@@ -418,6 +429,7 @@ jobs:
               - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
               - 'pinvou3-app/tests/tauri_effective_config.test.js'
+              - 'pinvou3-app/tests/tauri_config_schema.test.js'
             pet:
               - 'pinvou3-app/src/assets/pet/**'
               - 'pinvou3-app/src/features/pet/**'
@@ -861,6 +873,7 @@ jobs:
         run: |
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
+          npm --prefix pinvou3-app run test:tauri-config-schema
           npm --prefix pinvou3-app run test:macos-phase2
           npm --prefix pinvou3-app run test:knowledge-host-packaging
           npm --prefix pinvou3-app run test:linux-asr-runtime
@@ -2392,6 +2405,7 @@ jobs:
             'platform::process::tests::read_capture_' \
             'platform::process::tests::writing_descendant_' \
             'features::browser::platform::windows::tests::' \
+            'features::monitor::cpu_math::tests::' \
             'features::monitor::platform::windows_cpu::tests::' \
             'features::monitor::platform::windows_memory::tests::' \
             'features::monitor::platform::windows_gpu::tests::' \

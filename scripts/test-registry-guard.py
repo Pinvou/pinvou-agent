@@ -35,6 +35,16 @@ MANIFEST = os.path.join("pinvou3-app", "src-tauri", "Cargo.toml")
 # pin's `#[test]` attribute was lost to an edit — the exact failure this
 # guard exists for (PR #455 rounds 26 and 28).
 REQUIRED_PINS = [
+    # features/sessions (PR #835 r8/r9 waves): rollback-critical fork/import
+    # pins — a stolen `#[test]` here would let the fork binding replication,
+    # the bind-failure rollback arm (source needle; no deterministic
+    # filesystem fault injection exists between persist and bind), the
+    # three-state skip probe, or the counter-arm total forwarding regress
+    # silently (each is a silent-data-shape failure class, the guard's charter).
+    "fork_rebinds_workspace_binding_for_branch",
+    "fork_bind_failure_rollback_arm_is_pinned",
+    "import_reports_stat_fault_instead_of_overwriting_existing_record",
+    "all_transcript_commit_arms_forward_the_computed_total",
     # commands/tests.rs: the install-path consent rollback pair (round-33
     # minor 6, review #455) — exactly the consent/rollback class this guard
     # exists to protect from attribute theft.
@@ -132,6 +142,27 @@ REQUIRED_PINS = [
     "fresh_completion_finalizes_its_own_grant",
     "completed_owner_supersedes_a_late_relied_completion",
     "gateless_refresh_tail_validates_the_standing_consent_it_observed",
+    # PR #826 (computer-use virtual display, R16 enrollment): the
+    # consent/redaction-critical pins of the largest consent surface in the
+    # repo — the gate's no-boot precheck (a refused call must not boot the
+    # stack or register a session), the audit redaction trust boundary
+    # (model free text never reaches the audit log), the pid-0 receipt
+    # semantics, the display-target row lifecycle (stop/revoke/stop-latch
+    # re-assert + the guarded registry writer), the late-delta honesty
+    # channel, and the kill-identity gate body (a safety kill must decide
+    # on recorded identity, not the pid number).
+    "gate_refused_input_does_not_boot_the_backend",
+    "open_audit_target_withholds_the_model_free_text",
+    "open_receipt_states_pid_zero_semantics",
+    "admitted_run_reasserts_the_display_target_row_after_a_stop",
+    "revoked_session_keeps_no_display_target_row",
+    "revoke_session_clears_the_display_target_row",
+    "stop_all_clears_display_target_rows",
+    "set_session_target_if_live_refuses_stopped_and_disabled",
+    "reassert_skips_the_row_when_a_stop_has_landed",
+    "late_target_note_append_surfaces_as_delta",
+    "target_note_shrink_and_regrowth_resurface_as_deltas",
+    "kill_verified_children_decides_on_recorded_identity",
 ]
 
 

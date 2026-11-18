@@ -23,8 +23,9 @@ pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
 /// cancellation checkpoint). The fallback loop tells "user cancel" (abort the whole
 /// flow) apart from "single mirror source failure" (retry the next base URL) via the
 /// `is_cancelled` flag rather than error-string matching; the flag does not depend
-/// on this constant.
-const CANCELLED: &str = "cancelled";
+/// on this constant. Exported so the desktop command layer can reuse the same
+/// sentinel at its own cancel boundaries instead of duplicating the literal.
+pub const CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeModelFile {
@@ -894,6 +895,14 @@ mod tests {
                 KNOWLEDGE_MODEL_HF_BASE_URL.to_string(),
             ]
         );
+    }
+
+    // JS 桥按字面量 `message === "cancelled"` 识别取消（bridge-shared-helpers.js
+    // downloadKbModel catch）。改值会让所有以常量自比的 Rust 测试保持绿而前端
+    // 退化为红色错误态，这里把跨语言契约字节钉死。
+    #[test]
+    fn cancelled_sentinel_bytes_are_the_js_contract() {
+        assert_eq!(CANCELLED, "cancelled");
     }
 
     #[tokio::test]

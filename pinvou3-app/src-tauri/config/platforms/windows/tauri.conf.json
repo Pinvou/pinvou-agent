@@ -6,6 +6,20 @@
       "resources/platforms/windows/chrome-devtools-mcp/": "runtime/chrome-devtools-mcp"
     },
     "windows": {
+      "wix": {
+        "template": "packaging/windows/wix/main.wxs",
+        "fragmentPaths": [
+          "packaging/windows/wix/python-node-path.wxs"
+        ],
+        "componentRefs": [
+          "PythonNodeRuntimeEnvironment"
+        ],
+        "language": [
+          "en-US",
+          "zh-CN",
+          "ja-JP"
+        ]
+      },
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "packaging/windows/nsis/installer-hooks.nsh",

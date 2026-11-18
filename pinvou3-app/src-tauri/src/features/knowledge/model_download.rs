@@ -26,6 +26,9 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+// CANCEL 用 Relaxed 即可：除旗标自身外没有任何数据依赖它的顺序
+// （DOWNLOADING 才是闸），store/swap/consume 之间的先后由调用序保证。
+static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
@@ -199,6 +202,14 @@ pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelSt
     current_status(&service)
 }
 
+/// 取消进行中的下载。生效点：下载闭包的每个数据块/文件/镜像边界，以及
+/// 「复查或下载完成之后、真实加载之前」的安装边界（`kb_model_download` 内）。
+/// 空闲期（无下载在飞）调用的取消会上膛，在下一次 `kb_model_download`
+/// 入口立即生效——已部署目录的热加载分支也走同一入口，故同样受其约束。
+pub fn kb_model_cancel() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 /// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
 /// KnowledgeService。模型未安装/加载失败时保持纯全文降级，不影响主界面。
 pub async fn kb_model_load_after_first_frame(
@@ -280,6 +291,20 @@ pub async fn kb_model_download(
             set_model_load_error(Some(warning));
         }
     }
+    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
+    if DOWNLOADING.swap(true, Ordering::SeqCst) {
+        return Err("模型正在下载中".into());
+    }
+    let guard = DownloadGuard;
+    // 取消旗标在这里消费而非抹除：占位下载位与清零之间恰好落下的取消按用户
+    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）。
+    // 守卫覆盖整个流程（含下面的热加载分支），流程出口由 DownloadGuard 统一
+    // 清零，残旗不会流出；这里消费的是占位窗口内的取消与空闲期直接调
+    // kb_model_cancel 的上膛——空闲期上膛若不在入口消费，下一次真实下载会
+    // 凭空报「已取消」。此刻尚无本次流程的磁盘产物。
+    if CANCEL.swap(false, Ordering::Relaxed) {
+        return Err(pinvou_knowledge::model_download::CANCELLED.into());
+    }
     if model_directory_is_complete(&configured_dir) && !repair {
         if service.semantic_ready() {
             return Ok(current_status(&service));
@@ -297,11 +322,6 @@ pub async fn kb_model_download(
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
-    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("模型正在下载中".into());
-    }
-    let guard = DownloadGuard;
 
     let parent = dir
         .parent()
@@ -384,13 +404,20 @@ pub async fn kb_model_download(
                     }),
                 );
             },
-            || false, // no in-process cancel entry: cross-process cancel stays a consumer-side design (CLI/GUI command)
+            || CANCEL.load(Ordering::Relaxed),
         )
         .await?;
         if !model_directory_is_complete(&tmp) {
             let _ = std::fs::remove_dir_all(&tmp);
             return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
         }
+    }
+    // 取消边界（下载/复查之后、真实加载之前）：崩溃恢复的复查复用路径不经过
+    // 下载闭包，全程没有取消检查点——多秒的复查与加载窗口在这里兜底。已校验
+    // 完整的候选目录刻意保留：删掉会让下一次安装重下 ~585MB，复查路径会原样
+    // 复用它（下载中途的取消由下载 helper 负责清理残缺目录）。
+    if CANCEL.load(Ordering::Relaxed) {
+        return Err(pinvou_knowledge::model_download::CANCELLED.into());
     }
 
     // ── 2. 真实加载候选模型，再原子换入并热加载（失败时保留旧模型）──
@@ -664,9 +691,16 @@ fn replace_model_directory(candidate: &Path, destination: &Path) -> Result<Optio
 }
 
 /// `DOWNLOADING` 复位守卫（任何提前 return 都复位，含 `?` 早退与取消）。
+/// 同时清掉 `CANCEL`，把旗标语义收敛为「一次在飞的下载」：在飞窗口内落下的
+/// 取消在流程出口就地清零、不泄漏残旗；空闲期（无守卫在飞）上膛的取消按
+/// 契约留到下一次流程入口被消费（见 kb_model_download 入口注释）。
+/// 清 `CANCEL` 必须先于放 `DOWNLOADING`：放槽与清旗之间，第二次下载可以
+/// 占到槽位，随后这条旧守卫的清旗会把**新下载**的取消请求一并抹掉
+/// （review JensenChen28 2026-11-16 P2）。先退役旧请求再放槽，间隙即闭合。
 struct DownloadGuard;
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
+        CANCEL.store(false, Ordering::Relaxed);
         DOWNLOADING.store(false, Ordering::SeqCst);
     }
 }
@@ -688,6 +722,25 @@ mod tests {
         assert!(refusal.unwrap().contains("unavailable on this platform"));
         // 支持平台（所有受支持目标的编译期取值）不受影响。
         assert!(local_embed_download_refusal(true).is_none());
+    }
+
+    #[test]
+    fn cancel_flag_is_scoped_to_one_guarded_flow() {
+        // kb_model_cancel 无 State 形参，可绕过命令宏直接调用（上面的 harness
+        // 限制只约束带 State 的命令体）。本测试钉住旗标机制的两个原语：命令
+        // 负责上膛，DownloadGuard::drop 负责在流程出口把两个旗标一起清零——
+        // 防残旗（空闲期上膛泄漏到下一次下载入口，凭空报「已取消」）与占位
+        // 泄漏（DOWNLOADING 卡 true 拒绝后续下载）。旗标语义的另一半——
+        // 「入口消费空闲期上膛」——在 kb_model_download 入口，需完整流程
+        // 才能驱动，由读码验证（守卫块先于热加载分支）。
+        DOWNLOADING.store(false, Ordering::SeqCst);
+        CANCEL.store(false, Ordering::Relaxed);
+        kb_model_cancel();
+        assert!(CANCEL.load(Ordering::Relaxed));
+        assert!(!DOWNLOADING.swap(true, Ordering::SeqCst));
+        drop(DownloadGuard);
+        assert!(!DOWNLOADING.load(Ordering::SeqCst));
+        assert!(!CANCEL.load(Ordering::Relaxed));
     }
 
     #[test]
