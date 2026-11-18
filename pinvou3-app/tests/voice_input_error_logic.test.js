@@ -1193,9 +1193,12 @@ assert.strictEqual(
 );
 
 // (3) Drift guard: every Rust VoiceCommandError error code must appear in
-// both lanes' mapping tables, and the two key sets must stay identical —
-// adding a code without a mapping turns this red instead of silently falling
-// back to the Chinese raw message.
+// the shared VOICE_ERROR_CODE_KEYS table (post-extraction the lanes
+// delegate to it — the round-7 collapse removed the per-lane lockstep, so
+// this checks the shared table against the Rust inventory and asserts
+// neither lane file carries a private copy) — adding a code without a
+// mapping turns this red instead of silently falling back to the Chinese
+// raw message.
 const rustVoiceErrorSources = `${rustVoiceSource}\n${fs.readFileSync(
   path.join(__dirname, "..", "src-tauri", "src", "app", "commands", "remote_control.rs"),
   "utf8",
