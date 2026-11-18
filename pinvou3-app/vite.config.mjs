@@ -663,7 +663,9 @@ function enforceLazyChunks() {
 // 492,582 B desktop — and main-only already measures 492,245 B after
 // #857's timeline panel landed without its own re-measure — so the
 // desktop ceiling takes the next thousand step. Web stays 126,770 B
-// under 129_000.
+// under 129_000. The r4 re-rebase onto main@34bb36b7af (#867) touches no
+// frontend entry file, so those figures carry over; the build gates
+// re-verified both ceilings on the rebased head.
 export const MAIN_ENTRY_BUDGET_BYTES = 493_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
