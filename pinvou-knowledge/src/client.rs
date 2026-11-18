@@ -87,15 +87,6 @@ pub struct RemoteKnowledgeProbe {
 }
 
 impl KnowledgeClient {
-    /// The owner-devices walk's page request and page-count bounds. Module
-    /// (impl) scope rather than function-local so the test module can pin the
-    /// shipped values: a silent revert to the old fixed first-page listing
-    /// must fail a test, not just a reviewer (r13 review).
-    const DEVICES_PAGE_LIMIT: usize = 500;
-    /// 200 full pages = 100k devices, ~100x any plausible real fleet; the
-    /// cap converts the pathological server from a hang into a loud error.
-    const DEVICES_MAX_PAGES: usize = 200;
-
     pub fn new(endpoint: impl Into<String>, token: impl Into<String>) -> Result<Self, String> {
         crate::ensure_tls_crypto_provider();
         let endpoint = normalize_endpoint(&endpoint.into())?;
@@ -1171,46 +1162,55 @@ mod tests {
     }
 
     #[test]
-    fn devices_paging_bounds_hold_shipped_values() {
-        // r13 review: the walk bounds had no pin — a silent revert to the old
-        // fixed first-page listing shipped green. The walk itself is
-        // transport-bound (no test seam), so the load-bearing contract is the
-        // values; pin them literally next to their consumers.
-        assert_eq!(KnowledgeClient::DEVICES_PAGE_LIMIT, 500);
-        assert_eq!(KnowledgeClient::DEVICES_MAX_PAGES, 200);
+    fn paged_listing_bounds_hold_shipped_values() {
+        // r13 review (as rebased onto #867's paged_all): the devices walk's
+        // bounds pins re-target onto the shared pager that now serves the
+        // devices and trash listings. A silent widening or removal of the
+        // over-window guard must fail a test, not just a reviewer. The walk
+        // itself is transport-bound (no test seam), so the load-bearing
+        // contract is the values; pin them literally next to their consumer.
+        assert_eq!(KnowledgeClient::PAGED_MAX_PAGES, 100);
+        assert_eq!(PAGE_LIMIT_CAP, 500);
         assert_eq!(
-            KnowledgeClient::DEVICES_MAX_PAGES * KnowledgeClient::DEVICES_PAGE_LIMIT,
-            100_000,
-            "200 full pages × 500 = the fleet ceiling that turns the pathological server into a loud error"
+            KnowledgeClient::PAGED_MAX_PAGES * PAGE_LIMIT_CAP,
+            50_000,
+            "100 full pages × 500 = the listing ceiling that turns the pathological server into a loud error"
         );
     }
 
     #[test]
-    fn devices_walk_source_keeps_the_bounded_page_loop() {
-        // r14 review: the value pins above hold the constants, but stripping
-        // the walk's own bound (the `0..DEVICES_MAX_PAGES` loop) kept them
-        // green — the pin must also hold the walk shape that converts a
-        // hostile always-full-page server into the loud error. The slice is
-        // function-scoped so these assertion strings cannot self-match.
+    fn paged_listing_source_keeps_the_bounded_page_walk() {
+        // r14 review (as rebased onto #867's paged_all): the value pins above
+        // hold the constants, but stripping the walk's own bound (the
+        // `full_pages >= PAGED_MAX_PAGES` trigger, the probe page that
+        // disambiguates a legal ceiling from a pager ignoring `offset`, or
+        // the short-page terminator) kept them green — the pin must also
+        // hold the walk shape that converts a hostile always-full-page
+        // server into the loud error. The slice is function-scoped so these
+        // assertion strings cannot self-match.
         let source = include_str!("client.rs");
         let start = source
-            .find("pub async fn devices(")
-            .expect("the devices walk must stay present");
+            .find("async fn paged_all<")
+            .expect("the shared paged walk must stay present");
         let end = start
             + source[start..]
-                .find("pub async fn update_device(")
-                .expect("the devices walk slice must stay terminated");
+                .find("pub async fn trashed_collections(")
+                .expect("the paged walk slice must stay terminated");
         let walk = source[start..end].replace([' ', '\n'], "");
         assert!(
-            walk.contains("for_in0..Self::DEVICES_MAX_PAGES{"),
-            "the page walk must stay bounded by DEVICES_MAX_PAGES"
+            walk.contains("iffull_pages>=Self::PAGED_MAX_PAGES{"),
+            "the page walk must stay bounded by PAGED_MAX_PAGES"
         );
         assert!(
-            walk.contains("iffetched<Self::DEVICES_PAGE_LIMIT{returnOk(devices);"),
+            walk.contains("iffetched<PAGE_LIMIT_CAP{returnOk(all);"),
             "the short-page terminator must stay wired"
         );
         assert!(
-            walk.contains("devicelistingexceeded"),
+            walk.contains("ifprobe.len()>=PAGE_LIMIT_CAP{"),
+            "the over-window probe page must stay wired"
+        );
+        assert!(
+            walk.contains("分页异常"),
             "the over-cap outcome must stay the loud listing error"
         );
     }
