@@ -84,9 +84,9 @@ use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS,
     MAX_TREE_DEPTH, MAX_TREE_NODES, MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun,
-    combine_drag_errors, combine_hold_errors, drag_waypoints, map_scroll, map_xcap_err,
-    normalize_typed_newlines, pick_monitor, release_reverse, sanitize_name, screening_hit,
-    split_type_runs,
+    append_tree_truncation_footers, combine_drag_errors, combine_hold_errors, drag_waypoints,
+    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
+    sanitize_name, screening_hit, split_type_runs,
 };
 
 /// Defensive cap for climbing from the focused element up to its owning window.
@@ -1233,19 +1233,20 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             &mut out,
             self.cancel.as_deref(),
         )?;
-        if writer.truncated {
-            let _ = writeln!(
-                out,
-                "... (truncated at {} nodes; pass a larger max_nodes to see more)",
-                writer.next_index
-            );
-        }
-        if writer.truncated_by_depth {
-            let _ = writeln!(
-                out,
-                "... (truncated by depth; pass a larger max_depth to see more)"
-            );
-        }
+        // The shared footer builder (r5): the physical stack previously
+        // inlined the same literals the virtual walk and the UIA helper
+        // emit through `append_tree_truncation_footers` — byte-identical
+        // today, but a one-stack edit could desync the model-visible
+        // format with no test catching it. `cap_bounded` is false: this
+        // walk's root is the focused window's subtree and has no
+        // top-level cap.
+        append_tree_truncation_footers(
+            writer.truncated,
+            writer.truncated_by_depth,
+            false,
+            writer.next_index,
+            &mut out,
+        );
         Ok(out)
     }
 

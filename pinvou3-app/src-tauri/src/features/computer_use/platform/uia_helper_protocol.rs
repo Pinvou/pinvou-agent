@@ -133,7 +133,22 @@ pub fn is_helper_invocation() -> bool {
     // `args_os`: invalid-Unicode argv must not panic the pre-init check —
     // this runs as the very first action of every app start on every
     // platform (r4).
-    std::env::args_os().any(|arg| arg == HELPER_ARG)
+    invocation_contains_helper_arg(std::env::args_os())
+}
+
+/// The pure half of [`is_helper_invocation`]: the marker may sit at ANY
+/// argv position (the spawner sends exactly two arguments, but the
+/// detection must not depend on the position — anchoring on the first
+/// argument only would silently dead the helper dispatch). Separated
+/// from the env read so the detection itself is unit-testable on every
+/// platform (r5).
+pub(crate) fn invocation_contains_helper_arg<I>(args: I) -> bool
+where
+    I: IntoIterator,
+    I::Item: AsRef<std::ffi::OsStr>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref() == std::ffi::OsStr::new(HELPER_ARG))
 }
 
 #[cfg(test)]
@@ -235,5 +250,94 @@ mod tests {
         assert!(HELPER_ARG.starts_with("--pinvou-"));
         assert!(HELPER_ARG.len() > 24, "long namespaced marker");
         assert_ne!(HELPER_ARG, std::env::args().next().unwrap_or_default());
+    }
+
+    /// The marker may sit at ANY argv position (r5: first-only detection is
+    /// the silent-dispatch-death mutant). Pure; Linux-runnable.
+    #[test]
+    fn invocation_detection_finds_the_marker_at_any_position() {
+        let marker = std::ffi::OsString::from(HELPER_ARG);
+        let plain = std::ffi::OsString::from("C:\\app\\pinvou3.exe");
+        let arg = |s: &std::ffi::OsStr| s.to_os_string();
+        assert!(invocation_contains_helper_arg(
+            [plain.clone(), marker.clone(), plain.clone()].map(|s| arg(&s))
+        ));
+        assert!(invocation_contains_helper_arg(
+            [marker.clone()].map(|s| arg(&s))
+        ));
+        assert!(invocation_contains_helper_arg(
+            [plain.clone(), plain.clone(), marker].map(|s| arg(&s))
+        ));
+        assert!(
+            !invocation_contains_helper_arg([plain.clone()].map(|s| arg(&s))),
+            "an ordinary app launch is not a helper"
+        );
+        // A similarly-prefixed but different flag must not trip it.
+        let lookalike = std::ffi::OsString::from("--pinvou-computer-use-uia-helperx");
+        assert!(!invocation_contains_helper_arg(
+            [plain, lookalike].map(|s| arg(&s))
+        ));
+    }
+
+    /// Golden full-line wire pins (r5): a coordinated parent+helper field
+    /// rename round-trips green but silently changes the wire — the exact
+    /// serialized forms are pinned here instead. Pure; Linux-runnable.
+    #[test]
+    fn wire_lines_have_golden_forms() {
+        let tree = serde_json::to_string(&Request {
+            id: 7,
+            op: Op::Tree {
+                max_depth: 8,
+                max_nodes: 400,
+            },
+        })
+        .expect("serialize");
+        assert_eq!(tree, r#"{"id":7,"op":"tree","d":8,"n":400}"#);
+
+        let at = serde_json::to_string(&Request {
+            id: 1,
+            op: Op::AtPoint { x: -1920, y: 5 },
+        })
+        .expect("serialize");
+        assert_eq!(at, r#"{"id":1,"op":"at_point","x":-1920,"y":5}"#);
+
+        let focus = serde_json::to_string(&Request {
+            id: 2,
+            op: Op::Focus,
+        })
+        .expect("serialize");
+        assert_eq!(focus, r#"{"id":2,"op":"focus"}"#);
+
+        let tree_ok =
+            serde_json::to_string(&Response::tree(3, "rows".to_string())).expect("serialize");
+        assert_eq!(tree_ok, r#"{"id":3,"ok":true,"tree":"rows"}"#);
+
+        let soft =
+            serde_json::to_string(&Response::error(4, "no focus".to_string())).expect("serialize");
+        assert_eq!(soft, r#"{"id":4,"ok":false,"error":"no focus"}"#);
+
+        let element = serde_json::to_string(
+            &Response::element(
+                5,
+                Some(WireElement {
+                    role: "Edit".to_string(),
+                    name: "pw".to_string(),
+                    x: 1,
+                    y: 2,
+                    width: 80,
+                    height: 20,
+                    secure: true,
+                    screening_hit: false,
+                    binding: 42,
+                }),
+            )
+            .element
+            .expect("wire element"),
+        )
+        .expect("serialize");
+        assert_eq!(
+            element,
+            r#"{"role":"Edit","name":"pw","x":1,"y":2,"width":80,"height":20,"secure":true,"screening_hit":false,"binding":42}"#
+        );
     }
 }

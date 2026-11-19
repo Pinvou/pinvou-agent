@@ -2881,8 +2881,8 @@ impl ToolSpec for ComputerUseTool {
                 "ms": { "type": "integer", "minimum": 1, "maximum": 30000, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
                 "amount": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Scroll wheel clicks, 1-100 (scroll)" },
-                "max_depth": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Max accessibility tree depth (ui_tree)" },
-                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Max accessibility tree nodes (ui_tree)" },
+                "max_depth": { "type": "integer", "minimum": 1, "maximum": 24, "description": "Max accessibility tree depth (ui_tree; the backend's hard ceiling)" },
+                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Max accessibility tree nodes (ui_tree; the backend's hard ceiling)" },
                 "program": { "type": "string", "maxLength": 1024, "description": "Program to launch, spawned directly without a shell (open): a bare name resolved by the platform's usual search order, or an absolute path" },
                 "args": { "type": "array", "items": { "type": "string", "maxLength": 4096 }, "maxItems": 64, "description": "Arguments passed verbatim to the program (open)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }
