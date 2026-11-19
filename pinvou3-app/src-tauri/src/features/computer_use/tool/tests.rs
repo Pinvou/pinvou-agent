@@ -6691,7 +6691,10 @@ async fn failed_action_drains_backend_warnings_off_the_next_receipt() {
 /// exactly that now the hidden-desktop stack answers the accessibility
 /// queries with a real tree (its Input actions CAN mint a pending). The
 /// mint path has no runtime seam on the CI legs (no virtual stack, no
-/// physical co-session), so the wiring is pinned at source level.
+/// physical co-session), so the wiring is pinned at source level — BOTH
+/// halves: the binding exists, and the lock call INSIDE it actually runs
+/// (r5: a mutant keeping the binding but substituting a no-op for
+/// `lock_physical_input()` previously passed everything).
 #[test]
 fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
     let src = std::fs::read_to_string(concat!(
@@ -6704,5 +6707,30 @@ fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
         "the mint site must take the physical-input lock for virtual targets \
          — the dialog-under-injection window the lock exists to close reopens \
          if a virtual session can mint outside it"
+    );
+    assert_eq!(
+        src.matches(".lock_physical_input()").count(),
+        2,
+        "exactly two lock acquisitions: the dispatch skip's input-class \
+         guard and the mint site's own take — a mint site that keeps the \
+         binding but drops the call reopens the dialog-under-injection \
+         window with every count and gate still green"
+    );
+    assert_eq!(
+        src.matches(".map_err(|rejection| rejection.message())?,")
+            .count(),
+        1,
+        "the mint binding's Some arm must END in the lock acquisition's own \
+         error mapping (an arm that returns a no-op guard compiles but \
+         never serializes the mint against physical input). Single-line \
+         anchors only: Windows runners check out CRLF, so a `\\n` anchor \
+         counts 0 there while every Linux gate stays green (r5 fixwave)"
+    );
+    assert_eq!(
+        src.matches(".then(|| parts.shared.lock_physical_input())")
+            .count(),
+        1,
+        "the dispatch-side skip must stay the OTHER lock consumer (the \
+         complement that makes the mint re-take necessary)"
     );
 }

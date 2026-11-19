@@ -65,19 +65,30 @@
 //! Notepad — are the common case; the backend detects a packaged keyboard
 //! target via its process image path and attaches an explicit warning to the
 //! action's receipt instead of letting a silent no-op read as success);
-//! non-client interactions ARE injected as their WM_NC* message sequences
-//! (title-bar double-click maximize/restore, the caption system buttons,
-//! menu-bar and system-menu opens) but a window cannot be MOVED by
-//! dragging its caption nor resized by dragging a border — both need the
-//! modal move/size loop that pumps live pointer coordinates, which a
-//! fixed down/up message pair is not — and the manual
-//! `left_mouse_down`/`left_mouse_up` primitives stay client-routed; UAC
+//! non-client interactions follow the OS's OWN per-zone delivery (r5 — the
+//! delivery model mirrors what DefWindowProc actually does with a real
+//! press, whose modal states a uniform (down, up) post pair cannot drive):
+//! title-bar double-click maximizes/restores (`WM_NCLBUTTONDBLCLK`, the
+//! loop-free SC path), the caption min/max/close buttons deliver their
+//! `WM_SYSCOMMAND` end state directly (a disabled/absent Close is refused,
+//! not faked), a caption DOWN is completed with a client button-up so the
+//! move mode it opens exits deterministically, menu-bar and system-menu
+//! presses open the menu's tracking loop (its items are clicked with
+//! SCREEN coordinates — the loop reads mouse lParams as screen points), and
+//! clicks on window edges/borders/scrollbars are REFUSED (a press there
+//! enters a modal move/size/scroll loop posted messages cannot complete);
+//! a window still cannot be MOVED by dragging its caption nor resized by
+//! dragging a border — both need the modal move/size loop that pumps live
+//! pointer coordinates, which posted presses are not — and the manual
+//! `left_mouse_down`/`left_mouse_up` primitives stay client-routed (use
+//! `click` for non-client zones and menu items); UAC
 //! elevation prompts appear on the secure desktop, which no hidden-desktop
 //! API can drive; cross-desktop UI Automation runs in an ATTACHED HELPER
 //! PROCESS (this executable re-spawned with the helper argv on the hidden
 //! desktop, inside the session job): `ui_tree`/`element_at_point`/
 //! `focused_element` serve the real semantic UIA tree from that helper, and
-//! when the helper cannot start or answer they degrade to a window-class
+//! when the helper cannot start or has died (a transport failure) they
+//! degrade to a window-class
 //! walk (role is the window class, name is the caption, cross-process
 //! control content and UIA-only properties unavailable, the classic
 //! `ES_PASSWORD` style the one secure-field signal); programs that
@@ -143,17 +154,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, ES_PASSWORD,
     FindWindowW, GA_ROOT, GCL_STYLE, GUITHREADINFO, GW_CHILD, GW_HWNDNEXT, GWL_STYLE, GetAncestor,
-    GetClassLongW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
-    GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, HTCLIENT, HTERROR, HTNOWHERE, HTTRANSPARENT, IsIconic,
-    IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
-    SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN, WM_NCMBUTTONUP, WM_NCMOUSEMOVE, WM_NCRBUTTONDBLCLK,
-    WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WS_DISABLED, WindowFromPoint,
+    GetClassLongW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMenuState,
+    GetSystemMenu, GetSystemMetrics, GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HTBOTTOM, HTBOTTOMLEFT,
+    HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE, HTERROR, HTHSCROLL, HTLEFT, HTMAXBUTTON, HTMENU,
+    HTMINBUTTON, HTNOWHERE, HTRIGHT, HTSYSMENU, HTTOP, HTTOPLEFT, HTTOPRIGHT, HTTRANSPARENT,
+    HTVSCROLL, IsIconic, IsWindowVisible, MF_BYCOMMAND, MF_DISABLED, MF_GRAYED,
+    PW_RENDERFULLCONTENT, PostMessageW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG,
+    SendMessageTimeoutW, SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+    WM_NCLBUTTONUP, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN, WM_NCMBUTTONUP, WM_NCMOUSEMOVE,
+    WM_NCRBUTTONDBLCLK, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_DISABLED, WS_MAXIMIZE, WS_MINIMIZE,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -166,9 +181,10 @@ use super::super::super::types::{
 use super::super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS,
     HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS, MAX_OPEN_CHILDREN, MAX_SCROLL_CLICKS,
-    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors,
-    drag_waypoints, logged_program, normalize_typed_newlines, open_capacity_rejected,
-    sanitize_name, screening_hit, split_type_runs, tree_budget,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, append_tree_truncation_footers,
+    combine_drag_errors, combine_hold_errors, drag_waypoints, logged_program,
+    normalize_typed_newlines, open_capacity_rejected, sanitize_name, screening_hit,
+    split_type_runs, tree_budget,
 };
 use super::super::uia_helper::{UiaHelperClient, UiaHelperOutcome};
 use super::VirtualAvailability;
@@ -197,11 +213,19 @@ const SHELL_BACKGROUND_CLASSES: [&str; 2] = ["Progman", "WorkerW"];
 /// (the secondary-monitor taskbar included: on a multi-monitor session the
 /// blank desktop's fallback walk otherwise returns it as the topmost
 /// visible "app window" and typing reports success into the taskbar).
-const SHELL_WINDOW_CLASSES: [&str; 4] = [
+/// `XamlExplorerHostIsolatedWindow` is the Windows 11 shell's XAML host
+/// (Start/Widgets) — the session's explorer spawns it on the hidden desktop
+/// and without the exclusion it appears as a tree root (r5). UWP-shell
+/// hosts whose class is `Windows.UI.Core.CoreWindow` (Start menu, search)
+/// are deliberately NOT listed: the same class carries real UWP app
+/// windows (e.g. Settings), so a class-based exclusion would hide drivable
+/// apps — that residual noise stays disclosed in the notes instead.
+const SHELL_WINDOW_CLASSES: [&str; 5] = [
     "Progman",
     "WorkerW",
     "Shell_TrayWnd",
     "Shell_SecondaryTrayWnd",
+    "XamlExplorerHostIsolatedWindow",
 ];
 
 /// Hidden desktop name: fixed prefix + process pid + a
@@ -658,14 +682,136 @@ fn nc_multi_click_message(index: u8, down: u32, double: u32) -> u32 {
 }
 
 /// The `(press, release)` NC message pair for press `index` (0-based) of a
-/// multi-click. `up` follows EVERY press (DefWindowProc's caption-button
-/// tracking acts on release), and the second press substitutes the DBLCLK
-/// message on every class — NC double-clicks are not CS_DBLCLKS-gated (see
-/// [`nc_multi_click_message`]). Pure; pinned: the count=1/count=2 sequences
-/// are asserted verbatim in the tests.
+/// multi-click on the zones delivered as plain pairs (menu bar / system
+/// menu presses, and the DefWindowProc no-op zones). The second press
+/// substitutes the DBLCLK message on every class — NC double-clicks are not
+/// CS_DBLCLKS-gated (see [`nc_multi_click_message`]). Chrome buttons and
+/// the caption do NOT use this pair (r5): their DefWindowProc handlers run
+/// MODAL states a posted NC up (below `WM_MOUSEFIRST`, so below every
+/// tracking pump's mouse-range filter) can never complete — those zones
+/// deliver [`nc_chrome_system_command`] / [`nc_caption_press`] instead.
+/// Pure; pinned.
 fn nc_press_pair(index: u8, button: MouseButton) -> (u32, u32) {
     let (down, double, up) = nc_mouse_button_messages(button);
     (nc_multi_click_message(index, down, double), up)
+}
+
+/// What the OS does when a press lands in this zone — the delivery model
+/// follows the OS per family instead of posting a uniform (down, up) pair:
+/// several DefWindowProc NC handlers run modal loops that a fixed post
+/// sequence cannot drive (verified against ReactOS `nonclient.c`, the NT
+/// win32k mirror: `NC_DoButton`, `NC_HandleNCLButtonDown`,
+/// `NC_HandleNCLButtonDblClk`, `DefWndDoSizeMove`). Pure; pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NcZoneDelivery {
+    /// Caption buttons (HTCLOSE/HTMINBUTTON/HTMAXBUTTON): the DOWN enters
+    /// a capture + modal pump filtered to `WM_MOUSEFIRST..WM_MOUSELAST`
+    /// (0x200..0x20A) that a posted `WM_NCLBUTTONUP` (0xA2, below the
+    /// range) can NEVER satisfy — the system command fires only when some
+    /// later stranded client `WM_LBUTTONUP` arrives (a deferred close in
+    /// the middle of an unrelated action). Deliver the end state directly:
+    /// `WM_SYSCOMMAND` with the exact SC code `NC_DoButton` itself derives
+    /// from the window style.
+    ChromeButton,
+    /// The caption: a single DOWN enters `SC_MOVE`'s modal move loop
+    /// (exits only on a client `WM_LBUTTONUP`, a no-button `WM_MOUSEMOVE`,
+    /// or ESC — the posted NC up is retrieved by the loop's UNFILTERED
+    /// pump and dispatched, changing nothing); the double-click press is
+    /// loop-free (`NC_HandleNCLButtonDblClk` sends
+    /// `SC_RESTORE`/`SC_MAXIMIZE` directly).
+    Caption,
+    /// Menu bar / system menu presses: the DOWN opens the menu's tracking
+    /// loop — that loop IS the opened menu (the desired effect). The
+    /// popup's item clicks are driven with screen-coordinate client posts
+    /// ([`menu_popup_needs_screen_coords`]); a system-menu DOUBLE-click is
+    /// loop-free (`SC_CLOSE`).
+    Menu,
+    /// Resize borders (`HTLEFT..HTBOTTOMRIGHT`) and scroll bars
+    /// (`HTHSCROLL/HTVSCROLL`): a single press enters the
+    /// `SC_SIZE`/`SC_HSCROLL`/`SC_VSCROLL` modal tracking loops that
+    /// terminate only on live pointer/keyboard input — posted sequences
+    /// cannot complete them, so these zones are REFUSED (disclosed)
+    /// instead of leaving the target captured in move/size mode behind a
+    /// reported success.
+    ModalLoop,
+    /// Zones DefWindowProc handles with no loop and no state
+    /// (`HTBORDER`, `HTGROWBOX`, `HTHELP`, `HTOBJECT`): the plain
+    /// (down, up) pair completes as a no-op, exactly like real input.
+    NoOp,
+}
+
+/// The delivery family for a hit-test zone. Pure; pinned.
+fn nc_zone_delivery(zone: u32) -> NcZoneDelivery {
+    match zone {
+        HTMINBUTTON | HTMAXBUTTON | HTCLOSE => NcZoneDelivery::ChromeButton,
+        HTCAPTION => NcZoneDelivery::Caption,
+        HTMENU | HTSYSMENU => NcZoneDelivery::Menu,
+        HTLEFT | HTRIGHT | HTTOP | HTBOTTOM | HTTOPLEFT | HTTOPRIGHT | HTBOTTOMLEFT
+        | HTBOTTOMRIGHT | HTHSCROLL | HTVSCROLL => NcZoneDelivery::ModalLoop,
+        // HTBORDER, HTGROWBOX, HTHELP, HTOBJECT: DefWindowProc's switch has
+        // no case for these (or an explicit `break` for HTBORDER) — a
+        // no-op, like real input.
+        _ => NcZoneDelivery::NoOp,
+    }
+}
+
+/// The `WM_SYSCOMMAND` code for a chrome-button press — the exact mapping
+/// `NC_DoButton` performs from the window style (min → restore when already
+/// minimized, max → restore when already maximized). Pure; pinned.
+fn nc_chrome_system_command(zone: u32, style: isize) -> u32 {
+    match zone {
+        HTCLOSE => SC_CLOSE,
+        HTMINBUTTON => {
+            if style & WS_MINIMIZE.0 as isize != 0 {
+                SC_RESTORE
+            } else {
+                SC_MINIMIZE
+            }
+        }
+        _ => {
+            if style & WS_MAXIMIZE.0 as isize != 0 {
+                SC_RESTORE
+            } else {
+                SC_MAXIMIZE
+            }
+        }
+    }
+}
+
+/// Whether the window's system menu actually offers a working Close —
+/// `NC_DoButton` refuses the grayed/disabled/absent close the same way
+/// (`GetMenuState` answers `u32::MAX` for an absent item, and the
+/// grayed/disabled style bits otherwise). Pure; pinned.
+fn nc_close_command_enabled(menu_state: u32) -> bool {
+    menu_state != u32::MAX && menu_state & (MF_GRAYED.0 | MF_DISABLED.0) == 0
+}
+
+/// The caption press message for press `index`, plus whether the press
+/// needs its deterministic completion: the DOWN opens the `SC_MOVE` loop
+/// (completed by a client `WM_LBUTTONUP` at the same point — the loop's
+/// own exit arm, zero movement, activation preserved), while the
+/// double-click press is loop-free. NC double-clicks are not
+/// CS_DBLCLKS-gated, so the substitution has no class gate (see
+/// [`nc_multi_click_message`]). The NC `up` is deliberately omitted —
+/// below `WM_MOUSEFIRST`, no modal pump can retrieve it and on the
+/// loop-free path it is dead weight. Pure; pinned.
+fn nc_caption_press(index: u8, button: MouseButton) -> (u32, bool) {
+    let (down, double, _up) = nc_mouse_button_messages(button);
+    let message = nc_multi_click_message(index, down, double);
+    (message, message == down)
+}
+
+/// A menu popup's window class. Its tracking loop reads mouse-message
+/// lParams as SCREEN coordinates (the synthetic-message contract —
+/// ReactOS `menu.c` `MENU_TrackMenu`: "Use the mouse coordinates in
+/// lParam … They are already in screen coordinates"), so the client
+/// route's client translation would land the click at the wrong item.
+const MENU_POPUP_CLASS: &str = "#32768";
+
+/// Whether a click target of this class must be driven with screen
+/// coordinates instead of client-translated ones. Pure; pinned.
+fn menu_popup_needs_screen_coords(class: &str) -> bool {
+    class == MENU_POPUP_CLASS
 }
 
 /// Whether the hit-test zone asked to be bypassed (HTTRANSPARENT: the
@@ -1735,7 +1881,10 @@ impl GdiPool {
                      the frame would have shown stale pixels, so it was not taken",
                 ));
             }
-            for hwnd in walk_visible_toplevels(MAX_COMPOSITE_WINDOWS) {
+            // The composite's window set is unchanged from before the walk
+            // gained the skip predicate: no exclusion, cap-bound stays
+            // log-only (r5).
+            for hwnd in walk_visible_toplevels(MAX_COMPOSITE_WINDOWS, &|_| false).0 {
                 let mut rect = RECT::default();
                 if GetWindowRect(hwnd, &mut rect).is_err() {
                     continue; // window died between enumeration and rect read
@@ -2048,19 +2197,30 @@ pub(crate) unsafe fn deepest_window_at(x: i32, y: i32) -> Option<(HWND, i32, i32
 ///
 /// SAFETY: desktop-relative Z-order enumeration from the attached calling
 /// thread; the returned handles are valid at return time (windows may still
-/// die before use — callers treat failures as churn).
-pub(crate) unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
+/// die before use — callers treat failures as churn). `skip` excludes
+/// windows BEFORE they can consume a cap slot (r5: the tree callers exclude
+/// shell classes; the capture composite passes `&|_| false` and keeps its
+/// pre-sharing behavior byte-identical). The bool answers whether the cap
+/// bound — an absence fact the tree callers must carry into the payload
+/// (the model cannot see a missing bottom of the desktop) while the
+/// capture caller keeps it log-only as before.
+pub(crate) unsafe fn walk_visible_toplevels(
+    cap: usize,
+    skip: &dyn Fn(HWND) -> bool,
+) -> (Vec<HWND>, bool) {
     // SAFETY: see the fn contract.
     unsafe {
         let mut out = Vec::new();
         let Ok(top) = GetTopWindow(None) else {
-            return out; // empty desktop
+            return (out, false); // empty desktop
         };
         let mut current = top;
+        let mut cap_bounded = false;
         loop {
-            if IsWindowVisible(current).as_bool() && !is_cloaked(current) {
+            if IsWindowVisible(current).as_bool() && !is_cloaked(current) && !skip(current) {
                 out.push(current);
                 if out.len() >= cap {
+                    cap_bounded = true;
                     // The cap binding is an absence path like the
                     // PrintWindow/BitBlt refusals: the bottom-most windows
                     // are silently missing from that frame unless we say so
@@ -2081,7 +2241,7 @@ pub(crate) unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
             }
         }
         out.reverse();
-        out
+        (out, cap_bounded)
     }
 }
 
@@ -2153,7 +2313,17 @@ pub(crate) unsafe fn window_class_name(hwnd: HWND) -> String {
     }
 }
 
-/// Window caption/text (bounded buffer; empty string on failure).
+/// Upper bound on one caption read: captions are short (the display copy is
+/// truncated to [`MAX_NAME_CHARS`] downstream), but the T3 screening verdict
+/// and the raw binding must run on the FULL raw caption — the exact
+/// padding-evasion the contract closes (tool.rs: a display-truncated match
+/// lets ~80+ units of padding hide a consequential term past the denylist
+/// window) reopens if the read is bounded BELOW the screening input (r5:
+/// the 128-unit buffer did exactly that). 4096 units bounds the allocation
+/// while being far past any real caption.
+const MAX_CAPTION_UNITS: usize = 4096;
+
+/// Window caption/text (length-bounded read; empty string on failure).
 /// `GetWindowTextW` reads the OS-cached caption — it never pumps the target
 /// thread, so it cannot wedge — which for controls means the static text or
 /// button label; the CONTENT of another process's edit control is NOT its
@@ -2165,12 +2335,20 @@ pub(crate) unsafe fn window_class_name(hwnd: HWND) -> String {
 unsafe fn window_text(hwnd: HWND) -> String {
     // SAFETY: see the fn contract.
     unsafe {
-        let mut buffer = [0u16; 128];
-        let len = GetWindowTextW(hwnd, &mut buffer);
+        let len = GetWindowTextLengthW(hwnd);
         if len <= 0 {
             return String::new();
         }
-        String::from_utf16_lossy(&buffer[..(len as usize).min(buffer.len())])
+        let cap = (len as usize).min(MAX_CAPTION_UNITS);
+        // +1: GetWindowTextW writes at most `buffer.len()` units INCLUDING
+        // the null terminator — without the extra slot an exact-fit caption
+        // would lose its last character.
+        let mut buffer = vec![0u16; cap + 1];
+        let read = GetWindowTextW(hwnd, &mut buffer);
+        if read <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buffer[..(read as usize).min(cap)])
     }
 }
 
@@ -2223,31 +2401,6 @@ fn format_class_tree_line(
         "{}[{index}] {role} \"{name}\" ({x},{y},{width},{height}){flags}",
         "  ".repeat(depth as usize),
     )
-}
-
-/// The two truncation footers, emitted byte-identically by the in-process
-/// walk AND the UIA helper's walk (the model parses both shapes; drift here
-/// desyncs the fallback's budget contract from the helper's). The literals
-/// are pinned. Pure.
-pub(crate) fn append_tree_truncation_footers(
-    truncated: bool,
-    truncated_by_depth: bool,
-    emitted_nodes: u32,
-    out: &mut String,
-) {
-    if truncated {
-        let _ = writeln!(
-            out,
-            "... (truncated at {} nodes; pass a larger max_nodes to see more)",
-            emitted_nodes
-        );
-    }
-    if truncated_by_depth {
-        let _ = writeln!(
-            out,
-            "... (truncated by depth; pass a larger max_depth to see more)"
-        );
-    }
 }
 
 /// The node budget/cancellation bookkeeping for the window-class tree —
@@ -2557,7 +2710,11 @@ struct WindowsVirtualDesktopBackend {
     /// HANDLE — the handle names the exact process object the session
     /// created, so pid recycling cannot redirect a terminate — while the
     /// hidden desktop's own shell stays alive (the Linux stack kills the
-    /// opened apps and keeps Xvfb/WM; this is the same contract). Handles
+    /// opened apps and keeps Xvfb/WM; this is the same contract). Only
+    /// these recorded ROOT processes are terminated: processes an opened
+    /// app spawned on its own survive until session teardown (the
+    /// kill-on-close job — except broker-escaped descendants, see the
+    /// notes' broker disclosure). Handles
     /// close on the wind-down or in `Drop`, whichever comes first.
     opened_processes: Vec<HANDLE>,
     /// The attached UIA helper process (spawned lazily on the first
@@ -3030,25 +3187,38 @@ impl WindowsVirtualDesktopBackend {
         }
     }
 
-    /// A click whose hit-test zone is a NON-CLIENT zone (title bar, system
-    /// buttons, menu bar, system menu, scroll bars): the WM_NC* message
-    /// sequence the OS would deliver for the same real click. wParam is
-    /// the hit-test code (not the MK_* mark) and lParam is SCREEN
-    /// coordinates (not client) — the NC message contract. What each zone
-    /// does once the sequence lands is the window's own DefWindowProc /
-    /// app handling, exactly as with real input: HTCAPTION double-click
-    /// toggles maximize/restore, HTMINBUTTON/HTMAXBUTTON/HTCLOSE press
-    /// their system commands, HTMENU/HTSYSMENU open their menus (a popup
-    /// window whose items are client regions the existing client route
-    /// clicks by point).
+    /// A click whose hit-test zone is a NON-CLIENT zone. wParam carries the
+    /// hit-test code (not the MK_* mark) and lParam the SCREEN point — the
+    /// NC message contract. The per-zone delivery follows what the OS
+    /// actually does with a real press ([`NcZoneDelivery`], verified
+    /// against ReactOS's win32k mirror), because the DefWindowProc handlers
+    /// of several zones run MODAL states a uniform (down, up) post pair
+    /// cannot drive:
+    /// - chrome buttons (min/max/close): `WM_SYSCOMMAND` with the
+    ///   style-derived SC code — the deterministic end state of the OS's
+    ///   button tracking (whose modal pump a posted NC up can never
+    ///   satisfy); a disabled/absent Close is refused, not faked;
+    /// - caption: DOWN presses are completed with a client `WM_LBUTTONUP`
+    ///   at the same point (deterministically exits the `SC_MOVE` loop the
+    ///   DOWN opens — zero movement, activation kept); double-click presses
+    ///   post `WM_NCLBUTTONDBLCLK` (loop-free `SC_RESTORE`/`SC_MAXIMIZE`);
+    /// - menu bar / system menu: the press opens the menu's tracking loop
+    ///   (that loop IS the opened menu); a menu POPUP's items are clicked
+    ///   with screen coordinates through the client route
+    ///   ([`menu_popup_needs_screen_coords`]);
+    /// - resize borders and scroll bars: REFUSED before any post — a press
+    ///   there enters a modal move/size/scroll loop posted sequences cannot
+    ///   complete;
+    /// - everything else: the plain NC (down, up) pair — DefWindowProc
+    ///   treats those zones as no-ops.
     ///
     /// Deliberately NOT supported here (disclosed in the capability notes):
     /// window MOVE by caption drag and border-drag resize need the
-    /// `SC_MOVE`-style modal move/size loop that pumps live coordinates —
-    /// this backend's posts are a fixed down/up pair, not a live pointer
-    /// stream; and the primitives `left_mouse_down`/`left_mouse_up` keep
-    /// posting CLIENT messages, so a manual down→up assembly over the
-    /// caption does not synthesize these zones (use `click`).
+    /// `SC_MOVE`-style modal loop pumping live coordinates — this backend
+    /// delivers presses, not a live pointer stream; and the primitives
+    /// `left_mouse_down`/`left_mouse_up` keep posting CLIENT messages, so a
+    /// manual down→up assembly neither synthesizes these zones (use
+    /// `click`) nor special-cases menu popups (use `click` there too).
     fn nc_click(
         &mut self,
         target: HWND,
@@ -3058,6 +3228,46 @@ impl WindowsVirtualDesktopBackend {
         screen_x: i32,
         screen_y: i32,
     ) -> Result<(), ComputerUseError> {
+        // Refuse BEFORE any post: the modal-loop families enter the loop on
+        // the very first press, leaving the target captured in move/size/
+        // scroll mode behind a reported success — the disclosed
+        // move/resize unsupportedness applies to CLICKS there too, so the
+        // honest answer is the refusal, not a wedged window.
+        if matches!(nc_zone_delivery(zone), NcZoneDelivery::ModalLoop) {
+            return Err(ComputerUseError::unavailable(
+                "this click lands on a window edge, border, or scrollbar; \
+                 pressing there enters the modal move/size/scroll loop that \
+                 only live pointer or keyboard input can complete — window \
+                 move/resize by dragging is not supported on this stack \
+                 (the same disclosure as title-bar dragging)",
+            ));
+        }
+        // Caption buttons answer the primary button only — real input is
+        // ignored on every other button, so a non-primary press must not
+        // synthesize an SC the window would never have fired.
+        if matches!(nc_zone_delivery(zone), NcZoneDelivery::ChromeButton)
+            && button != MouseButton::Left
+        {
+            return Err(ComputerUseError::unavailable(
+                "caption buttons answer the primary button only; the \
+                 secondary press is a no-op like real input",
+            ));
+        }
+        // SAFETY: style + system-menu state reads on the hit-tested desktop
+        // window (server-side queries; neither pumps the target thread).
+        let style = unsafe { GetWindowLongPtrW(target, GWL_STYLE) };
+        if matches!(nc_zone_delivery(zone), NcZoneDelivery::ChromeButton) && zone == HTCLOSE {
+            let menu = unsafe { GetSystemMenu(target, false) };
+            let close_enabled = !menu.is_invalid()
+                && nc_close_command_enabled(unsafe { GetMenuState(menu, SC_CLOSE, MF_BYCOMMAND) });
+            if !close_enabled {
+                return Err(ComputerUseError::unavailable(
+                    "the window's close command is disabled or absent (the \
+                     same check the OS button tracking performs) — there is \
+                     nothing to press",
+                ));
+            }
+        }
         // NC lParam is screen coordinates — no client translation.
         let lparam = pack_mouse_lparam(screen_x, screen_y);
         for index in 0..count.max(1) {
@@ -3075,14 +3285,63 @@ impl WindowsVirtualDesktopBackend {
                 // steal foreground.
                 self.focus_dance(target);
             }
-            let (message, up) = nc_press_pair(index, button);
-            self.post(target, message, zone as usize, lparam)?;
-            // Mirror the client route's stranded-button honesty: a failed
-            // NC up must surface the still-held fact.
-            if let Err(error) = self.post(target, up, zone as usize, lparam) {
-                return Err(ComputerUseError::failed(format!(
-                    "{error}; the button may still be pressed"
-                )));
+            match nc_zone_delivery(zone) {
+                NcZoneDelivery::ChromeButton => {
+                    let command = nc_chrome_system_command(zone, style);
+                    self.post(target, WM_SYSCOMMAND, command as usize, lparam)?;
+                    if index + 1 < count.max(1) {
+                        // Deterministic churn disclosure: the first press
+                        // already ran the command (minimized / maximized /
+                        // closed); a second SC either re-applies it or —
+                        // for close — lands on a window that is gone,
+                        // which the failed post surfaces as the
+                        // stranded-button honesty below.
+                        self.warnings.push(
+                            "multi-click on a caption button: the first \
+                             press already ran its system command; the \
+                             remaining presses may target a changed (or \
+                             closed) window"
+                                .to_string(),
+                        );
+                    }
+                }
+                NcZoneDelivery::Caption => {
+                    let (message, needs_completion) = nc_caption_press(index, button);
+                    self.post(target, message, zone as usize, lparam)?;
+                    if needs_completion {
+                        // Deterministic completion of the `SC_MOVE` loop
+                        // the DOWN opened: a client `WM_LBUTTONUP` at the
+                        // same point — the loop's own exit arm — ends the
+                        // move mode with zero movement and keeps the
+                        // activation. The loop retrieves the message via
+                        // PM_REMOVE, so the app never sees a stray client
+                        // UP.
+                        let mut point = POINT {
+                            x: screen_x,
+                            y: screen_y,
+                        };
+                        // SAFETY: client translation of the posted point on
+                        // the hit-tested desktop window.
+                        let _ = unsafe { ScreenToClient(target, &mut point) };
+                        self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(point.x, point.y))?;
+                    }
+                }
+                _ => {
+                    // Menu bar / system menu / no-op zones: the plain NC
+                    // (down, up) pair. The menu DOWN opens the tracking
+                    // loop (the opened menu); the NC up is consumed or
+                    // dispatched harmlessly by whatever state the target
+                    // is in.
+                    let (message, up) = nc_press_pair(index, button);
+                    self.post(target, message, zone as usize, lparam)?;
+                    // Mirror the client route's stranded-button honesty: a
+                    // failed NC up must surface the still-held fact.
+                    if let Err(error) = self.post(target, up, zone as usize, lparam) {
+                        return Err(ComputerUseError::failed(format!(
+                            "{error}; the button may still be pressed"
+                        )));
+                    }
+                }
             }
             if index + 1 < count.max(1) {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
@@ -3354,7 +3613,10 @@ impl WindowsVirtualDesktopBackend {
     }
 
     /// Launch an application on the hidden desktop, contained in the session
-    /// job. Returns the child pid.
+    /// job. Returns the child pid AND its spawn process handle — the
+    /// wind-down list's terminate handle (`open_app` retains it; the shell
+    /// and helper spawn sites close theirs immediately, being session
+    /// infrastructure rather than wind-down entries).
     fn launch_in_job(
         &self,
         application: Option<&str>,
@@ -3394,28 +3656,40 @@ fn capability_notes() -> String {
      typed dialog keys (Enter/Tab delivered by type_text) ride the \
      WM_CHAR text channel, which dialog managers do not act on — the \
      action reports success while the dialog's default button or \
-     focus cycle does not fire, non-client clicks are routed as their \
-     WM_NC* messages (title-bar double-click maximizes/restores, the \
-     caption system buttons and menu bars work, and a menu the click \
-     opens can be clicked item by item); zones that ask the OS to pass \
-     input through them (transparent static labels and group boxes) and \
-     points whose hit-test cannot be classified fall back to the plain \
-     client-area posts instead of non-client messages; but a window \
-     cannot be moved \
+     focus cycle does not fire, non-client clicks follow the OS's own \
+     per-zone delivery (title-bar double-click maximizes/restores, the \
+     caption min/max/close buttons fire their system commands — a \
+     disabled or absent Close is refused, not faked — and a menu-bar or \
+     system-menu press opens the menu, whose items are then clicked with \
+     screen coordinates); clicks on window edges, borders, and \
+     scrollbars are refused (a press there enters a modal move/size/\
+     scroll loop posted messages cannot complete); zones that ask the OS \
+     to pass input through them (transparent static labels and group \
+     boxes) and points whose hit-test cannot be classified fall back to \
+     the plain client-area posts instead of non-client messages; but a \
+     window cannot be moved \
      by dragging its title bar or resized by dragging a border (those \
      need a live pointer stream this injection cannot provide) and the \
-     manual left_mouse_down/left_mouse_up primitives stay client-side, \
+     manual left_mouse_down/left_mouse_up primitives stay client-side \
+     (use click for non-client zones and for menu items), \
      structural queries (ui_tree / element_at_point / focused_element) \
      run against a real UI Automation tree served by an attached helper \
      process (this app re-spawned on the hidden desktop, inside the \
-     session job); when that helper cannot start or answer, the same \
-     queries fall back to a window-class walk whose roles are window \
-     classes and names are window captions (cross-process control \
-     content is not read, UIA-only properties are unavailable, and the \
-     fallback's only secure-field signal is the classic edit-family \
-     ES_PASSWORD style (UIA-only password fields answer secure=false); \
-     hidden panes appear flagged 'hidden' \
-     rather than as clickable rows), \
+     session job; the first structured query pays the helper's spawn \
+     plus COM initialization); when that helper cannot start or has \
+     died (a transport failure), the same queries fall back to a \
+     window-class walk whose roles are window classes and names are \
+     window captions (a helper that answers but cannot serve a query \
+     surfaces its reason as that query's error instead of the walk; \
+     cross-process control content is not read, UIA-only properties are \
+     unavailable, and the fallback's only secure-field signal is the \
+     classic edit-family ES_PASSWORD style (UIA-only password fields \
+     answer secure=false); hidden panes appear flagged 'hidden' \
+     rather than as clickable rows; shell windows are excluded and the \
+     top level is capped, with a cap-bound walk disclosed in its \
+     footer — Windows 11's shell XAML hosts may still appear as noise \
+     roots; the fallback's screening verdict runs on the full raw \
+     caption), \
      posted chords do not update the app's async \
      key-state table (apps that read modifier state from \
      GetKeyState may see unmodified keys), scroll events go \
@@ -3448,7 +3722,10 @@ fn capability_notes() -> String {
      hidden desktop — only the launched app processes themselves are \
      terminated, child processes an opened app spawned are not wound \
      down and keep running until the session is torn down (the \
-     kill-on-close job reclaims them then) — and the launched \
+     kill-on-close job reclaims them then — except descendants that \
+     themselves escape the job through a system broker, which like the \
+     broker-delegated opens above live outside it and outlive the \
+     session) — and the launched \
      processes are ended without a grace period, so unsaved work \
      inside them is lost — while the desktop and its \
      shell stay alive for a re-granted session, and everything, shell \
@@ -3587,8 +3864,20 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                     .to_string(),
             );
         }
+        // A menu popup opened by an NC press is a tracking loop that reads
+        // mouse-message lParams as SCREEN coordinates (r5; the menu item is
+        // a client region of the popup, so the client translation below
+        // would land the click near the screen origin instead of on the
+        // item). Every other target keeps the client route's translated
+        // point.
+        //
+        // SAFETY: class-name query on the hit-tested desktop window.
+        let lparam = if menu_popup_needs_screen_coords(&unsafe { window_class_name(target) }) {
+            pack_mouse_lparam(x, y)
+        } else {
+            pack_mouse_lparam(client_x, client_y)
+        };
         let (down, double, up, mark) = mouse_button_messages(button);
-        let lparam = pack_mouse_lparam(client_x, client_y);
         // SAFETY: class-style query on the hit-tested desktop window.
         let accepts_dblclk = unsafe { window_class_accepts_dblclk(target) };
         for index in 0..count.max(1) {
@@ -3913,19 +4202,23 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // content and would otherwise crowd the top level of every tree
         // (the same exclusion the keyboard-target fallback applies).
         let focused = unsafe { current_focus_hwnd() };
-        let mut roots = Vec::new();
         // SAFETY: desktop-relative Z-order enumeration on the attached
         // worker thread; the cap mirrors the composite's honesty (the
         // bottom-most windows silently absent under a pathological farm).
-        let tops = unsafe { walk_visible_toplevels(TREE_TOP_LEVEL_CAP) };
-        for top in tops {
-            // SAFETY: class-name query on a handle from the enumeration
-            // above, on the attached worker thread.
-            if is_shell_window_class(&unsafe { window_class_name(top) }) {
-                continue;
-            }
-            roots.push(top);
-        }
+        // Shell windows are excluded BEFORE the cap so they cannot consume
+        // top-level slots (r5), and a cap-bound walk discloses the absence
+        // in the payload instead of only the log (the model cannot see a
+        // missing bottom of the desktop — the same honesty rule as the
+        // node/depth footers).
+        let (roots, top_cap_bound) = unsafe {
+            // SAFETY (closure body): the class-name query on a handle from
+            // the enumeration above runs inside the walk's unsafe block —
+            // the syntactic nesting covers it, so no inner `unsafe` is
+            // needed.
+            walk_visible_toplevels(TREE_TOP_LEVEL_CAP, &|hwnd| {
+                is_shell_window_class(&window_class_name(hwnd))
+            })
+        };
         for root in roots {
             // SAFETY: see write_class_tree_node.
             unsafe {
@@ -3944,6 +4237,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         append_tree_truncation_footers(
             writer.truncated,
             writer.truncated_by_depth,
+            top_cap_bound,
             writer.next_index,
             &mut out,
         );
@@ -4048,7 +4342,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // processes are terminated: `TerminateProcess` does not reach the
         // processes an opened app spawned on its own, so those keep running
         // until the session is torn down (the kill-on-close job reclaims
-        // them at teardown) — this stack's counterpart of the Linux notes'
+        // them at teardown — except descendants that themselves escape the
+        // job through a system broker, which like the broker-delegated
+        // opens above live outside it and outlive the session) — this
+        // stack's counterpart of the Linux notes'
         // process-group escape exception, disclosed in the notes. The
         // hidden desktop's own infrastructure — the desktop object, the
         // session job, and the shell — stays alive, so the next action
@@ -4302,10 +4599,18 @@ mod tests {
     use super::*;
     // The tree budget constants moved with their clamp into the shared
     // `helpers::tree_budget`; the production half no longer names them, so
-    // the budget assertions import them directly.
-    use super::super::helpers::{
+    // the budget assertions import them directly. The `crate::` absolute
+    // path is depth-proof — the relative depth this import needs is three
+    // `super`s (tests → windows_virtual → virtual_display → platform), the
+    // exact class of error the stub harness could not see (r5 B1).
+    use crate::features::computer_use::platform::helpers::{
         DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES, MAX_TREE_DEPTH, MAX_TREE_NODES,
     };
+    // The no-op-zone constants appear only in this module's tests (the
+    // production routing deliberately folds them into the catch-all arm —
+    // naming them there would imply individual handling that does not
+    // exist).
+    use windows::Win32::UI::WindowsAndMessaging::{HTBORDER, HTGROWBOX, HTHELP, HTOBJECT};
 
     /// The probe answers Available and the one-time dispatch therefore
     /// selects the virtual target when preferred (the stack's
@@ -4786,7 +5091,7 @@ mod tests {
             note.contains("child processes an app spawned keep running until session teardown"),
             "the wind-down's descendant residual must be disclosed (this \
              stack's counterpart of the Linux notes' group-kill escape \
-             exception — r4 M1)"
+             exception — r4 MAJOR-2)"
         );
         assert!(
             note.contains("the desktop and its shell remain"),
@@ -4908,14 +5213,20 @@ mod tests {
              finish must be disclosed, not a rosier promise"
         );
 
-        // The non-client routing must be disclosed in BOTH directions: what
-        // now works (NC clicks) and what still does not (caption-drag move,
-        // border-drag resize, manual down/up over NC zones) — a model that
-        // reads only "we support title bars" would burn actions on drags
-        // this stack cannot deliver.
+        // The non-client delivery must be disclosed in BOTH directions: the
+        // per-zone model actually delivered (chrome SC commands with the
+        // disabled-Close refusal, menu items via screen coordinates, the
+        // modal-loop refusal) and what still does not work (caption-drag
+        // move, border-drag resize, manual down/up over NC zones) — a
+        // model that reads only "we support title bars" would burn actions
+        // on drags this stack cannot deliver (r5: the fragments follow the
+        // reworked delivery model).
         assert!(
-            notes.contains("WM_NC* messages"),
-            "the non-client click routing must be disclosed"
+            notes.contains("per-zone delivery")
+                && notes.contains("disabled or absent Close is refused")
+                && notes.contains("clicked with screen coordinates")
+                && notes.contains("scrollbars are refused"),
+            "the per-zone non-client delivery model must be disclosed"
         );
         assert!(
             notes.contains("cannot be moved") && notes.contains("left_mouse_down/left_mouse_up"),
@@ -4926,9 +5237,10 @@ mod tests {
         // stop kills the opened apps WITHOUT a grace period (unsaved work
         // is lost), spawned child processes are NOT wound down (the
         // counterpart of the Linux notes' group-kill escape exception —
-        // r4 M1), the desktop survives for a re-granted session, and the
-        // full teardown (shell included) waits for session end — the same
-        // shape the Linux stack discloses.
+        // r4 MAJOR-2), broker-escaped descendants are the one survivor the
+        // job cannot reach (r5 hedge), the desktop survives for a
+        // re-granted session, and the full teardown (shell included) waits
+        // for session end — the same shape the Linux stack discloses.
         assert!(
             notes.contains("winds down the apps opened on the hidden desktop")
                 && notes.contains("without a grace period")
@@ -4936,10 +5248,12 @@ mod tests {
             "the stop-time wind-down (group kill, no grace) must be disclosed"
         );
         assert!(
-            notes.contains("child processes an opened app spawned are not wound down"),
-            "the wind-down's descendant residual must be disclosed (the \
-             Linux notes disclose their process-group escape; this stack \
-             must disclose its TerminateProcess scope the same way — r4 M1)"
+            notes.contains("child processes an opened app spawned are not wound down")
+                && notes.contains("outlive the session"),
+            "the wind-down's descendant residual AND its broker-escape \
+             hedge must be disclosed (the Linux notes disclose their \
+             process-group escape; this stack must disclose its \
+             TerminateProcess scope the same way — r4 MAJOR-2)"
         );
         assert!(
             notes.contains("shell stay alive for a re-granted session")
@@ -4947,10 +5261,13 @@ mod tests {
             "the survive-a-stop / reclaimed-at-teardown split must be disclosed"
         );
         // The structural-query contract must be disclosed both ways: the
-        // real UIA tree comes from the attached helper process, and the
-        // fallback walk's degraded semantics (class roles, caption names,
-        // no content, secure=false off the classic style) must be visible
-        // to a model that lands on it.
+        // real UIA tree comes from the attached helper process (with the
+        // first-query spawn cost), a transport death degrades to the walk
+        // while a SOFT verdict surfaces the helper's reason WITHOUT
+        // degrading (r5: the old "cannot start or answer" phrasing
+        // over-promised the fallback for soft verdicts), and the fallback
+        // walk's degraded semantics must be visible to a model that lands
+        // on it.
         assert!(
             notes.contains("attached helper process")
                 && notes.contains("fall back to a window-class walk")
@@ -4958,6 +5275,13 @@ mod tests {
                 && notes.contains("secure-field signal"),
             "the UIA-helper contract and its window-class fallback must be \
              disclosed"
+        );
+        assert!(
+            notes.contains("cannot start or has died (a transport failure)")
+                && notes.contains("surfaces its reason as that query's error")
+                && notes.contains("pays the helper's spawn"),
+            "the transport-only fallback, the soft-verdict honest error, \
+             and the first-query spawn cost must be disclosed (r5)"
         );
     }
 
@@ -5110,9 +5434,11 @@ mod tests {
         );
         assert_eq!(
             src.matches("self.warnings.push(").count(),
-            2,
-            "exactly two producers: the packaged-keyboard-target advisory \
-             and the transparent-zone swallowed-click receipt (r4)"
+            3,
+            "exactly three producers: the packaged-keyboard-target \
+             advisory, the transparent-zone swallowed-click receipt (r4), \
+             and the chrome multi-click churn receipt (r5 — the first SC \
+             already ran the command)"
         );
     }
 
@@ -5203,9 +5529,11 @@ mod tests {
         // HTCLIENT is the client route, and so are the undrivable zones:
         // HTNOWHERE (0), HTERROR (-2 → u32::MAX-1), and HTTRANSPARENT
         // (-1 → u32::MAX — the window asks for input to pass THROUGH it to
-        // whatever is underneath). Every drivable zone code (caption,
-        // buttons, menu, borders) routes NC; the numeric neighbors stay
-        // distinct (HTCLIENT == 1; HTCAPTION == 2).
+        // whatever is underneath). Every other zone code routes to its
+        // per-zone NC delivery (r5: chrome SC / caption / menu / modal
+        // refusal / no-op — see nc_click_sequences_follow_the_os_shape);
+        // the numeric neighbors stay distinct (HTCLIENT == 1;
+        // HTCAPTION == 2).
         assert!(zone_is_client(HTCLIENT));
         assert!(zone_is_client(0));
         assert!(zone_is_client(u32::MAX));
@@ -5244,16 +5572,54 @@ mod tests {
         );
         assert_eq!(
             src.matches("nc_multi_click_message(").count(),
-            2,
-            "definition + the per-press pair builder: the NC double-click \
-             substitution must stay wired"
+            3,
+            "definition + the plain-pair builder + the caption press \
+             builder: the NC double-click substitution must stay wired on \
+             BOTH consumers (r5 fixwave: the caption planner added the \
+             third call site)"
         );
         assert_eq!(
             src.matches("nc_press_pair(").count(),
             2,
-            "definition + the nc_click press loop: the per-press (press, \
-             release) pair must stay wired — the UP follows EVERY press \
-             (DefWindowProc's caption-button tracking acts on release)"
+            "definition + the nc_click pair arm: the per-press (press, \
+             release) pair must stay wired for the plain-pair zones (menu \
+             opens, DefWindowProc no-ops)"
+        );
+        assert_eq!(
+            src.matches("nc_zone_delivery(").count(),
+            5,
+            "definition + the pre-post refusal + the non-primary-button \
+             gate + the Close-disabled gate + the per-press arm: the \
+             per-zone delivery model (chrome SC / caption / menu / modal \
+             refusal / no-op) must stay wired — a revert to the uniform \
+             (down, up) pair reopens the modal-loop wedges (r5)"
+        );
+        assert_eq!(
+            src.matches("nc_chrome_system_command(").count(),
+            2,
+            "definition + the chrome arm: caption buttons must deliver \
+             their WM_SYSCOMMAND end state — the posted NC up can never \
+             complete the OS's button-tracking pump (r5)"
+        );
+        assert_eq!(
+            src.matches("nc_close_command_enabled(").count(),
+            2,
+            "definition + the HTCLOSE gate: a disabled/absent Close must be \
+             refused, not reported as a no-op success (r5)"
+        );
+        assert_eq!(
+            src.matches("nc_caption_press(").count(),
+            2,
+            "definition + the caption arm: caption DOWN presses must get \
+             their deterministic move-loop completion (r5)"
+        );
+        assert_eq!(
+            src.matches("menu_popup_needs_screen_coords(").count(),
+            2,
+            "definition + the click route: a menu popup's items must be \
+             driven with SCREEN coordinates (the tracking loop reads mouse \
+             lParams as screen points — client-translated posts land on \
+             the wrong item) (r5)"
         );
         assert_eq!(
             src.matches("zone_is_transparent(").count(),
@@ -5262,19 +5628,32 @@ mod tests {
              warning: a transparent window's swallowed client click must \
              stay a told-to-the-model fact (r4), not a bare success"
         );
+        // The probe's bounded wait, pinned at the CALL SHAPE (r5: the old
+        // prose-count anchor counted doc comments and the import, and its
+        // rationale cited caption/class reads that take no SMTO). The
+        // anchors are single-line TOKENS, never multi-line shapes (r5
+        // fixwave: Windows runners check out CRLF, so any `\n` anchor
+        // counts 0 there and fails the leg while every Linux gate stays
+        // green — the exact failure the first fixwave shipped).
         assert_eq!(
-            src.matches("SMTO_ABORTIFHUNG").count(),
-            4,
-            "every cross-process SendMessage — the WM_NCHITTEST probe AND \
-             the non-wedging caption/class reads — must keep its bounded \
-             wait: a revert to unbounded SendMessageW stalls the action \
-             behind a wedged app"
+            src.matches("const NC_HITTEST_TIMEOUT_MS").count(),
+            1,
+            "the probe budget constant must exist exactly once"
+        );
+        assert_eq!(
+            src.matches("NC_HITTEST_TIMEOUT_MS,").count(),
+            1,
+            "exactly one production consumer passes the budget to \
+             SendMessageTimeoutW (the probe call; production-only cut): a \
+             revert to unbounded SendMessageW stalls the action behind a \
+             wedged app"
         );
         assert_eq!(
             src.matches("self.post(target, message, zone as usize, lparam)")
                 .count(),
-            1,
-            "the NC press must carry the zone code in wParam (the NC message \
+            2,
+            "the NC press must carry the zone code in wParam — once in the \
+             caption arm and once in the plain-pair arm (the NC message \
              contract; lParam carries the screen point)"
         );
         assert_eq!(
@@ -5413,6 +5792,27 @@ mod tests {
              fresh opens after the cap's worth of lifetime launches — an \
              r3-MAJOR fix that would otherwise pass every gate silently"
         );
+        // The shell is infrastructure, not a wind-down entry: its spawn
+        // handle closes AT THE LAUNCH SITE (r5, mutation-proven unpinned —
+        // deleting the close AND renaming the binding left every gate
+        // green while leaking one HANDLE per session grant).
+        assert_eq!(
+            src.matches("let _ = unsafe { CloseHandle(explorer_process) };")
+                .count(),
+            1,
+            "the session shell's spawn handle must close at creation (it is \
+             never consulted and must neither join the wind-down list nor \
+             leak)"
+        );
+        // The budget must be charged only for launches that SUCCEEDED:
+        // incrementing before the launch would bill the budget for failed
+        // opens and contradict the capacity error's own copy.
+        assert_eq!(
+            src.matches("self.opened_app_count += 1").count(),
+            1,
+            "exactly one budget charge, after a successful launch (an \
+             increment before launch_in_job's `?` would charge for failures)"
+        );
     }
 
     /// The window-class tree's pure helpers: the password verdict fires only
@@ -5455,9 +5855,10 @@ mod tests {
         });
         assert_eq!(depth, DEFAULT_TREE_MAX_DEPTH);
         assert_eq!(nodes, DEFAULT_TREE_MAX_NODES);
-        // Caller values ride through until a hard cap: schema caps (64 /
-        // 10000) land under these ceilings, and an over-cap request is
-        // clamped like the physical stack clamps it.
+        // Caller values ride through until a hard cap: the tool schema's
+        // maximums equal these ceilings (24 / 2000 — r5 aligned them after
+        // they advertised 64/10000 the clamp silently overrode), and an
+        // over-cap request is clamped like the physical stack clamps it.
         let (depth, nodes) = tree_budget(&UiTreeOptions {
             max_depth: Some(2),
             max_nodes: Some(5),
@@ -5470,13 +5871,22 @@ mod tests {
         assert_eq!((depth, nodes), (MAX_TREE_DEPTH, MAX_TREE_NODES));
     }
 
-    /// The NC message sequence — the contract the source-count pins above
-    /// can only count: the per-press (press, release) pairs concatenate into
-    /// the OS's NC double-click shape (count=1 → DOWN,UP; count=2 →
-    /// DOWN,UP,DBLCLK,UP on EVERY class; UP after EVERY press) with the
-    /// per-button triples wired correctly. Pure (r4).
+    /// The per-zone NC delivery — the contract the source-count pins above
+    /// can only count (r5: the delivery follows what the OS does per zone,
+    /// verified against ReactOS's win32k mirror):
+    /// - the plain-pair zones (menu bar / system menu / DefWindowProc
+    ///   no-ops) keep the OS's NC double-click shape (count=1 → DOWN,UP;
+    ///   count=2 → DOWN,UP,DBLCLK,UP on EVERY class) with the per-button
+    ///   triples wired correctly;
+    /// - chrome buttons deliver their SC end state (style-derived min/max
+    ///   restore, the Close-disabled gate);
+    /// - the caption delivers DOWN presses completed by a client UP and
+    ///   loop-free DBLCLK presses bare;
+    /// - the modal-loop zones (resize borders, scroll bars) REFUSE.
+    /// Pure.
     #[test]
     fn nc_click_sequences_follow_the_os_shape() {
+        // Plain-pair zones keep the OS shape.
         fn sequence(count: u8, button: MouseButton) -> Vec<(u32, u32)> {
             (0..count.max(1))
                 .map(|index| nc_press_pair(index, button))
@@ -5517,6 +5927,109 @@ mod tests {
             vec![(WM_NCMBUTTONDOWN, WM_NCMBUTTONUP)],
             "the middle-button triple must be wired, not aliased to left"
         );
+
+        // Zone families route as delivered.
+        assert_eq!(
+            nc_zone_delivery(HTCLOSE),
+            NcZoneDelivery::ChromeButton,
+            "the close button delivers its SC end state, not NC posts"
+        );
+        assert_eq!(nc_zone_delivery(HTMINBUTTON), NcZoneDelivery::ChromeButton);
+        assert_eq!(nc_zone_delivery(HTMAXBUTTON), NcZoneDelivery::ChromeButton);
+        assert_eq!(
+            nc_zone_delivery(HTCAPTION),
+            NcZoneDelivery::Caption,
+            "the caption completes its move loop per press"
+        );
+        assert_eq!(nc_zone_delivery(HTMENU), NcZoneDelivery::Menu);
+        assert_eq!(nc_zone_delivery(HTSYSMENU), NcZoneDelivery::Menu);
+        assert_eq!(
+            nc_zone_delivery(HTLEFT),
+            NcZoneDelivery::ModalLoop,
+            "resize borders refuse: the SC_SIZE loop cannot be completed by \
+             posted messages"
+        );
+        assert_eq!(nc_zone_delivery(HTBOTTOMRIGHT), NcZoneDelivery::ModalLoop);
+        assert_eq!(nc_zone_delivery(HTVSCROLL), NcZoneDelivery::ModalLoop);
+        assert_eq!(nc_zone_delivery(HTHSCROLL), NcZoneDelivery::ModalLoop);
+        assert_eq!(
+            nc_zone_delivery(HTBORDER),
+            NcZoneDelivery::NoOp,
+            "HTBORDER is a DefWindowProc no-op (explicit `break`) — the \
+             plain pair completes harmlessly"
+        );
+        assert_eq!(nc_zone_delivery(HTHELP), NcZoneDelivery::NoOp);
+        assert_eq!(nc_zone_delivery(HTGROWBOX), NcZoneDelivery::NoOp);
+        assert_eq!(nc_zone_delivery(HTOBJECT), NcZoneDelivery::NoOp);
+
+        // Chrome SC codes mirror NC_DoButton's style mapping.
+        assert_eq!(
+            nc_chrome_system_command(HTCLOSE, 0),
+            SC_CLOSE,
+            "close is close regardless of style"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMINBUTTON, WS_MINIMIZE.0 as isize),
+            SC_RESTORE,
+            "min on an already-minimized window restores"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMINBUTTON, 0),
+            SC_MINIMIZE,
+            "min on a normal window minimizes"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMAXBUTTON, WS_MAXIMIZE.0 as isize),
+            SC_RESTORE,
+            "max on an already-maximized window restores"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMAXBUTTON, 0),
+            SC_MAXIMIZE,
+            "max on a normal window maximizes"
+        );
+
+        // The Close-disabled gate mirrors NC_DoButton's own refusal.
+        assert!(nc_close_command_enabled(0), "enabled item");
+        assert!(
+            !nc_close_command_enabled(u32::MAX),
+            "an absent Close item (GetMenuState's -1) refuses"
+        );
+        assert!(!nc_close_command_enabled(MF_GRAYED.0), "grayed refuses");
+        assert!(!nc_close_command_enabled(MF_DISABLED.0), "disabled refuses");
+
+        // Caption presses: DOWN needs its client-UP completion (the SC_MOVE
+        // loop it opens exits on a client button-up), the DBLCLK press is
+        // loop-free, and the parity substitution has no class gate.
+        assert_eq!(
+            nc_caption_press(0, MouseButton::Left),
+            (WM_NCLBUTTONDOWN, true),
+            "press 1: DOWN, completed by a client UP"
+        );
+        assert_eq!(
+            nc_caption_press(1, MouseButton::Left),
+            (WM_NCLBUTTONDBLCLK, false),
+            "press 2: loop-free DBLCLK (the SC fires directly)"
+        );
+        assert_eq!(
+            nc_caption_press(2, MouseButton::Left),
+            (WM_NCLBUTTONDOWN, true),
+            "press 3 re-arms as a plain DOWN"
+        );
+        assert_eq!(
+            nc_caption_press(0, MouseButton::Right),
+            (WM_NCRBUTTONDOWN, true),
+            "the right-button caption triple must be wired, not aliased"
+        );
+
+        // Menu popups take screen coordinates.
+        assert!(menu_popup_needs_screen_coords("#32768"));
+        assert!(!menu_popup_needs_screen_coords("Edit"));
+        assert!(!menu_popup_needs_screen_coords(""));
+        assert!(
+            !menu_popup_needs_screen_coords("#327679"),
+            "prefix-lookalike"
+        );
     }
 
     /// The class-tree row flags: `disabled` carries IsWindowEnabled
@@ -5554,10 +6067,8 @@ mod tests {
         assert!(zone_is_transparent(HTTRANSPARENT as u32));
         assert!(zone_is_transparent(u32::MAX), "-1 sign-extended");
         assert!(!zone_is_transparent(HTCLIENT));
-        // Literal 2 = HTCAPTION (the module does not import the constant —
-        // the routing works on the zone value, not named caption codes).
-        assert!(!zone_is_transparent(2), "HTCAPTION is its own case");
-        assert!(!zone_is_transparent(0), "HTNOWHERE is its own case");
+        assert!(!zone_is_transparent(HTCAPTION), "HTCAPTION is its own case");
+        assert!(!zone_is_transparent(HTNOWHERE), "HTNOWHERE is its own case");
         assert!(
             !zone_is_transparent(u32::MAX - 1),
             "HTERROR is its own case"
@@ -5616,18 +6127,54 @@ mod tests {
             "the shared budget helper must stay wired (physical-stack parity)"
         );
         assert_eq!(
-            src.matches("is_shell_window_class(&unsafe { window_class_name(top) })")
+            src.matches("is_shell_window_class(&window_class_name(hwnd))")
                 .count(),
             1,
-            "the ui_tree root loop must exclude shell windows (Progman/\
-             WorkerW/Shell_TrayWnd carry no drivable content and would crowd \
-             the top level of every tree)"
+            "the ui_tree walk must exclude shell windows BEFORE they consume \
+             a top-level cap slot (Progman/WorkerW/Shell_TrayWnd carry no \
+             drivable content and would crowd the top level of every tree) \
+             — the exclusion lives in the walk's skip predicate (r5)"
+        );
+        assert_eq!(
+            src.matches("append_tree_truncation_footers").count(),
+            2,
+            "the import + the walk call: all truncation footers (node, \
+             depth, top-level cap) must be emitted through the ONE shared \
+             builder the physical stack and the UIA helper also use \
+             (byte-identical payloads across all three stacks; the literals \
+             themselves are pinned by the Linux-runnable golden test in \
+             helpers.rs) (r5)"
+        );
+        assert_eq!(
+            src.matches("needs_completion {").count(),
+            1,
+            "the caption arm's completion gate must stay wired: without the \
+             deterministic client button-up after a caption DOWN, the target \
+             stays captured in the SC_MOVE modal loop behind a reported \
+             success (r5, mutation-proven unpinned)"
+        );
+        assert_eq!(
+            src.matches("self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(point.x, point.y))?")
+                .count(),
+            1,
+            "the completion post itself (a client WM_LBUTTONUP with no \
+             button mark at the caption point) — deleting the post while \
+             keeping the gate compiles and wedges caption presses in the \
+             OS's move loop"
+        );
+        assert_eq!(
+            src.matches("GetWindowTextLengthW").count(),
+            2,
+            "the import + the caption read: the T3 screening verdict and \
+             raw binding must run on the FULL raw caption — the 128-unit \
+             fixed buffer let a padded caption screen as Clear on the \
+             degraded path, the exact padding-evasion tool.rs's contract \
+             closes (r5)"
         );
         assert!(
-            src.contains("... (truncated at {} nodes; pass a larger max_nodes to see more)")
-                && src.contains("... (truncated by depth; pass a larger max_depth to see more)"),
-            "both truncation footers must stay wired (a budget that silently \
-             drops rows misstates the desktop)"
+            src.contains("MAX_CAPTION_UNITS: usize = 4096"),
+            "the full-caption read stays bounded (a hostile caption cannot \
+             drive an unbounded allocation)"
         );
         assert!(
             src.contains("flags.push_str(\" hidden\")"),
@@ -5652,11 +6199,13 @@ mod tests {
              with the physical stack's UIA IsEnabled)"
         );
         assert_eq!(
-            src.matches("append_tree_truncation_footers(").count(),
-            2,
-            "definition + the walk call: both truncation footers must be \
-             emitted through the ONE shared builder the UIA helper also uses \
-             (byte-identical fallback/helper payloads)"
+            src.matches("effective_disabled(style, inherited_disabled)")
+                .count(),
+            1,
+            "the walk must FEED the inherited state into the predicate — a \
+             call site that passes `false` compiles, keeps every count, and \
+             silently loses the disabled flag on children of disabled panes \
+             (r5, mutation-proven unpinned)"
         );
     }
 
@@ -6066,6 +6615,14 @@ mod tests {
         assert_eq!(print_flags_for_class("Notepad"), PW_RENDERFULLCONTENT);
         assert!(is_shell_window_class("Shell_TrayWnd"));
         assert!(is_shell_window_class("Shell_SecondaryTrayWnd"));
+        // The Windows 11 shell XAML host (r5): the session explorer spawns
+        // it on the hidden desktop and without the exclusion it appears as
+        // a tree root.
+        assert!(is_shell_window_class("XamlExplorerHostIsolatedWindow"));
+        // UWP app windows share the CoreWindow class with some shell
+        // experiences — a class-based exclusion would hide drivable apps,
+        // so they must stay OUT of the list (disclosed noise instead).
+        assert!(!is_shell_window_class("Windows.UI.Core.CoreWindow"));
         assert!(!is_shell_window_class("Notepad"));
     }
 

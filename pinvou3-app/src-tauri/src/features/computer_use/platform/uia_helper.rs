@@ -23,26 +23,31 @@
 //!
 //! Lifecycle: the parent lazily spawns the helper on the first UIA query
 //! (with a respawn cooldown after any TRANSPORT failure), degrades to the
-//! phase-2 window-class walk whenever the helper is unavailable, and closes
-//! the write pipe on drop — the helper exits on stdin EOF, with the
-//! kill-on-close job as the backstop. The helper is session INFRASTRUCTURE
-//! (like the shell): it is not in the wind-down list, so Stop/revoke leaves
-//! it alive for a re-granted session. A healthy helper's SOFT verdict (an
-//! honest "cannot answer" — e.g. nothing holds focus) is the helper
-//! answering normally: it surfaces as the query's error but NEVER tears the
-//! client down ([`UiaHelperOutcome`]).
+//! phase-2 window-class walk whenever the helper is unavailable, and tears
+//! the client down on drop: the write pipe closes (stdin EOF is the helper's
+//! clean-exit signal) and the retained spawn handle is terminated — a helper
+//! wedged inside one uninterruptible cross-process UIA call never reaches
+//! its read loop again, so EOF alone can strand it (with this reader
+//! thread) until the session-end job; terminating on client drop bounds
+//! every drop path to zero residue (the kill-on-close job remains the
+//! session-end backstop). The helper is session INFRASTRUCTURE (like the
+//! shell): it is not in the wind-down list, so Stop/revoke leaves it alive
+//! for a re-granted session. A healthy helper's SOFT verdict (an honest
+//! "cannot serve" — e.g. nothing holds focus) is the helper answering
+//! normally: it surfaces as the query's error but NEVER tears the client
+//! down ([`UiaHelperOutcome`]). The parent's NDJSON reader bounds one line
+//! at [`MAX_LINE_BYTES`] — a longer line is framing corruption (transport
+//! death), not an unbounded allocation.
 
-use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::io::FromRawHandle;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, HWND, SetHandleInformation,
-};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::Threading::TerminateProcess;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
     SetProcessDpiAwareness, SetProcessDpiAwarenessContext,
@@ -52,11 +57,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::super::types::{ComputerUseError, ElementInfo, UiTreeOptions};
-use super::helpers::tree_budget;
+use super::helpers::{MAX_TREE_DEPTH, MAX_TREE_NODES, append_tree_truncation_footers, tree_budget};
 use super::uia_helper_protocol::{Op, READY_LINE, Request, Response, WireElement};
 use super::virtual_display::windows_virtual::{
-    TREE_TOP_LEVEL_CAP, append_tree_truncation_footers, deepest_window_at, desktop_target_path,
-    is_shell_window_class, launch_suspended_in_job, walk_visible_toplevels, window_class_name,
+    TREE_TOP_LEVEL_CAP, deepest_window_at, desktop_target_path, is_shell_window_class,
+    launch_suspended_in_job, walk_visible_toplevels, window_class_name,
 };
 use super::windows::{
     TreeWriter, build_tree_cache, element_info_from_cache, map_uia_err, write_tree_node,
@@ -82,6 +87,13 @@ const HELPER_ELEMENT_TIMEOUT_MS: u64 = 5_000;
 /// scaled timeout bounds the wait (see `helper_tree` below and the module
 /// doc's residual note).
 const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
+/// Framing containment on the parent's NDJSON reader: one line is bounded
+/// (the largest honest response — the full-budget tree — is well under
+/// 240 KiB of sanitized rows; 1 MiB leaves headroom). A longer line means
+/// the helper's framing is corrupt or hostile: the reader stops and the
+/// client is torn down as a transport failure instead of streaming an
+/// unbounded allocation into memory.
+const MAX_LINE_BYTES: u64 = 1 << 20;
 
 // ── helper-side loop (runs in the re-spawned process on the hidden desktop) ──
 
@@ -193,14 +205,23 @@ fn helper_tree(
     max_depth: u32,
     max_nodes: u32,
 ) -> Result<String, ComputerUseError> {
+    // Defense-in-depth re-clamp (r5): the parent clamps before sending, but
+    // this helper must not trust the wire — a future second client of the
+    // protocol would otherwise bypass the shared ceilings. Same constants as
+    // every other stack's budget.
+    let (max_depth, max_nodes) = (max_depth.min(MAX_TREE_DEPTH), max_nodes.min(MAX_TREE_NODES));
     // SAFETY: desktop-relative Z-order enumeration on the helper's own
-    // (hidden) desktop.
-    let roots: Vec<HWND> = unsafe { walk_visible_toplevels(TREE_TOP_LEVEL_CAP) }
-        .into_iter()
-        // SAFETY: class-name query on a handle from the enumeration above,
-        // on the helper's own (hidden) desktop.
-        .filter(|root| !is_shell_window_class(&unsafe { window_class_name(*root) }))
-        .collect();
+    // (hidden) desktop. Shell windows are excluded BEFORE they can consume
+    // a top-level cap slot (the same predicate the fallback walk applies —
+    // the two answers must describe the same desktop).
+    let (roots, top_cap_bound) = unsafe {
+        // SAFETY (closure body): the class-name query on a handle from the
+        // enumeration above runs inside the walk's unsafe block — the
+        // syntactic nesting covers it, so no inner `unsafe` is needed.
+        walk_visible_toplevels(TREE_TOP_LEVEL_CAP, &|hwnd| {
+            is_shell_window_class(&window_class_name(hwnd))
+        })
+    };
     let cache = build_tree_cache(uia)?;
     let mut writer = TreeWriter {
         next_index: 0,
@@ -232,6 +253,7 @@ fn helper_tree(
     append_tree_truncation_footers(
         writer.truncated,
         writer.truncated_by_depth,
+        top_cap_bound,
         writer.next_index,
         &mut out,
     );
@@ -368,6 +390,12 @@ pub(crate) struct UiaHelperClient {
     reader: Option<Receiver<String>>,
     reader_thread: Option<JoinHandle<()>>,
     next_id: u64,
+    /// The spawn process handle, RETAINED so Drop can terminate a helper a
+    /// pipe EOF cannot reach (one wedged in a cross-process UIA COM call
+    /// never returns to its read loop — the handle is the only mid-session
+    /// kill channel; the session-end job remains the backstop for the
+    /// backend's own drop).
+    process: HANDLE,
 }
 
 impl UiaHelperClient {
@@ -426,25 +454,32 @@ impl UiaHelperClient {
             )
         }
         .map_err(HelperTransportError::Spawn)?;
-        // The helper's lifecycle is governed by its pipes (EOF exit) and the
-        // session's kill-on-close job; this spawn handle is bookkeeping we
-        // never consult — close it instead of leaking one HANDLE per spawn.
-        // SAFETY: close of the launcher's returned process handle.
-        let _ = unsafe { CloseHandle(process) };
+        // The spawn handle is RETAINED (r5): Drop terminates the helper
+        // deterministically, so a helper wedged inside one uninterruptible
+        // cross-process UIA call cannot outlive the client (with this
+        // reader thread) until the session-end job.
         drop(child_ends);
 
         let (tx, rx) = channel::<String>();
         let reader_thread = std::thread::Builder::new()
             .name("cu-uia-helper-reader".to_string())
             .spawn(move || {
-                let reader = BufReader::new(read_file);
-                for line in reader.lines() {
-                    match line {
-                        Ok(line) => {
+                // One line is bounded by MAX_LINE_BYTES (+1 to let an
+                // exactly-maximal well-framed line through): `take` stops
+                // the read there, and a chunk that arrives without its
+                // newline is framing corruption — stop instead of streaming
+                // the rest of an unbounded line into memory.
+                let mut reader = BufReader::new(read_file).take(MAX_LINE_BYTES + 1);
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break, // EOF: the helper exited
+                        Ok(_) if line.ends_with('\n') => {
                             if tx.send(line).is_err() {
                                 break; // client dropped
                             }
                         }
+                        Ok(_) => break,  // cap hit without a newline: corrupt framing
                         Err(_) => break, // pipe broken
                     }
                 }
@@ -460,6 +495,7 @@ impl UiaHelperClient {
             reader: Some(rx),
             reader_thread: Some(reader_thread),
             next_id: 1,
+            process,
         };
         client.wait_ready()?;
         Ok(client)
@@ -609,10 +645,23 @@ impl UiaHelperClient {
 impl Drop for UiaHelperClient {
     fn drop(&mut self) {
         // Close the write end FIRST: stdin EOF is the helper's clean-exit
-        // signal. The reader thread detaches (it exits on the broken pipe
-        // the same way the capture thread does) — bounded cost, no join.
+        // signal for the healthy case. Then terminate deterministically
+        // (r5): a helper wedged inside one uninterruptible cross-process
+        // UIA COM call never returns to its read loop, so EOF alone would
+        // strand it — with this reader thread — until the session-end job,
+        // one process per transport event. Terminating on drop leaves zero
+        // residue on every drop path (transport death, respawn after
+        // cooldown, and the backend's session-end drop — the job would end
+        // it at teardown anyway). The reader thread detaches and exits on
+        // the pipe death the terminate causes.
         drop(self.stdin.take());
         self.reader = None;
+        if !self.process.is_invalid() {
+            // SAFETY: terminate + close of our own retained spawn handle
+            // (PROCESS_TERMINATE right is part of CreateProcessW's return).
+            let _ = unsafe { TerminateProcess(self.process, 1) };
+            let _ = unsafe { CloseHandle(self.process) };
+        }
     }
 }
 
@@ -713,6 +762,57 @@ mod tests {
             "definition + the first call in the loop: deleting the call \
              desyncs the helper's coordinate space from the parent's on \
              scaled displays"
+        );
+        // The spawn's std-handle triple keeps stderr NULL (r5 pin of the
+        // r3 NDJSON-corruption fix): a revert that passes the parent's
+        // real stdout/stderr lets panic or tracing text ride the NDJSON
+        // stream and corrupt the framing — every other gate stays green.
+        assert!(
+            production.contains("Some([child_stdin_read, child_stdout_write, HANDLE::default()])"),
+            "the helper spawn must pass the null-stderr std-handle triple"
+        );
+        // The wire→ElementInfo mapping must NOT be free to swap its bools
+        // (r5): `secure` and `name_screening_hit` are both bools, a swap
+        // compiles and passes every other gate, and the T3 confirm preview
+        // would then screen on the password flag while treating a screened
+        // name as secure.
+        assert_eq!(
+            production
+                .matches("name_screening_hit: wire.screening_hit")
+                .count(),
+            1,
+            "the wire→ElementInfo mapping must carry the screening verdict \
+             from the wire's screening field exactly once"
+        );
+        assert_eq!(
+            production.matches("secure: wire.secure").count(),
+            1,
+            "the wire→ElementInfo mapping must carry the secure flag from \
+             the wire's secure field exactly once"
+        );
+        // The client retains the spawn handle and terminates it on drop
+        // (r5): a helper wedged in a cross-process UIA COM call never sees
+        // EOF — without the retained handle it (and this reader thread)
+        // lingers until the session-end job, one per transport event.
+        assert_eq!(
+            production
+                .matches("TerminateProcess(self.process, 1)")
+                .count(),
+            1,
+            "the client Drop must terminate the retained spawn handle: EOF \
+             alone cannot reach a helper wedged inside a UIA COM call"
+        );
+        // The NDJSON reader stays line-capped (r5): reverting to plain
+        // BufReader::lines() compiles and passes everything while an
+        // unframed helper line streams unbounded into memory — the cap is
+        // containment, not behavior (uia_helper.rs is Windows-cfg'd, so no
+        // Linux gate would see the revert).
+        assert_eq!(
+            production.matches(".take(MAX_LINE_BYTES + 1)").count(),
+            1,
+            "the parent reader must bound one NDJSON line: a longer line is \
+             framing corruption (transport death), not an allocation to grow \
+             into"
         );
     }
 }
