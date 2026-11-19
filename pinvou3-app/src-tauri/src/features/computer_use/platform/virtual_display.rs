@@ -20,7 +20,7 @@ mod linux_virtual;
 #[cfg(target_os = "macos")]
 mod macos_virtual;
 #[cfg(target_os = "windows")]
-mod windows_virtual;
+pub(crate) mod windows_virtual;
 
 #[cfg(target_os = "linux")]
 use self::linux_virtual as virtual_imp;

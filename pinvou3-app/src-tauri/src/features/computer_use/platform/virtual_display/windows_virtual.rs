@@ -73,13 +73,14 @@
 //! fixed down/up message pair is not — and the manual
 //! `left_mouse_down`/`left_mouse_up` primitives stay client-routed; UAC
 //! elevation prompts appear on the secure desktop, which no hidden-desktop
-//! API can drive; cross-desktop UI Automation needs an attached helper
-//! process and stays Unsupported — the structural queries answer a
-//! DEGRADED window-class tree instead (`ui_tree`/`element_at_point`/
-//! `focused_element` walk HWNDs: role is the window class, name is the
-//! caption, cross-process control content and UIA-only properties —
-//! including UIA's password flag — are unavailable; the classic
-//! `ES_PASSWORD` style is the one secure-field signal); programs that
+//! API can drive; cross-desktop UI Automation runs in an ATTACHED HELPER
+//! PROCESS (this executable re-spawned with the helper argv on the hidden
+//! desktop, inside the session job): `ui_tree`/`element_at_point`/
+//! `focused_element` serve the real semantic UIA tree from that helper, and
+//! when the helper cannot start or answer they degrade to a window-class
+//! walk (role is the window class, name is the caption, cross-process
+//! control content and UIA-only properties unavailable, the classic
+//! `ES_PASSWORD` style the one secure-field signal); programs that
 //! resolve to a packaged-app activation (Paint on Windows 11 is the
 //! observed case)
 //! cannot join the session's kill-on-close job and fail the open with an
@@ -131,7 +132,7 @@ use windows::Win32::System::Threading::{
     AttachThreadInput, CREATE_SUSPENDED, CreateProcessW, GR_GDIOBJECTS, GR_USEROBJECTS,
     GetCurrentProcess, GetCurrentThreadId, GetGuiResources, OpenProcess, PROCESS_INFORMATION,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    QueryFullProcessImageNameW, ResumeThread, STARTUPINFOW, TerminateProcess,
+    QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, MAPVK_VK_TO_VSC, MapVirtualKeyW, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
@@ -169,6 +170,7 @@ use super::super::helpers::{
     logged_program, normalize_typed_newlines, open_capacity_rejected, sanitize_name, screening_hit,
     split_type_runs,
 };
+use super::super::uia_helper::UiaHelperClient;
 use super::VirtualAvailability;
 
 // `PrintWindow` is exported by user32 but the `windows` 0.62 crate houses it
@@ -407,7 +409,7 @@ fn is_shell_background_class(class: &str) -> bool {
 
 /// Whether a window class is a shell window that must never become the
 /// keyboard-focus fallback target.
-fn is_shell_window_class(class: &str) -> bool {
+pub(crate) fn is_shell_window_class(class: &str) -> bool {
     SHELL_WINDOW_CLASSES.contains(&class)
 }
 
@@ -676,7 +678,13 @@ const NC_HITTEST_TIMEOUT_MS: u32 = 200;
 /// node budget can be raised by the caller, but the TOP-LEVEL fan-out is
 /// fixed — a pathological window farm beyond this many top-level windows
 /// serves the topmost ones, which are the windows a screenshot shows.
-const TREE_TOP_LEVEL_CAP: usize = 64;
+pub(crate) const TREE_TOP_LEVEL_CAP: usize = 64;
+
+/// Minimum spacing between UIA-helper spawn ATTEMPTS: a broken environment
+/// (helper launch refused, pipes unavailable) must not turn every
+/// structural query into a fresh process storm. Within the cooldown the
+/// queries degrade to the window-class walk.
+const HELPER_RESPAWN_COOLDOWN_MS: u64 = 5_000;
 
 /// Whether `target`'s window class registered `CS_DBLCLKS`. The OS sends
 /// `WM_*BUTTONDBLCLK` only to classes that registered the style, so the
@@ -1327,11 +1335,12 @@ unsafe fn create_kill_on_close_job() -> Result<HANDLE, ComputerUseError> {
 /// On every failure path the produced handles are closed here.
 ///
 /// SAFETY: the two wide buffers live on this stack frame across the call.
-unsafe fn launch_suspended_in_job(
+pub(crate) unsafe fn launch_suspended_in_job(
     desktop_path_wide: Vec<u16>,
     application: Option<&[u16]>,
     command_line: &str,
     job: HANDLE,
+    std_handles: Option<[HANDLE; 3]>,
 ) -> Result<(u32, HANDLE), ComputerUseError> {
     // SAFETY: see the fn contract.
     unsafe {
@@ -1343,6 +1352,16 @@ unsafe fn launch_suspended_in_job(
         // the caller's desktop instead of the hidden one.
         startup.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
         startup.lpDesktop = PWSTR::from_raw(desktop_buffer.as_mut_ptr());
+        // Std-handle inheritance (the UIA helper's IPC pipes): without
+        // STARTF_USESTDHANDLES the child inherits no pipe ends and the
+        // protocol has no transport. Windowed GUI launches pass None and
+        // keep the no-console default.
+        if let Some([stdin_read, stdout_write, stderr_write]) = std_handles {
+            startup.dwFlags |= STARTF_USESTDHANDLES;
+            startup.hStdInput = stdin_read;
+            startup.hStdOutput = stdout_write;
+            startup.hStdError = stderr_write;
+        }
         let mut info = PROCESS_INFORMATION::default();
         let application_name = application.map(|path| PCWSTR(path.as_ptr()));
         CreateProcessW(
@@ -1929,6 +1948,40 @@ fn capture_thread_main(
     let _ = unsafe { SetThreadDesktop(previous) };
 }
 
+/// The deepest window at a virtual-screen-global screen point — the exact
+/// walk [`WindowsVirtualDesktopBackend::hit_test_at`] performs, shared with
+/// the UIA helper process (same crate, separate process): both sides must
+/// scope `element_at_point` to the SAME window, or the helper's answer and
+/// the fallback's answer would disagree. `None` when no window is under the
+/// point. MUST run on a thread attached to (or started on) the target
+/// desktop — every query here is desktop-relative to the calling thread.
+///
+/// SAFETY: desktop-relative window queries on the calling thread's desktop.
+///
+/// Known shape limit (same as the hit-test doc): the `ChildWindowFromPointEx`
+/// walk is not sibling-occlusion-aware; rare, accepted and noted.
+#[allow(clippy::item_name_repetitions)]
+pub(crate) unsafe fn deepest_window_at(x: i32, y: i32) -> Option<(HWND, i32, i32)> {
+    // SAFETY: see the fn contract.
+    unsafe {
+        let top = WindowFromPoint(POINT { x, y });
+        if top.is_invalid() {
+            return None;
+        }
+        let mut current = top;
+        loop {
+            let mut point = POINT { x, y };
+            let _ = ScreenToClient(current, &mut point);
+            let child =
+                ChildWindowFromPointEx(current, point, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
+            if child.is_invalid() || child.0 == current.0 {
+                return Some((current, point.x, point.y));
+            }
+            current = child;
+        }
+    }
+}
+
 /// Visible top-level windows in BOTTOM-TO-TOP order (painter's algorithm).
 /// The Z-walk itself runs TOP-DOWN (`GetTopWindow`, then `GW_HWNDNEXT`
 /// toward the bottom: GW_HWNDNEXT is the window BELOW in the Z order,
@@ -1946,7 +1999,7 @@ fn capture_thread_main(
 /// SAFETY: desktop-relative Z-order enumeration from the attached calling
 /// thread; the returned handles are valid at return time (windows may still
 /// die before use — callers treat failures as churn).
-unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
+pub(crate) unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
     // SAFETY: see the fn contract.
     unsafe {
         let mut out = Vec::new();
@@ -1991,7 +2044,7 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
 ///
 /// SAFETY: DWM attribute query on a desktop window from the attached
 /// calling thread.
-unsafe fn is_cloaked(hwnd: HWND) -> bool {
+pub(crate) unsafe fn is_cloaked(hwnd: HWND) -> bool {
     let mut cloaked: u32 = 0;
     // SAFETY: valid out-pointer for the u32 attribute.
     let _ = unsafe {
@@ -2036,7 +2089,7 @@ unsafe fn topmost_visible_app_window() -> Option<HWND> {
 ///
 /// SAFETY: bounded-buffer string query on a window handle obtained from
 /// desktop-relative enumeration on the attached calling thread.
-unsafe fn window_class_name(hwnd: HWND) -> String {
+pub(crate) unsafe fn window_class_name(hwnd: HWND) -> String {
     // SAFETY: see the fn contract.
     unsafe {
         let mut buffer = [0u16; 64];
@@ -2393,6 +2446,13 @@ struct WindowsVirtualDesktopBackend {
     /// opened apps and keeps Xvfb/WM; this is the same contract). Handles
     /// close on the wind-down or in `Drop`, whichever comes first.
     opened_processes: Vec<HANDLE>,
+    /// The attached UIA helper process (spawned lazily on the first
+    /// structural query; see `ensure_uia_helper`). `None` = no live helper:
+    /// the structural queries then degrade to the window-class walk below.
+    uia_helper: Option<UiaHelperClient>,
+    /// Earliest moment the helper may be re-spawned after a failure — a
+    /// broken environment must not turn every query into a process storm.
+    helper_cooldown_until: Option<Instant>,
 }
 
 // SAFETY: the raw OS handles (HDESK / HANDLE / HWND) are kernel objects that
@@ -2479,6 +2539,8 @@ impl WindowsVirtualDesktopBackend {
             capture_wedges: 0,
             opened_app_count: 0,
             opened_processes: Vec::new(),
+            uia_helper: None,
+            helper_cooldown_until: None,
             held_press: None,
             pointer: (0, 0),
             warnings: Vec::new(),
@@ -2522,6 +2584,7 @@ impl WindowsVirtualDesktopBackend {
                 Some(&application_wide),
                 &command_line,
                 backend.job,
+                None,
             )
         }
         .map_err(|error| {
@@ -2764,21 +2827,46 @@ impl WindowsVirtualDesktopBackend {
     /// Rare (overlapping siblings in one parent); accepted and noted.
     fn hit_test_at(&self, x: i32, y: i32) -> Option<(HWND, i32, i32)> {
         // SAFETY: desktop-relative queries on the attached worker thread.
-        unsafe {
-            let top = WindowFromPoint(POINT { x, y });
-            if top.is_invalid() {
+        unsafe { deepest_window_at(x, y) }
+    }
+
+    /// The live UIA helper, spawning one if none exists (lazy: a session
+    /// that never asks structural questions never pays for a second
+    /// process). Spawn failures and the post-failure cooldown both answer
+    /// `None` — the callers degrade to the window-class walk, and the
+    /// cooldown keeps a broken environment from forking a process per
+    /// query. The helper is session INFRASTRUCTURE: it is launched through
+    /// the same contained path (kill-on-close job) as every child but never
+    /// enters the wind-down list, so Stop/revoke leaves it alive like the
+    /// shell.
+    fn ensure_uia_helper(&mut self) -> Option<&mut UiaHelperClient> {
+        if self.uia_helper.is_some() {
+            return self.uia_helper.as_mut();
+        }
+        if let Some(until) = self.helper_cooldown_until {
+            if Instant::now() < until {
                 return None;
             }
-            let mut current = top;
-            loop {
-                let mut point = POINT { x, y };
-                let _ = ScreenToClient(current, &mut point);
-                let child =
-                    ChildWindowFromPointEx(current, point, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
-                if child.is_invalid() || child.0 == current.0 {
-                    return Some((current, point.x, point.y));
-                }
-                current = child;
+        }
+        self.helper_cooldown_until = None;
+        match UiaHelperClient::spawn(&self.desktop_name, self.job) {
+            Ok(client) => {
+                log::info!(
+                    "[computer_use][virtual-win] the UIA helper process is up \
+                     on the hidden desktop"
+                );
+                self.uia_helper = Some(client);
+                self.uia_helper.as_mut()
+            }
+            Err(error) => {
+                log::warn!(
+                    "[computer_use][virtual-win] the UIA helper could not be \
+                     spawned (structural queries degrade to the window-class \
+                     walk until the cooldown lapses): {error:?}"
+                );
+                self.helper_cooldown_until =
+                    Some(Instant::now() + Duration::from_millis(HELPER_RESPAWN_COOLDOWN_MS));
+                None
             }
         }
     }
@@ -3161,6 +3249,7 @@ impl WindowsVirtualDesktopBackend {
                 application.map(|path| to_wide(path)).as_deref(),
                 command_line,
                 self.job,
+                None,
             )
         }
     }
@@ -3189,12 +3278,15 @@ fn capability_notes() -> String {
      by dragging its title bar or resized by dragging a border (those \
      need a live pointer stream this injection cannot provide) and the \
      manual left_mouse_down/left_mouse_up primitives stay client-side, \
-     the structural queries serve a window-class tree, NOT UI \
-     Automation (ui_tree roles are window classes and names are \
-     window captions — cross-process control content is not read, \
-     UIA-only properties are unavailable, and the only secure-field \
-     signal is the classic Edit ES_PASSWORD style, so a password \
-     field inside a UIA-only framework answers secure=false), \
+     structural queries (ui_tree / element_at_point / focused_element) \
+     run against a real UI Automation tree served by an attached helper \
+     process (this app re-spawned on the hidden desktop, inside the \
+     session job); when that helper cannot start or answer, the same \
+     queries fall back to a window-class walk whose roles are window \
+     classes and names are window captions (cross-process control \
+     content is not read, UIA-only properties are unavailable, and the \
+     fallback's only secure-field signal is the classic Edit ES_PASSWORD \
+     style), \
      posted chords do not update the app's async \
      key-state table (apps that read modifier state from \
      GetKeyState may see unmodified keys), scroll events go \
@@ -3615,6 +3707,28 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     }
 
     fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+        // Full UIA first: the helper runs the client ON the hidden desktop
+        // and serializes with the physical stack's exact writer. When the
+        // helper cannot be spawned or answered, fall through to the
+        // window-class walk (below) — the degradation stays honest either
+        // way, and the fallback payload names its own semantics.
+        if let Some(helper) = self.ensure_uia_helper() {
+            match helper.tree(opts) {
+                Ok(tree) => return Ok(tree),
+                Err(error) => {
+                    // Transport or helper-side failure: drop the client (a
+                    // Drop later respawns after the cooldown) and degrade.
+                    log::warn!(
+                        "[computer_use][virtual-win] the UIA helper failed the \
+                         tree query (falling back to the window-class walk): \
+                         {error}"
+                    );
+                    self.uia_helper = None;
+                    self.helper_cooldown_until =
+                        Some(Instant::now() + Duration::from_millis(HELPER_RESPAWN_COOLDOWN_MS));
+                }
+            }
+        }
         let (max_depth, max_nodes) = tree_budget(opts);
         let mut out = String::new();
         // The degradation must be visible in the payload itself, not only in
@@ -3622,10 +3736,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // roles are window CLASSES (not UIA control types), the names are
         // window CAPTIONS, and cross-process control content is not read.
         out.push_str(
-            "window-class tree (Win32 HWND walk, NOT UI Automation: role is \
-             the window class, name is the window caption; control content \
-             is not read across processes, UIA-only properties are \
-             unavailable)\n",
+            "window-class tree (Win32 HWND walk fallback — the UIA helper \
+             process was unavailable; role is the window class, name is the \
+             window caption; control content is not read across processes, \
+             UIA-only properties are unavailable)\n",
         );
         let mut writer = HwndTreeWriter {
             next_index: 0,
@@ -3685,11 +3799,27 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         x: i32,
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
+        // Full UIA first (semantic element, real password flag); the
+        // fallback answers with the owning HWND's class/title pair.
+        if let Some(helper) = self.ensure_uia_helper() {
+            match helper.at_point(x, y) {
+                Ok(answered) => return Ok(answered),
+                Err(error) => {
+                    log::warn!(
+                        "[computer_use][virtual-win] the UIA helper failed the \
+                         point query (falling back to the window-class answer): \
+                         {error}"
+                    );
+                    self.uia_helper = None;
+                    self.helper_cooldown_until =
+                        Some(Instant::now() + Duration::from_millis(HELPER_RESPAWN_COOLDOWN_MS));
+                }
+            }
+        }
         // The same hit test the click route uses: the deepest window at the
         // point (client space) or the top-level window that owns a
-        // non-client point. UIA would answer with a semantic element at
-        // arbitrary depth; the window-class tree answers with the owning
-        // HWND — the disclosed degradation.
+        // non-client point. The window-class answer carries the owning
+        // HWND's class and caption — the disclosed degradation.
         let Some((target, _, _)) = self.hit_test_at(x, y) else {
             return Ok(None);
         };
@@ -3698,15 +3828,28 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     }
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
-        // "Never masquerade as none": a read that cannot name the focused
-        // control (no foreground app window, no focused control on its
-        // thread) is an ERROR, which the tool layer treats as
-        // focus-uncertain and masks the confirm preview — flattening it
-        // into Ok(None) would let full typed text ride a confirmation
-        // while a password field actually holds focus. The classic
-        // ES_PASSWORD style still drives `secure` when the control IS
-        // identified (see password_style_for_class for the UIA-only
-        // residual).
+        // Full UIA first: the helper reads the hidden desktop's foreground +
+        // thread focus (NEVER UIA's input-desktop focused element) and maps
+        // the HWND, so the confirm preview sees the real semantic name and
+        // password flag. "Never masquerade as none" governs every leg: an
+        // unidentified focus is an ERROR (tool layer masks as uncertain),
+        // never a silent Ok(None) that would let full typed text ride a
+        // confirmation while a password field actually holds focus.
+        if let Some(helper) = self.ensure_uia_helper() {
+            match helper.focus() {
+                Ok(answered) => return Ok(answered),
+                Err(error) => {
+                    log::warn!(
+                        "[computer_use][virtual-win] the UIA helper failed the \
+                         focus query (falling back to the window-class answer): \
+                         {error}"
+                    );
+                    self.uia_helper = None;
+                    self.helper_cooldown_until =
+                        Some(Instant::now() + Duration::from_millis(HELPER_RESPAWN_COOLDOWN_MS));
+                }
+            }
+        }
         let Some(focused) = (unsafe { current_focus_hwnd() }) else {
             return Err(ComputerUseError::unavailable(
                 "the focused control cannot be identified on the hidden \
@@ -4608,7 +4751,6 @@ mod tests {
             "the UIA-helper contract and its window-class fallback must be \
              disclosed"
         );
-        );
     }
 
     /// The virtual pointer's geometry helpers: center placement (the
@@ -4893,6 +5035,50 @@ mod tests {
         );
     }
 
+    /// The UIA-helper wiring has no runtime seam a CI leg could exercise
+    /// (no hidden desktop in CI), so it is source-counted: the lazy spawn
+    /// gate and all three helper dispatches must stay wired, and the
+    /// cooldown must stay between them — a revert that drops the helper
+    /// (back to the degraded walk as primary) or that hammers a broken
+    /// environment with one process per query fails here.
+    #[test]
+    fn uia_helper_wiring_stays_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("fn ensure_uia_helper(&mut self)").count(),
+            1,
+            "the lazy spawn gate must exist and be the only entry to the \
+             helper"
+        );
+        assert_eq!(
+            src.matches("UiaHelperClient::spawn(").count(),
+            1,
+            "the spawn call must live inside the gate (a spawn on a hot path \
+             without the cooldown check fails here)"
+        );
+        for dispatch in ["helper.tree(", "helper.at_point(", "helper.focus("] {
+            assert_eq!(
+                src.matches(dispatch).count(),
+                1,
+                "the {dispatch} dispatch must stay wired: dropping it silently \
+                 degrades the answer to the window-class walk"
+            );
+        }
+        assert_eq!(
+            src.matches("HELPER_RESPAWN_COOLDOWN_MS").count(),
+            5,
+            "definition + the spawn-failure arm + one arm per query \
+             (tree/at_point/focus): the cooldown must arm on EVERY helper \
+             failure (the gate itself compares the armed deadline), not just \
+             the spawn failure"
+        );
+        assert!(
+            src.contains("uia_helper: Option<UiaHelperClient>"),
+            "the backend must hold the helper as an optional client (drop = \
+             respawn-after-cooldown semantics)"
+        );
+    }
+
     /// The stop-time wind-down has no runtime seam a CI leg could exercise
     /// either (no hidden desktop, and the release path only fires from the
     /// command layer), so its wiring is source-counted: the trait override,
@@ -5028,10 +5214,10 @@ mod tests {
              query: the no-focus-steal focus read must stay wired"
         );
         assert!(
-            src.contains("NOT UI Automation"),
-            "the payload must name its own degradation (roles are window \
-             classes, captions are names, content is unread) — a tree that \
-             hides its semantics from the model fails here"
+            src.contains("window-class tree (Win32 HWND walk fallback"),
+            "the fallback payload must name its own degradation (roles are \
+             window classes, captions are names, content is unread) — a tree \
+             that hides its semantics from the model fails here"
         );
         assert!(
             src.contains("tree_budget("),

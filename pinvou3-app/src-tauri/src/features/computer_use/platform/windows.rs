@@ -388,7 +388,7 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
 /// `TreeScope_Element | TreeScope_Children` as the raw UIA flag value. UIA's
 /// `TreeScope` is a bitmask; the `uiautomation` crate models it as a plain
 /// enum, so the combination the per-node descent needs has no variant.
-const TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3;
+pub(crate) const TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3;
 
 /// The tree range a cache request covers.
 ///
@@ -402,7 +402,7 @@ enum CacheScope {
     ElementAndChildren,
 }
 
-fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
+pub(crate) fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
     if err.code() == E_ACCESSDENIED {
         ComputerUseError::unavailable(format!(
             "{context}: access denied reading UI Automation data — the target window is likely \
@@ -519,13 +519,13 @@ fn map_mouse_button(button: MouseButton) -> Button {
 }
 
 /// Node budget and sequence numbers for tree serialization.
-struct TreeWriter {
-    next_index: u32,
-    remaining: u32,
-    truncated: bool,
+pub(crate) struct TreeWriter {
+    pub(crate) next_index: u32,
+    pub(crate) remaining: u32,
+    pub(crate) truncated: bool,
     /// The depth budget cut off descendants that exist but were not serialized;
     /// surfaced in the footer alongside node-budget truncation.
-    truncated_by_depth: bool,
+    pub(crate) truncated_by_depth: bool,
 }
 
 /// Single-line format: `[i] role "name" (x,y,w,h) flags`, with flags omitted when there are none.
@@ -579,7 +579,7 @@ fn format_tree_line(
 /// variant of an Edit control must have it set; browser-drawn password fields expose it
 /// too): `unwrap_or(false)` would silently pass password fields off as ordinary elements,
 /// defeating the T3 screening. `context` prefixes the error messages.
-fn element_info_from_cache(
+pub(crate) fn element_info_from_cache(
     context: &str,
     element: &uiautomation::UIElement,
 ) -> Result<ElementInfo, ComputerUseError> {
@@ -628,7 +628,7 @@ fn element_info_from_cache(
 /// the caller already abandoned stops at the next fetch instead of burning the remaining
 /// node budget on cross-process COM calls. One in-flight fetch itself stays uninterruptible
 /// up to the COM timeout (inherent, see the module docs).
-fn write_tree_node(
+pub(crate) fn write_tree_node(
     element: &uiautomation::UIElement,
     cache: &uiautomation::core::UICacheRequest,
     depth: u32,
@@ -782,7 +782,7 @@ impl WindowsComputerUseBackend {
     /// per-node descent needs the element **and** its children; single-element reads need
     /// the element); scopes beyond `Element` apply the control-view filter, consistent with
     /// the UIA standard view.
-    fn property_cache(
+    pub(crate) fn property_cache(
         uia: &UIAutomation,
         scope: CacheScope,
     ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
@@ -873,6 +873,14 @@ impl WindowsComputerUseBackend {
             }
         }
         Ok(current)
+    }
+
+    /// Free wrapper for the helper process (crate-internal): the identical cache
+    /// request the physical backend builds, addressable without a backend value.
+    pub(crate) fn build_tree_cache(
+        uia: &UIAutomation,
+    ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
+        WindowsComputerUseBackend::property_cache(uia, CacheScope::ElementAndChildren)
     }
 
     /// Press all keys (rolling back those already pressed on error), pause, then release in reverse.
