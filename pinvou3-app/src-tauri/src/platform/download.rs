@@ -5,15 +5,18 @@
 //! AtomicBool + 进度事件),因此取消谓词与进度回调一律由调用方以闭包注入,
 //! helper 不假定统一取消源。
 //!
-//! **设计取舍**:本函数为 `async fn`(reqwest 异步流式)。`features/connectors/
-//! native_installer.rs::download_verified` 是 `reqwest::blocking` 的同步函数,且始终在
-//! `tokio::task::spawn_blocking` 内被调用(飞书/钉钉/企微 ensure_cli),该线程上没有
-//! 可 `.await` 的异步运行时;强行 `block_on` 嵌套运行时会与外层 tauri runtime 冲突,
-//! 属于 force-fit。故 native_installer 保持独立同步实现(见 task 报告差异表),仅迁移
-//! 同构的 voice/knowledge 两路。
+//! **设计取舍**:本函数为 `async fn`(reqwest 异步流式)。连接器归档 / Python
+//! wheel 的下载跑在 `reqwest::blocking` 上,且常在 `tokio::task::spawn_blocking`
+//! 内被调用(飞书/钉钉/企微 ensure_cli),该线程上没有可 `.await` 的异步运行时;
+//! 强行 `block_on` 嵌套运行时会与外层 tauri runtime 冲突,属于 force-fit。故异步
+//! helper 只服务 voice/knowledge 两路;同步侧收敛为 [`download_verified_blocking`]
+//! 候选循环骨架(#817 B5,原 connectors native_installer 与 marketplace
+//! python_dependencies 各自手写的孪生体),两条路线不合并。
 //!
 //! 复用 [`crate::platform::hashing::sha256_file`] 做校验,不重复实现 sha256。
 
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::Path;
 
 /// 单次下载请求(下载到 `part` → 校验 → rename 到 `dest`)。
@@ -220,6 +223,231 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+// ---------------------------------------------------------------------------
+// 同步候选下载骨架(connectors native_installer + marketplace
+// python_dependencies 共享,#817 B5)
+// ---------------------------------------------------------------------------
+//
+// 两个 feature 各自手写的「逐候选下载 → sha256 → 原子 rename」体约 90% 同构
+// (客户端参数、候选循环、脱敏、`.part` 暂存与守卫、超限拒绝、sha256 校验、
+// 提升语义逐条对应)。机制收敛到这里;**错误文案留在调用方**——连接器为中文
+// 文案、Python wheel 为英文文案,且逐环节措辞刻意保留原样(测试与展示契约),
+// 故 helper 以结构化的 [`BlockingDownloadFailure`] 报告失败环节,由调用方的
+// localize 闭包组装人读文本。
+
+/// 单候选下载在哪个环节失败。载荷为底层 io/reqwest 错误文本(已按需脱敏);
+/// 人读文案由调用方经 localize 闭包组装。
+#[derive(Debug)]
+pub(crate) enum BlockingDownloadFailure {
+    /// 候选 URL 解析失败或非 HTTPS;载荷为脱敏后的原文。
+    InvalidUrl(String),
+    /// 请求发送或 HTTP 状态异常;载荷为 reqwest 错误文本(已整体脱敏
+    /// userinfo——reqwest 错误内嵌请求 URL,聚合错误会上抛给用户)。
+    Request(String),
+    /// Content-Length 声明或实际落盘字节数超过上限。
+    TooLarge,
+    /// 暂存文件创建失败。
+    CreatePart(String),
+    /// 下载写入失败。
+    WritePart(String),
+    /// 刷盘失败。
+    SyncPart(String),
+    /// 读取落盘文件计算 sha256 失败。
+    HashRead(String),
+    /// sha256 不匹配(expected/actual,均小写十六进制)。
+    ShaMismatch { expected: String, actual: String },
+    /// 删除旧目标失败(提升前的替换步)。
+    ReplaceDest(String),
+    /// `.part` 原子提升为最终文件失败。
+    Promote(String),
+}
+
+/// 候选循环的失败出口。`ClientBuild` 单列:原两调用方对客户端构建失败都
+/// **直接**以自有文案报错,不走「全候选耗尽」的汇总格式。
+#[derive(Debug)]
+pub(crate) enum BlockingDownloadError {
+    /// 下载客户端构建失败(未进入候选循环);载荷为底层 reqwest 错误文本。
+    ClientBuild(String),
+    /// 所有候选均失败。逐候选文本已本地化;请求级失败带 `[host]` 前缀
+    /// (非默认端口写成 `host:port`,同主机多候选可区分),无效 URL 不带
+    /// 前缀——与两调用方原有聚合格式逐条一致。空 Vec 等价于「没有候选」。
+    Exhausted(Vec<String>),
+}
+
+/// 同步下载骨架的调用方差异。机制见 [`download_verified_blocking`]。
+pub(crate) struct BlockingArtifactDownload<'a> {
+    /// HTTP User-Agent(连接器与 wheel 各有自标识)。
+    pub user_agent: &'a str,
+    /// `log::warn!` 前缀("connectors"/"marketplace")。release 构建无 logger,
+    /// 仅影响调试日志的措辞。
+    pub log_tag: &'a str,
+    /// 日志/错误里的人类可读主语(artifact 名 / wheel 名)。
+    pub subject: &'a str,
+    /// 内容长度硬上限(字节数):响应声明的 Content-Length 超过即拒,流式累计
+    /// 超过即中止(`take(max + 1)` 后由落盘字节数判定)。
+    pub max_bytes: u64,
+    /// 期望 sha256(小写十六进制),精确比较(两调用方的 pin 均为小写)。
+    pub expected_sha256: &'a str,
+    /// `.part` 暂存文件的 `with_extension` 后缀:连接器 "part"、wheel
+    /// "part-{pid}"(并发安装互不踩踏),由调用方按自身约定生成。
+    pub part_extension: &'a str,
+    /// 重定向守卫:`Some(原因文本)` 拒绝该跳。`hops` 为 `previous().len()`;
+    /// 超跳数/离开 HTTPS/离开可信域的判定与文案全部调用方自持(连接器
+    /// "left HTTPS"、wheel "left the trusted host",措辞刻意不同)。
+    pub redirect_guard: fn(hops: usize, url: &reqwest::Url) -> Option<String>,
+}
+
+/// 逐候选下载:按 `candidates` 顺序,HTTPS 门(脱敏后跳过并记录)→ 单候选
+/// 下载([`persist_verified_download_with_sync`]:`.part` 暂存 → 超限拒绝 →
+/// sha256 校验 → 替换旧目标 → 原子 rename)。任一候选成功即返回**该候选
+/// URL 原文**(connectors 用它判定归档格式);全败返回 [`BlockingDownloadError::
+/// Exhausted`]。候选逐个失败时的 `log::warn!` 在本函数内发出,与原两实现的
+/// 「失败即记日志再试下一候选」时序一致;失败汇集原文同时返回给调用方组装
+/// 汇总错误(release 构建无 logger,汇总错误是用户能看到失败原因的唯一渠道)。
+pub(crate) fn download_verified_blocking(
+    spec: &BlockingArtifactDownload<'_>,
+    candidates: &[String],
+    destination: &Path,
+    localize: &dyn Fn(&BlockingDownloadFailure) -> String,
+) -> Result<String, BlockingDownloadError> {
+    // reqwest 的 Policy 闭包要求 'static:先把 fn 指针拷出(副本无借用),
+    // 闭包内只触这个指针,不借 `spec`。
+    let redirect_guard = spec.redirect_guard;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(
+            move |attempt| match redirect_guard(attempt.previous().len(), attempt.url()) {
+                Some(reason) => attempt.error(reason),
+                None => attempt.follow(),
+            },
+        ))
+        .user_agent(spec.user_agent)
+        .build()
+        .map_err(|e| BlockingDownloadError::ClientBuild(e.to_string()))?;
+
+    let mut failures: Vec<String> = Vec::new();
+    for url_text in candidates {
+        // 无效候选(mistyped 环境变量前缀、非 HTTPS 等)只跳过并记录,不整次
+        // 失败:镜像/官方源 fallback 不被单条坏候选拖垮。
+        let url = match reqwest::Url::parse(url_text) {
+            Ok(url) if url.scheme() == "https" => url,
+            _ => {
+                // 候选 URL 原文进日志与错误,先脱敏 userinfo。
+                let failure = BlockingDownloadFailure::InvalidUrl(redact_url_credentials(url_text));
+                let reason = localize(&failure);
+                log::warn!(
+                    "[{}] {} skipping candidate URL: {reason}",
+                    spec.log_tag,
+                    spec.subject
+                );
+                failures.push(reason);
+                continue;
+            }
+        };
+        match download_one_verified(&client, &url, spec, destination) {
+            Ok(()) => return Ok(url_text.clone()),
+            Err(failure) => {
+                // 非默认端口写进前缀,同主机多候选在错误里可区分。
+                let host = match url.port() {
+                    Some(port) => {
+                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
+                    }
+                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
+                };
+                let reason = localize(&failure);
+                log::warn!(
+                    "[{}] {} download source failed, trying next candidate: {reason}",
+                    spec.log_tag,
+                    spec.subject
+                );
+                failures.push(format!("[{host}] {reason}"));
+            }
+        }
+    }
+    Err(BlockingDownloadError::Exhausted(failures))
+}
+
+/// 单候选:GET + 状态检查 → 声明超限早拒 → 流式落盘校验提升。
+fn download_one_verified(
+    client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+    spec: &BlockingArtifactDownload<'_>,
+    destination: &Path,
+) -> Result<(), BlockingDownloadFailure> {
+    let response = client
+        .get(url.clone())
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| {
+            BlockingDownloadFailure::Request(redact_url_credentials_in_text(&e.to_string()))
+        })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > spec.max_bytes)
+    {
+        return Err(BlockingDownloadFailure::TooLarge);
+    }
+    let mut reader = response.take(spec.max_bytes + 1);
+    persist_verified_download_with_sync(
+        &mut reader,
+        destination,
+        spec.expected_sha256,
+        spec.max_bytes,
+        spec.part_extension,
+        File::sync_all,
+    )
+}
+
+/// 「已持有完整字节流 → 暂存 → 校验 → 提升」的可复用核心:`read` 与 `sync`
+/// 可注入(wheel 侧测试以注入的 reader/sync 驱动失败路径),候选循环以真实
+/// 响应流调用。机制与原两实现逐条对应:`.part` 先删残留;Drop 守卫兜底删除
+/// (声明在 `File` 之前,Windows 上句柄未关闭时 remove 会失败);成功 rename
+/// 后 `disarm`。
+pub(crate) fn persist_verified_download_with_sync<R, S>(
+    reader: &mut R,
+    destination: &Path,
+    expected_sha256: &str,
+    max_bytes: u64,
+    part_extension: &str,
+    sync: S,
+) -> Result<(), BlockingDownloadFailure>
+where
+    R: Read,
+    S: FnOnce(&File) -> std::io::Result<()>,
+{
+    let partial = destination.with_extension(part_extension);
+    let _ = std::fs::remove_file(&partial);
+    let mut guard = PartGuard::new(&partial);
+    let copied = (|| -> Result<u64, BlockingDownloadFailure> {
+        let mut file = File::create(&partial)
+            .map_err(|e| BlockingDownloadFailure::CreatePart(e.to_string()))?;
+        let copied = io::copy(reader, &mut file)
+            .map_err(|e| BlockingDownloadFailure::WritePart(e.to_string()))?;
+        sync(&file).map_err(|e| BlockingDownloadFailure::SyncPart(e.to_string()))?;
+        Ok(copied)
+    })()?;
+    if copied > max_bytes {
+        return Err(BlockingDownloadFailure::TooLarge);
+    }
+    let actual = crate::platform::hashing::sha256_file(&partial)
+        .map_err(|e| BlockingDownloadFailure::HashRead(e.to_string()))?;
+    if actual != expected_sha256 {
+        return Err(BlockingDownloadFailure::ShaMismatch {
+            expected: expected_sha256.to_string(),
+            actual,
+        });
+    }
+    if destination.exists() {
+        std::fs::remove_file(destination)
+            .map_err(|e| BlockingDownloadFailure::ReplaceDest(e.to_string()))?;
+    }
+    std::fs::rename(&partial, destination)
+        .map_err(|e| BlockingDownloadFailure::Promote(e.to_string()))?;
+    guard.disarm();
+    Ok(())
+}
+
 pub(crate) async fn download_to_part_with_verify(
     mut req: DownloadRequest<'_>,
 ) -> Result<(), String> {
@@ -404,6 +632,7 @@ pub(crate) async fn download_to_part_with_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -983,5 +1212,278 @@ mod tests {
             redact_url_credentials_in_text("no urls in here"),
             "no urls in here"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // 同步候选下载骨架(#817 B5):persist 层走注入 reader/sync(与 wheel 侧
+    // 测试同一 seam),候选循环层走 HTTPS 门与连接拒绝聚合(本地 fixture 是
+    // 明文 HTTP,生产 HTTPS 门刻意拦下它,故请求级路径无法在本机打穿)。
+    // -------------------------------------------------------------------------
+
+    /// 测试用 spec:UA/主语任意,sha256 由用例给,上限 1 MiB,`.part` 后缀
+    /// 固定 "part-blocktest",重定向守卫与连接器同形(离 HTTPS 即拒)。
+    fn blocking_spec<'a>(expected_sha256: &'a str, max_bytes: u64) -> BlockingArtifactDownload<'a> {
+        BlockingArtifactDownload {
+            user_agent: "pinvou3-download-test",
+            log_tag: "test",
+            subject: "payload",
+            max_bytes,
+            expected_sha256,
+            part_extension: "part-blocktest",
+            redirect_guard: |hops, url| {
+                if hops >= 10 || url.scheme() != "https" {
+                    Some(format!("test download redirect left HTTPS: {url}"))
+                } else {
+                    None
+                }
+            },
+        }
+    }
+
+    fn test_localize(failure: &BlockingDownloadFailure) -> String {
+        match failure {
+            BlockingDownloadFailure::InvalidUrl(url) => format!("invalid: {url}"),
+            BlockingDownloadFailure::Request(text) => format!("request failed: {text}"),
+            BlockingDownloadFailure::TooLarge => "too large".to_string(),
+            BlockingDownloadFailure::CreatePart(e) => format!("create failed: {e}"),
+            BlockingDownloadFailure::WritePart(e) => format!("write failed: {e}"),
+            BlockingDownloadFailure::SyncPart(e) => format!("sync failed: {e}"),
+            BlockingDownloadFailure::HashRead(e) => format!("hash read failed: {e}"),
+            BlockingDownloadFailure::ShaMismatch { expected, actual } => {
+                format!("mismatch (expected {expected}, got {actual})")
+            }
+            BlockingDownloadFailure::ReplaceDest(e) => format!("replace failed: {e}"),
+            BlockingDownloadFailure::Promote(e) => format!("promote failed: {e}"),
+        }
+    }
+
+    /// persist 层 happy path:字节流落 `.part` → sha256 通过 → 原子 rename,
+    /// `.part` 被消费、旧目标被替换。
+    #[test]
+    fn persist_verified_downloads_replaces_destination_and_consumes_part() {
+        let dir = scratch_dir("persist_happy");
+        let body = b"hello world".to_vec();
+        let destination = dir.join("payload.bin");
+        // 预置一个旧目标:校验通过的提升必须替换它而非报错。
+        std::fs::write(&destination, b"stale bytes").unwrap();
+        let part = destination.with_extension("part-blocktest");
+
+        let result = persist_verified_download_with_sync(
+            &mut Cursor::new(&body),
+            &destination,
+            HELLO_SHA,
+            1024 * 1024,
+            "part-blocktest",
+            File::sync_all,
+        );
+        assert!(result.is_ok(), "err = {:?}", result.err());
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        assert!(!part.exists(), "part must be consumed by rename");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// persist 层 sha 不匹配:Err 且 `.part` 被清理、目标不被触碰——镜像
+    /// 字节篡改不得落盘的核心安全断言(与 wheel 侧 checksum pin 同类)。
+    #[test]
+    fn persist_sha_mismatch_cleans_part_and_keeps_destination() {
+        let dir = scratch_dir("persist_mismatch");
+        let body = b"abc".to_vec();
+        let destination = dir.join("payload.bin");
+        std::fs::write(&destination, b"previous good bytes").unwrap();
+        let part = destination.with_extension("part-blocktest");
+
+        let error = persist_verified_download_with_sync(
+            &mut Cursor::new(&body),
+            &destination,
+            HELLO_SHA, // 故意不匹配 "abc"
+            1024 * 1024,
+            "part-blocktest",
+            File::sync_all,
+        )
+        .unwrap_err();
+        let BlockingDownloadFailure::ShaMismatch { expected, actual } = error else {
+            panic!("expected ShaMismatch, got {error:?}");
+        };
+        assert_eq!(expected, HELLO_SHA);
+        assert_eq!(actual, ABC_SHA);
+        assert!(!part.exists(), "part must be cleaned on mismatch");
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"previous good bytes",
+            "destination must not be touched on mismatch"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// persist 层注入 sync 失败与写失败:`.part` 由 Drop 守卫清理(与 wheel
+    /// 侧 partial_file_guard 测试同构的 seam 覆盖)。
+    #[test]
+    fn persist_sync_or_write_failure_cleans_part() {
+        let dir = scratch_dir("persist_iofail");
+        let body = b"hello world".to_vec();
+        let destination = dir.join("payload.bin");
+        let part = destination.with_extension("part-blocktest");
+
+        let result = persist_verified_download_with_sync(
+            &mut Cursor::new(&body),
+            &destination,
+            HELLO_SHA,
+            1024 * 1024,
+            "part-blocktest",
+            |_| std::io::Result::Err(io::Error::other("injected sync failure")),
+        );
+        let BlockingDownloadFailure::SyncPart(_) = result.unwrap_err() else {
+            panic!("expected SyncPart");
+        };
+        assert!(!part.exists());
+
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(io::Error::other("injected read failure"))
+            }
+        }
+        let result = persist_verified_download_with_sync(
+            &mut FailingReader,
+            &destination,
+            HELLO_SHA,
+            1024 * 1024,
+            "part-blocktest",
+            File::sync_all,
+        );
+        let BlockingDownloadFailure::WritePart(_) = result.unwrap_err() else {
+            panic!("expected WritePart");
+        };
+        assert!(!part.exists());
+        assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// persist 层落盘超限:take 上限外的累计字节数必须以 TooLarge 拒绝
+    /// (Content-Length 缺失或撒谎时的最后一道闸)。
+    #[test]
+    fn persist_over_max_bytes_is_rejected() {
+        let dir = scratch_dir("persist_toolarge");
+        let body = vec![0u8; 2048];
+        let destination = dir.join("payload.bin");
+        let part = destination.with_extension("part-blocktest");
+
+        let result = persist_verified_download_with_sync(
+            &mut Cursor::new(&body),
+            &destination,
+            "", // 跳过 sha256,专测超限
+            1024,
+            "part-blocktest",
+            File::sync_all,
+        );
+        let BlockingDownloadFailure::TooLarge = result.unwrap_err() else {
+            panic!("expected TooLarge");
+        };
+        assert!(!part.exists());
+        assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 候选循环:非 HTTPS/无效候选被门拦下(脱敏进聚合、不整次失败),
+    /// 全败时返回 Exhausted 且汇总条数等于候选数;`.part` 不曾创建。
+    /// 带 userinfo 的候选必须两个环节都被脱敏(门拒文本与 reqwest 错误文本
+    /// 都会上抛给用户)。
+    #[test]
+    fn blocking_loop_skips_invalid_candidates_and_aggregates() {
+        let dir = scratch_dir("blocking_gate");
+        let destination = dir.join("payload.bin");
+        let candidates = vec![
+            "http://127.0.0.1:9/payload".to_string(), // 明文 HTTP:门拒
+            "not a url".to_string(),                  // 解析失败:门拒
+            "https://user:secret@127.0.0.1:9/x".to_string(), // 过门进请求,拒绝文本脱敏
+        ];
+        let result = download_verified_blocking(
+            &blocking_spec(HELLO_SHA, 1024 * 1024),
+            &candidates,
+            &destination,
+            &test_localize,
+        );
+        let Err(BlockingDownloadError::Exhausted(failures)) = result else {
+            panic!("expected Exhausted, got {result:?}");
+        };
+        assert_eq!(failures.len(), candidates.len(), "one entry per candidate");
+        assert!(
+            failures[0].starts_with("invalid: http://"),
+            "http candidate is skipped as invalid scheme, not dialed: {}",
+            failures[0]
+        );
+        assert!(
+            failures[1].contains("<invalid URL>"),
+            "unparsable candidate is redacted, not echoed: {}",
+            failures[1]
+        );
+        assert!(
+            failures[2].starts_with("[127.0.0.1:9] request failed: "),
+            "userinfo-bearing https candidate is dialed and prefixed: {}",
+            failures[2]
+        );
+        assert!(
+            !failures[2].contains("user:secret"),
+            "reqwest error text must be scrubbed of userinfo: {}",
+            failures[2]
+        );
+        let part = destination.with_extension("part-blocktest");
+        assert!(!part.exists(), "gated candidates never stage a part");
+        assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 候选循环:HTTPS 候选可通过门进入请求;连接拒绝(本机关闭端口)以
+    /// `[host] 前缀 + 调用方文案` 聚合,try-next 逐候选进行。
+    #[test]
+    fn blocking_loop_aggregates_host_prefixed_request_failures() {
+        let dir = scratch_dir("blocking_refused");
+        let destination = dir.join("payload.bin");
+        let candidates = vec![
+            "https://127.0.0.1:9/payload".to_string(),
+            "https://127.0.0.1:1/payload".to_string(),
+        ];
+        let result = download_verified_blocking(
+            &blocking_spec(HELLO_SHA, 1024 * 1024),
+            &candidates,
+            &destination,
+            &test_localize,
+        );
+        let Err(BlockingDownloadError::Exhausted(failures)) = result else {
+            panic!("expected Exhausted, got {result:?}");
+        };
+        assert_eq!(failures.len(), 2);
+        assert!(
+            failures[0].starts_with("[127.0.0.1:9] request failed: "),
+            "non-default port must be in the prefix: {}",
+            failures[0]
+        );
+        assert!(
+            failures[1].starts_with("[127.0.0.1:1] request failed: "),
+            "{}",
+            failures[1]
+        );
+        let part = destination.with_extension("part-blocktest");
+        assert!(!part.exists());
+        assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 候选循环:空候选列表 → Exhausted(空),由调用方落「无可用 URL」文案。
+    #[test]
+    fn blocking_loop_empty_candidates_yields_empty_exhausted() {
+        let dir = scratch_dir("blocking_empty");
+        let destination = dir.join("payload.bin");
+        let result = download_verified_blocking(
+            &blocking_spec(HELLO_SHA, 1024 * 1024),
+            &[],
+            &destination,
+            &test_localize,
+        );
+        let Err(BlockingDownloadError::Exhausted(failures)) = result else {
+            panic!("expected Exhausted, got {result:?}");
+        };
+        assert!(failures.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

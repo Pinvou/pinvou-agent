@@ -8,7 +8,6 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use serde::Deserialize;
@@ -378,172 +377,96 @@ fn load_lock() -> Result<ConnectorLock, String> {
 /// to decide the archive format). Any candidate's network failure or hash
 /// mismatch removes the `.part` and tries the next candidate; when all
 /// candidates fail, a summary error carrying the candidate count is
-/// returned.
+/// returned. Mechanism lives in `platform::download::download_verified_blocking`
+/// (#817 B5, shared with the marketplace wheel lane); this wrapper carries the
+/// connector lane's spec and its (Chinese) wording.
 fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        // 15 minutes per candidate source (reqwest's client timeout counts
-        // per single request): with the archive capped at 128 MiB, 180s only
-        // sustains a ~730 KB/s link, so slow-network users would die
-        // mid-download every time with no resumable download; 15 minutes
-        // covers down to ~150 KB/s while still guaranteeing a stuck
-        // connection eventually fails instead of hanging the install flow.
-        // With multi-candidate fallback the worst case scales by the
-        // candidate count.
-        .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            let refused =
-                attempt.previous().len() >= 10 || attempt.url().scheme() != "https";
-            if refused {
-                // Name the refused redirect instead of letting the 3xx's
-                // empty body finish the download and then report a
-                // misleading "verification failed" at the SHA-256 comparison
-                // (same policy as the marketplace wheel loop; cross-host
-                // HTTPS redirects are legitimate here, no host allowlist).
-                let redirect_url = attempt.url().clone();
-                attempt.error(format!("connector download redirect left HTTPS: {redirect_url}"))
-            } else {
-                attempt.follow()
-            }
-        }))
-        .user_agent("Pinvou-Agent connector-installer")
-        .build()
-        .map_err(|e| format!("创建下载客户端失败: {e}"))?;
-
-    let candidates = artifact_download_urls(artifact);
-    let total_candidates = candidates.len();
-    let mut failures: Vec<String> = Vec::new();
-    for url_text in candidates {
-        // Invalid candidates (a mistyped env-var prefix, non-HTTPS, etc.) are
-        // only skipped with a warning, not a whole-run failure: the reviewed
-        // mirror / official source fallbacks that follow are not dragged down
-        // by user misconfiguration.
-        let url = match reqwest::Url::parse(&url_text) {
-            Ok(url) if url.scheme() == "https" => url,
-            _ => {
-                // The candidate URL goes into logs and errors as a whole;
-                // strip the userinfo before writing it out.
-                let error = format!(
-                    "download URL is invalid or not HTTPS: {}",
-                    crate::platform::download::redact_url_credentials(&url_text)
-                );
-                log::warn!(
-                    "[connectors] {} skipping candidate URL: {error}",
-                    artifact.name
-                );
-                failures.push(error);
-                continue;
-            }
-        };
-        match download_from_url(&client, &url, artifact, destination) {
-            Ok(()) => return Ok(url_text),
-            Err(error) => {
-                // Write non-default ports into the prefix so multi-port
-                // candidates on the same host stay distinguishable in
-                // errors.
-                let host = match url.port() {
-                    Some(port) => {
-                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
-                    }
-                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
-                };
-                log::warn!(
-                    "[connectors] {} download source failed, trying next candidate: {error}",
-                    artifact.name
-                );
-                failures.push(format!("[{host}] {error}"));
-            }
+    let spec = crate::platform::download::BlockingArtifactDownload {
+        user_agent: "Pinvou-Agent connector-installer",
+        log_tag: "connectors",
+        subject: &artifact.name,
+        max_bytes: MAX_ARCHIVE_BYTES,
+        expected_sha256: &artifact.archive_sha256,
+        part_extension: "part",
+        redirect_guard: connector_redirect_guard,
+    };
+    let localize = |failure: &crate::platform::download::BlockingDownloadFailure| {
+        localize_connector_download_failure(failure, artifact)
+    };
+    match crate::platform::download::download_verified_blocking(
+        &spec,
+        &artifact_download_urls(artifact),
+        destination,
+        &localize,
+    ) {
+        Ok(hit) => Ok(hit),
+        Err(crate::platform::download::BlockingDownloadError::ClientBuild(e)) => {
+            Err(format!("创建下载客户端失败: {e}"))
+        }
+        Err(crate::platform::download::BlockingDownloadError::Exhausted(failures)) => {
+            // When all candidates fail, carry "how many sources were tried and
+            // each source's own failure reason" into the error (release builds
+            // have no logger, so the per-candidate log::warn! is invisible;
+            // the error itself must show that the mirror was tried and at
+            // which layer the failure happened; keeping only the last error
+            // would hide the first root cause that triggered the mirror
+            // retry). Every tried candidate pushes exactly one entry, so
+            // failures.len() equals the candidate count.
+            Err(match failures.as_slice() {
+                [] => "no download URLs available".to_string(),
+                list => format!(
+                    "{} archive download failed (all {} candidate download sources exhausted): {}",
+                    artifact.name,
+                    list.len(),
+                    list.join("; ")
+                ),
+            })
         }
     }
-    // When all candidates fail, carry "how many sources were tried and each
-    // source's own failure reason" into the error (release builds have no
-    // logger, so the per-candidate log::warn! is invisible; the error itself
-    // must show that the mirror was tried and at which layer the failure
-    // happened; keeping only the last error would hide the first root cause
-    // that triggered the mirror retry).
-    Err(match failures.as_slice() {
-        [] => "no download URLs available".to_string(),
-        list => format!(
-            "{} archive download failed (all {} candidate download sources exhausted): {}",
-            artifact.name,
-            total_candidates,
-            list.join("; ")
-        ),
-    })
 }
 
-/// Downloads the archive from a single URL into `destination` (`.part`
-/// staging → SHA-256 verification → atomic rename). A hash mismatch is
-/// treated as failure; the caller decides whether to switch to the next
-/// candidate URL.
-fn download_from_url(
-    client: &reqwest::blocking::Client,
-    url: &reqwest::Url,
+/// Redirect policy of the connector lane (unchanged wording): refuse hops
+/// beyond 10 and any hop leaving HTTPS — named at the redirect instead of
+/// letting the 3xx's empty body finish the download and then report a
+/// misleading "verification failed" at the SHA-256 comparison (cross-host
+/// HTTPS redirects are legitimate here, no host allowlist).
+fn connector_redirect_guard(hops: usize, url: &reqwest::Url) -> Option<String> {
+    if hops >= 10 || url.scheme() != "https" {
+        Some(format!("connector download redirect left HTTPS: {url}"))
+    } else {
+        None
+    }
+}
+
+/// Connector lane's wording for the shared skeleton's failure steps (kept
+/// verbatim from the pre-#817 body, including the intentionally mixed
+/// Chinese/English phrasing pinned by behavior).
+fn localize_connector_download_failure(
+    failure: &crate::platform::download::BlockingDownloadFailure,
     artifact: &Artifact,
-    destination: &Path,
-) -> Result<(), String> {
-    let response = client
-        .get(url.clone())
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
+) -> String {
+    use crate::platform::download::BlockingDownloadFailure as F;
+    match failure {
+        F::InvalidUrl(url) => format!("download URL is invalid or not HTTPS: {url}"),
         // Round-40 review: the reqwest error embeds the requested URL
         // (`... for url (...)`); the aggregation below is echoed to the
-        // user, so userinfo a mirror prefix carried gets scrubbed here like
-        // the invalid-candidate arm above already does.
-        .map_err(|e| {
+        // user, so userinfo a mirror prefix carried gets scrubbed (the
+        // shared skeleton redacts before handing the text over).
+        F::Request(text) => format!("下载 {} 失败: {text}", artifact.name),
+        F::TooLarge => "连接器归档超过 128 MiB 安全上限".to_string(),
+        F::CreatePart(e) => format!("failed to create partial download file: {e}"),
+        F::WritePart(e) => format!("failed to save download: {e}"),
+        F::SyncPart(e) => format!("failed to flush downloaded file: {e}"),
+        F::HashRead(e) => format!("读取下载文件失败: {e}"),
+        F::ShaMismatch { expected, actual } => {
             format!(
-                "下载 {} 失败: {}",
-                artifact.name,
-                crate::platform::download::redact_url_credentials_in_text(&e.to_string())
+                "{name} 下载校验失败(expected {expected}, got {actual})",
+                name = artifact.name
             )
-        })?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
-    {
-        return Err("连接器归档超过 128 MiB 安全上限".to_string());
-    }
-
-    let partial = destination.with_extension("part");
-    let _ = fs::remove_file(&partial);
-    let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    // Any failure in the write phase (disk full / connection dropped) also
-    // removes the .part: a leftover from a failure would occupy disk (up to
-    // 128 MiB) and would break the "any candidate failure cleans up the
-    // staging file" semantics.
-    let write_result = (|| -> Result<u64, String> {
-        let mut file = File::create(&partial)
-            .map_err(|e| format!("failed to create partial download file: {e}"))?;
-        let copied = io::copy(&mut reader, &mut file)
-            .map_err(|e| format!("failed to save download: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("failed to flush downloaded file: {e}"))?;
-        Ok(copied)
-    })();
-    let copied = match write_result {
-        Ok(copied) => copied,
-        Err(error) => {
-            let _ = fs::remove_file(&partial);
-            return Err(error);
         }
-    };
-    if copied > MAX_ARCHIVE_BYTES {
-        let _ = fs::remove_file(&partial);
-        return Err("连接器归档超过 128 MiB 安全上限".to_string());
+        F::ReplaceDest(e) => format!("替换连接器缓存失败: {e}"),
+        F::Promote(e) => format!("保存连接器缓存失败: {e}"),
     }
-    let actual = crate::platform::hashing::sha256_file(&partial)
-        .map_err(|e| format!("读取下载文件失败: {e}"))?;
-    if actual != artifact.archive_sha256 {
-        let _ = fs::remove_file(&partial);
-        return Err(format!(
-            "{} 下载校验失败(expected {}, got {})",
-            artifact.name, artifact.archive_sha256, actual
-        ));
-    }
-    if destination.exists() {
-        fs::remove_file(destination).map_err(|e| format!("替换连接器缓存失败: {e}"))?;
-    }
-    fs::rename(&partial, destination).map_err(|e| format!("保存连接器缓存失败: {e}"))
 }
 
 fn extract_expected_binary(
@@ -804,6 +727,69 @@ mod tests {
             Some(expected.to_string())
         );
         assert_eq!(github_prefixed_url("  ", "https://github.com/o/r"), None);
+    }
+
+    /// The redirect guard keeps the lane's exact refusal wording and policy
+    /// after #817 B5 moved the loop into `platform::download`: hops beyond 10
+    /// and any non-HTTPS hop are refused (named at the redirect), plain
+    /// cross-host HTTPS follows.
+    #[test]
+    fn connector_redirect_guard_refuses_hops_and_plain_http() {
+        let https = reqwest::Url::parse("https://github.com/x").unwrap();
+        let http = reqwest::Url::parse("http://github.com/x").unwrap();
+        assert_eq!(connector_redirect_guard(0, &https), None);
+        assert_eq!(
+            connector_redirect_guard(3, &http).as_deref(),
+            Some("connector download redirect left HTTPS: http://github.com/x")
+        );
+        assert_eq!(
+            connector_redirect_guard(10, &https).as_deref(),
+            Some("connector download redirect left HTTPS: https://github.com/x")
+        );
+    }
+
+    /// The lane's localized wording for the shared skeleton's failure steps is
+    /// pinned verbatim (the mixed Chinese/English phrasing is behavior, not
+    /// an accident; release builds surface these strings to the user).
+    #[test]
+    fn connector_download_failure_wording_is_pinned() {
+        use crate::platform::download::BlockingDownloadFailure as F;
+        let artifact = Artifact {
+            name: "wecom-cli".into(),
+            version: "1.0.0".into(),
+            url: "https://example.com/a.zip".into(),
+            mirror_url: None,
+            archive_sha256: "e".repeat(64),
+            binary_sha256: "f".repeat(64),
+        };
+        let text = |failure: &F| localize_connector_download_failure(failure, &artifact);
+        // The shared loop redacts userinfo BEFORE localize (end-to-end
+        // redaction is pinned in platform::download's loop tests); localize
+        // only formats.
+        assert_eq!(
+            text(&F::InvalidUrl("https://h/x".into())),
+            "download URL is invalid or not HTTPS: https://h/x"
+        );
+        assert_eq!(
+            text(&F::Request("boom for url (https://h/x)".into())),
+            "下载 wecom-cli 失败: boom for url (https://h/x)"
+        );
+        assert_eq!(text(&F::TooLarge), "连接器归档超过 128 MiB 安全上限");
+        assert_eq!(
+            text(&F::ShaMismatch {
+                expected: "a".repeat(64),
+                actual: "b".repeat(64),
+            }),
+            format!(
+                "wecom-cli 下载校验失败(expected {}, got {})",
+                "a".repeat(64),
+                "b".repeat(64)
+            )
+        );
+        assert_eq!(
+            text(&F::Promote("denied".into())),
+            "保存连接器缓存失败: denied"
+        );
     }
 
     #[test]
