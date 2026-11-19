@@ -4681,10 +4681,17 @@ fn prune_sweeps_stale_atomic_write_temps() {
     let fresh = dir.path().join(".pinvou-private-write-456.tmp");
     std::fs::write(&stale, b"png").expect("write");
     std::fs::write(&fresh, b"png").expect("write");
-    // Age the "stale" temp past the sweep age (set both times: stale far
-    // back, fresh just now).
+    // Age the "stale" temp past the sweep age; the fresh temp keeps its
+    // just-now mtime from the write above.
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    filetime::set_file_mtime(&stale, filetime::FileTime::from_system_time(old)).expect("set mtime");
+    // Method form only: the std::fs::set_times free function is stable
+    // since Rust 1.99, past this workspace's MSRV (1.90).
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .expect("open stale temp")
+        .set_times(std::fs::FileTimes::new().set_modified(old))
+        .expect("set mtime");
     super::prune_old_screenshots(dir.path(), 100, "x.png");
     assert!(!stale.exists(), "the stale temp must be swept");
     assert!(fresh.exists(), "a fresh temp must not be swept");
