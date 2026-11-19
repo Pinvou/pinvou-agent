@@ -28,7 +28,7 @@
 
 | 项目 | 当前实现 |
 |---|---|
-| 安装包 | NSIS + MSI（现行 `pinvou3-app/scripts/tauri/build.js` 在未显式指定时缺省返回 `["msi","nsis"]`——非 `tauri.conf.json` 字面量），`perMachine` 安装模式，简体中文/英文/日文安装界面，LZMA 压缩 |
+| 安装包 | NSIS + MSI（现行未显式指定 `--bundles` 时，经由 Windows 平台配置 `src-tauri/config/platforms/windows/tauri.conf.json` 的 `"targets": ["msi","nsis"]` 字面量生效；`pinvou3-app/scripts/tauri/build.js` 的 `windowsBundleTargets` 在未显式指定时亦缺省返回同组目标、用于安装器暂存），`perMachine` 安装模式，简体中文/英文/日文安装界面，LZMA 压缩 |
 | 应用窗口 | Tauri 2 桌面窗口，默认最大化、无系统装饰栏、支持调整大小 |
 | 安装权限 | 机器级安装和运行时环境变量配置需要管理员权限 |
 | VC++ 运行库 | 安装前检查 Microsoft Visual C++ 2015-2022 x64；缺失或版本不足时先补齐 Windows Installer 必需的临时目录和权限，再静默安装 |

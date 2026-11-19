@@ -255,7 +255,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
   `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
   在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
-  （📌 2026-11 修订：现行底座 `PROJECT_CONTEXT_FILES` 已恢复非空且首项即 `AGENTS.md`（另四项为只读兼容回退），但 pinvou3 安装的 static prompt-composer override 使底座自动扫描直接返回空（`bridge.rs:1130-1136` 注释：the automatic scan returns empty / no longer injects automatically）——「不再自动扫描」在产品运行时仍成立，AGENTS.md 实际仅由 app 侧按上述安全边界注入；`project_context_pack_enabled=false`（`bridge.rs:2562`）关闭的是 workspace context pack，非 AGENTS.md 扫描本身。）
+  （📌 2026-11 修订：现行底座 `PROJECT_CONTEXT_FILES` 已恢复非空且首项即 `AGENTS.md`（另四项为只读兼容回退），但 pinvou3 安装的 static prompt-composer override 使底座自动扫描直接返回空（`bridge.rs:1130-1138` 注释：the automatic scan returns empty / no longer injects automatically）——「不再自动扫描」在产品运行时仍成立，AGENTS.md 实际仅由 app 侧按上述安全边界注入；`project_context_pack_enabled=false`（`bridge.rs:2562`）关闭的是 workspace context pack，非 AGENTS.md 扫描本身。）
 - **注入范围**：绑定了项目目录的会话在 execution root resolver 命中时即注入
   `AGENTS.md`（📌 2026-11 核验：现行 `code_session_project_rules` 只以执行根命中为门，
   绑工作区的普通会话同样注入——`is_code_session` 不参与该门，见测试

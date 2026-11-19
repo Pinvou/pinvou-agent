@@ -158,7 +158,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 
 **`large_output_router`(#548——重建前内部仓库编号，非本仓 #548；/ workshop)是冗余且不完整,不要开:**
 - synthesis 子 agent **没实现**:`registry.rs`（`7e5288e3` :155-163；`9c8e4826` 注文起 :156）注释 "For now we produce a structured header + truncated preview **without a live API call** … A follow-up can wire in the Flash client"；合成 prompt builder 未实现——2026-11-18 订正：原注「`#[allow(dead_code)] // 未来 Flash 合成用`」系写档误注，任何可核树均无此文（实文为英文注释），所谓"配 synthesis 模型"无对象可配。
-- 它实际只做"截断到 **1,200 字符** + 存 workshop 变量 `last_tool_result`",比底座的 12K head/tail snippet **更激进、丢更多上下文**。`EngineConfig.workshop` 默认 `None`,保持关闭即可。
+- 它实际只做"截断到 **1,200 字符** + 存 workshop 变量 `last_tool_result`",比底座的 12K head/tail snippet **更激进、丢更多上下文**。`EngineConfig.workshop` 默认 `None`,保持关闭即可。(⚠️ 时代口径:「1,200 字符」为 `7e5288e3`/`9c8e4826` 时点值;现行 `large_output_router.rs` 以 `DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS = 32,768` token(≈98K 字符)作为内联/合成门槛,workshop 变量仅存原始输出作诊断、`promote_to_context` 未实装——「冗余且不完整,不要开」与 `EngineConfig.workshop` 默认 `None` 的结论均仍成立。2026-11-20 订正)
 
 **残留极端情况:** 一个 turn 里十几个大工具**并行**调用,collective 仍可能凑够 ~35K 跳过 nice —— 此时 emergency 接住(走强制路径,不崩),概率极低,不值得为它加冗余 workshop。
 
