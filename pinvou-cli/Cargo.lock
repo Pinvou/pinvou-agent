@@ -11,7 +11,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "benchmark-core",
- "fs4",
+ "fd-lock",
  "futures",
  "parquet",
  "rand 0.10.3",
@@ -984,7 +984,7 @@ version = "0.1.0"
 dependencies = [
  "agent-backend-api",
  "async-trait",
- "fs4",
+ "fd-lock",
  "futures",
  "rand 0.10.3",
  "serde",
@@ -3360,16 +3360,6 @@ checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
  "lazy_static",
  "num",
-]
-
-[[package]]
-name = "fs4"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
-dependencies = [
- "rustix 1.1.5",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
