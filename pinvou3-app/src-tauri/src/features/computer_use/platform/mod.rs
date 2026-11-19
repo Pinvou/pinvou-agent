@@ -3,7 +3,7 @@
 
 /// Pure helpers shared by every per-OS backend (no OS handles, unit-tested on
 /// all targets).
-mod helpers;
+pub(crate) mod helpers;
 pub(crate) use helpers::normalize_typed_newlines;
 // `sanitize_name` is also the tool layer's display bound for consent target
 // lines: the backends carry raw role/name strings so screening keeps seeing
@@ -24,7 +24,7 @@ mod macos;
 mod screen_capture_kit;
 /// Virtual display shared glue (probe / one-time target decision / per-OS
 /// dispatch). Compiles on every target; the per-OS stacks are cfg'd inside.
-mod virtual_display;
+pub(crate) mod virtual_display;
 /// Linux-only: Wayland same-session screen capture (the PipeWire receiver of the portal
 /// ScreenCast stream, used by `wayland_portal` after the session starts).
 #[cfg(target_os = "linux")]
@@ -33,8 +33,18 @@ mod wayland_capture;
 /// (used by `linux` under Wayland sessions).
 #[cfg(target_os = "linux")]
 mod wayland_portal;
+/// Windows-only physical desktop stack (the UIA/input/capture adapter the
+/// virtual backend reuses).
 #[cfg(target_os = "windows")]
-mod windows;
+pub(crate) mod windows;
+
+/// Windows-only: the hidden-desktop UIA helper process (helper loop + the
+/// parent-side client the virtual backend drives).
+#[cfg(target_os = "windows")]
+pub(crate) mod uia_helper;
+/// Cross-platform pure half of the UIA helper (protocol + arg detection):
+/// compiled everywhere so its framing tests run on the Linux gates.
+mod uia_helper_protocol;
 
 pub(crate) use self::virtual_display::{
     TargetDecision, VirtualAvailabilitySnapshot, probe as probe_virtual_display, resolve_snapshot,
