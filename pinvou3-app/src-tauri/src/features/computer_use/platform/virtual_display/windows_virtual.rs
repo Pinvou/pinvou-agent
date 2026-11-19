@@ -65,21 +65,41 @@
 //! Notepad — are the common case; the backend detects a packaged keyboard
 //! target via its process image path and attaches an explicit warning to the
 //! action's receipt instead of letting a silent no-op read as success);
-//! title-bar/system-button (non-client) interactions are not injected; UAC
+//! non-client interactions ARE injected as their WM_NC* message sequences
+//! (title-bar double-click maximize/restore, the caption system buttons,
+//! menu-bar and system-menu opens) but a window cannot be MOVED by
+//! dragging its caption nor resized by dragging a border — both need the
+//! modal move/size loop that pumps live pointer coordinates, which a
+//! fixed down/up message pair is not — and the manual
+//! `left_mouse_down`/`left_mouse_up` primitives stay client-routed; UAC
 //! elevation prompts appear on the secure desktop, which no hidden-desktop
 //! API can drive; cross-desktop UI Automation needs an attached helper
-//! process and stays explicitly Unsupported; programs that resolve to a
-//! packaged-app activation (Paint on Windows 11 is the observed case)
+//! process and stays Unsupported — the structural queries answer a
+//! DEGRADED window-class tree instead (`ui_tree`/`element_at_point`/
+//! `focused_element` walk HWNDs: role is the window class, name is the
+//! caption, cross-process control content and UIA-only properties —
+//! including UIA's password flag — are unavailable; the classic
+//! `ES_PASSWORD` style is the one secure-field signal); programs that
+//! resolve to a packaged-app activation (Paint on Windows 11 is the
+//! observed case)
 //! cannot join the session's kill-on-close job and fail the open with an
 //! explicit error; a console program's window is delegated to the default
 //! Windows Terminal host (packaged, broker-activated outside the hidden
 //! desktop), so a console open can fail the same way or surface no visible
 //! window; and
-//! there is no mid-session wind-down: a Stop/revoke only stops driving — the
-//! hidden desktop and its apps remain until the backend is dropped at
-//! session end (the Linux backend winds down on stop; Windows does not, this
-//! release).
+//! a Stop/revoke winds down the apps the session OPENED (each recorded
+//! spawn process is terminated by its retained handle — no grace period,
+//! unsaved work inside them is lost) while the hidden desktop itself — the
+//! desktop object, the session job, and the shell — stays alive so the next
+//! action, including a re-granted session, still works; the shell is only
+//! reclaimed by the full teardown at Drop (session end), the same split the
+//! Linux stack draws between its opened apps and Xvfb/WM.
 
+// The window-class tree serializes with `writeln!` into a `String` — the
+// trait import the physical stack's writer carries (the Linux gates cannot
+// see this file's body, so an unimported `fmt::Write` would only fail on
+// the Windows leg).
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -120,28 +140,34 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, FindWindowW, GA_ROOT,
-    GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT, GetAncestor, GetClassLongW, GetClassNameW,
-    GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetTopWindow, GetWindow,
-    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WindowFromPoint,
+    CS_DBLCLKS, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, ES_PASSWORD,
+    FindWindowW, GA_ROOT, GCL_STYLE, GUITHREADINFO, GW_CHILD, GW_HWNDNEXT, GWL_STYLE, GetAncestor,
+    GetClassLongW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
+    GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, HTCLIENT, IsIconic, IsWindowEnabled, IsWindowVisible,
+    PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG, SendMessageTimeoutW, SetForegroundWindow, WM_CHAR,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN,
+    WM_NCMBUTTONUP, WM_NCMOUSEMOVE, WM_NCRBUTTONDBLCLK, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP,
+    WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
 use super::super::super::backend::ComputerUseBackend;
+use super::super::super::guard::raw_element_binding;
 use super::super::super::types::{
     Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
     ScrollDirection, UiTreeOptions,
 };
 use super::super::helpers::{
-    CHORD_HOLD_MS, CLICK_SETTLE_MS, DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS,
-    HOLD_CANCEL_POLL_MS, MAX_OPEN_CHILDREN, MAX_SCROLL_CLICKS, MULTI_CLICK_INTERVAL_MS,
+    CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
+    DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS,
+    MAX_OPEN_CHILDREN, MAX_SCROLL_CLICKS, MAX_TREE_DEPTH, MAX_TREE_NODES, MULTI_CLICK_INTERVAL_MS,
     TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors, drag_waypoints,
-    logged_program, normalize_typed_newlines, open_capacity_rejected, split_type_runs,
+    logged_program, normalize_typed_newlines, open_capacity_rejected, sanitize_name, screening_hit,
+    split_type_runs,
 };
 use super::VirtualAvailability;
 
@@ -601,6 +627,56 @@ fn multi_click_message(index: u8, down: u32, double: u32, accepts_dblclk: bool) 
         down
     }
 }
+
+/// The `(down, double-click, up)` non-client message triple for a button —
+/// the WM_NC* counterparts of [`mouse_button_messages`]. NC messages carry
+/// the hit-test code in wParam (NOT the MK_* mark) and screen coordinates
+/// in lParam (NOT client coordinates) — see [`WindowsVirtualDesktopBackend::
+/// nc_click`]. Pure; pinned.
+fn nc_mouse_button_messages(button: MouseButton) -> (u32, u32, u32) {
+    match button {
+        MouseButton::Left => (WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONUP),
+        MouseButton::Right => (WM_NCRBUTTONDOWN, WM_NCRBUTTONDBLCLK, WM_NCRBUTTONUP),
+        MouseButton::Middle => (WM_NCMBUTTONDOWN, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONUP),
+    }
+}
+
+/// The NC message for press `index` (0-based) of a multi-click. The client
+/// side ([`multi_click_message`]) gates the DBLCLK substitution on the
+/// target's registered `CS_DBLCLKS` style; the NC side has NO such gate —
+/// the OS synthesizes WM_NCLBUTTONDBLCLK for real double-clicks on any
+/// window (title-bar double-click to maximize works on classes that never
+/// registered CS_DBLCLKS), so the second press always substitutes. Pure;
+/// pinned.
+fn nc_multi_click_message(index: u8, down: u32, double: u32) -> u32 {
+    if index % 2 == 1 { double } else { down }
+}
+
+/// Whether the hit-test code says the point is in the window's CLIENT area
+/// (the message route this backend drove exclusively before non-client
+/// routing existed). `WM_NCHITTEST` answers HTCLIENT for client space and
+/// one of the HT* zone codes (HTCAPTION, HTMINBUTTON, HTMENU, ...) for
+/// everything else; a query that failed or timed out answers "client" —
+/// the pre-routing behavior — so an unresponsive target degrades to the
+/// message posts that always worked instead of failing the action. Pure;
+/// pinned.
+fn zone_is_client(zone: u32) -> bool {
+    zone == HTCLIENT
+}
+
+/// Bound on the `WM_NCHITTEST` round-trip (a SendMessageTimeoutW to the
+/// target's own thread — normally sub-millisecond). A hung target aborts
+/// the wait (`SMTO_ABORTIFHUNG`) and the query degrades to the client
+/// route; the click itself is never blocked behind a wedged app for more
+/// than this budget.
+const NC_HITTEST_TIMEOUT_MS: u32 = 200;
+
+/// Top-level windows enumerated per window-class tree (the composite
+/// capture walks the same Z-order with its own capture cap): the tree's
+/// node budget can be raised by the caller, but the TOP-LEVEL fan-out is
+/// fixed — a pathological window farm beyond this many top-level windows
+/// serves the topmost ones, which are the windows a screenshot shows.
+const TREE_TOP_LEVEL_CAP: usize = 64;
 
 /// Whether `target`'s window class registered `CS_DBLCLKS`. The OS sends
 /// `WM_*BUTTONDBLCLK` only to classes that registered the style, so the
@@ -1243,16 +1319,20 @@ unsafe fn create_kill_on_close_job() -> Result<HANDLE, ComputerUseError> {
 /// `desktop_path_wide` (`WinSta0\name`) and the command line are copied into
 /// mutable, NUL-terminated buffers that outlive the `CreateProcessW` call
 /// (`lpDesktop` is a `PWSTR`; the OS may write into the command line).
-/// Returns the child pid.
+/// On success returns the child pid AND the spawn's own process handle:
+/// the backend retains it so a mid-session wind-down can terminate exactly
+/// the processes the session OPENED (by handle — no pid-recycling
+/// ambiguity) while leaving the hidden desktop's own shell running; the
+/// handle closes when the backend winds the process down or is dropped.
+/// On every failure path the produced handles are closed here.
 ///
-/// SAFETY: the two wide buffers live on this stack frame across the call;
-/// every produced handle is closed on every path.
+/// SAFETY: the two wide buffers live on this stack frame across the call.
 unsafe fn launch_suspended_in_job(
     desktop_path_wide: Vec<u16>,
     application: Option<&[u16]>,
     command_line: &str,
     job: HANDLE,
-) -> Result<u32, ComputerUseError> {
+) -> Result<(u32, HANDLE), ComputerUseError> {
     // SAFETY: see the fn contract.
     unsafe {
         let mut desktop_buffer = desktop_path_wide;
@@ -1326,22 +1406,24 @@ unsafe fn launch_suspended_in_job(
             // The process is contained (assigned to the kill-on-close job)
             // but still SUSPENDED — it would linger until session end.
             // Terminate it now, mirroring the assign-failure path above,
-            // BEFORE the handles close.
+            // BEFORE the handles close — and this launch never joins the
+            // wind-down list (nothing the model could interact with ran).
             // SAFETY: termination of our own just-launched, still-suspended
             // process handle (never resumed, so nothing ran).
             unsafe {
                 let _ = TerminateProcess(info.hProcess, 1);
+                let _ = CloseHandle(info.hProcess);
             }
-        }
-        let _ = CloseHandle(info.hProcess);
-        let _ = CloseHandle(info.hThread);
-        if resumed == u32::MAX {
+            let _ = CloseHandle(info.hThread);
             return Err(ComputerUseError::failed(
                 "the contained process could not be resumed and was terminated \
                  while still suspended",
             ));
         }
-        Ok(info.dwProcessId)
+        // The process handle is handed to the caller (the backend's
+        // wind-down list); the thread handle has no further use.
+        let _ = CloseHandle(info.hThread);
+        Ok((info.dwProcessId, info.hProcess))
     }
 }
 
@@ -1879,11 +1961,13 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
                     // The cap binding is an absence path like the
                     // PrintWindow/BitBlt refusals: the bottom-most windows
                     // are silently missing from that frame unless we say so
-                    // (the same honesty rule — R12).
+                    // (the same honesty rule — R12). Shared by the capture
+                    // composite and the window-class tree, so the text is
+                    // caller-neutral.
                     log::warn!(
-                        "[computer_use][virtual-win] capture: the composite window \
-                         cap ({cap}) bound; bottom-most windows are ABSENT from \
-                         this frame"
+                        "[computer_use][virtual-win] the top-level window \
+                         cap ({cap}) bound; bottom-most windows are ABSENT \
+                         from this pass"
                     );
                     break;
                 }
@@ -1961,6 +2045,263 @@ unsafe fn window_class_name(hwnd: HWND) -> String {
             return String::new();
         }
         String::from_utf16_lossy(&buffer[..(len as usize).min(buffer.len())])
+    }
+}
+
+/// Window caption/text (bounded buffer; empty string on failure).
+/// `GetWindowTextW` reads the OS-cached caption — it never pumps the target
+/// thread, so it cannot wedge — which for controls means the static text or
+/// button label; the CONTENT of another process's edit control is NOT its
+/// caption and is not readable through this query (a disclosed degradation
+/// of the window-class tree).
+///
+/// SAFETY: bounded-buffer string query on a window handle obtained from
+/// desktop-relative enumeration on the attached calling thread.
+unsafe fn window_text(hwnd: HWND) -> String {
+    // SAFETY: see the fn contract.
+    unsafe {
+        let mut buffer = [0u16; 128];
+        let len = GetWindowTextW(hwnd, &mut buffer);
+        if len <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buffer[..(len as usize).min(buffer.len())])
+    }
+}
+
+/// Whether a window is a classic password field: the `ES_PASSWORD` style
+/// bit, checked ONLY for the `Edit` class — that bit lives in the Edit
+/// control's style space, and the same numeric bit names unrelated styles
+/// in other classes (e.g. `BS_LEFTTEXT` on buttons), so an unguarded check
+/// would flag arbitrary controls. This covers classic Win32 password boxes;
+/// a password field inside a UIA-only framework (UWP/WinUI) carries no
+/// classic style bit and answers false — the same secure=false a
+/// non-password box answers, disclosed in the notes as a degradation of
+/// the window-class tree. Pure; pinned.
+fn password_style_for_class(role: &str, style: isize) -> bool {
+    role == "Edit" && (style & ES_PASSWORD as isize) != 0
+}
+
+/// One serialized tree line, in the physical stack's format
+/// (`[i] role "name" (x,y,w,h) flags`, two-space depth indents, flags
+/// omitted when there are none): the model reads both stacks' trees with
+/// one mental model, and `ui_tree`'s tool wrapper appends the same
+/// coordinate-space footer either way. Pure; pinned.
+fn format_class_tree_line(
+    index: u32,
+    depth: u32,
+    role: &str,
+    name: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    flags: &str,
+) -> String {
+    format!(
+        // role renders as Display (a plain &str) — the physical stack's
+        // `{control_type:?}` Debug form prints its enum WITHOUT quotes; a
+        // Debug &str would print `"Button"` with quotes and break the
+        // shared line shape.
+        "{}[{index}] {role} \"{name}\" ({x},{y},{width},{height}){flags}",
+        "  ".repeat(depth as usize),
+    )
+}
+
+/// The effective tree budgets: the caller's options bounded by the same
+/// caps the physical stack applies (`DEFAULT_TREE_*` when omitted, hard
+/// `MAX_TREE_*` ceilings). Identical numbers so a model switching between
+/// the physical and hidden-desktop stacks sees one budget contract. Pure;
+/// pinned.
+fn tree_budget(opts: &UiTreeOptions) -> (u32, u32) {
+    (
+        opts.max_depth
+            .unwrap_or(DEFAULT_TREE_MAX_DEPTH)
+            .min(MAX_TREE_DEPTH),
+        opts.max_nodes
+            .unwrap_or(DEFAULT_TREE_MAX_NODES)
+            .min(MAX_TREE_NODES),
+    )
+}
+
+/// The node budget/cancellation bookkeeping for the window-class tree —
+/// the shape of the physical stack's `TreeWriter` (spent budget, node
+/// truncation flag, depth truncation flag).
+struct HwndTreeWriter {
+    next_index: u32,
+    remaining: u32,
+    truncated: bool,
+    truncated_by_depth: bool,
+}
+
+/// Serialize one HWND subtree depth-first (the window itself, then each
+/// child via `GW_CHILD`/`GW_HWNDNEXT`). A window whose info read fails (it
+/// died between enumeration and the read) is skipped WITHOUT consuming
+/// budget — destroyed windows must not crowd out slots for live ones, the
+/// same churn rule the physical stack applies to fetch failures.
+///
+/// SAFETY: desktop-relative window enumeration + attribute queries on
+/// handles obtained from the same walk, on the attached calling thread.
+unsafe fn write_class_tree_node(
+    hwnd: HWND,
+    depth: u32,
+    max_depth: u32,
+    focused: HWND,
+    writer: &mut HwndTreeWriter,
+    out: &mut String,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ComputerUseError> {
+    if writer.remaining == 0 {
+        writer.truncated = true;
+        return Ok(());
+    }
+    // Cancellation checkpoint adjacent to each node read, matching the
+    // physical stack: an abandoned request must not keep issuing window
+    // queries up to the whole node budget.
+    if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Err(ComputerUseError::unavailable(
+            "ui_tree was cancelled (caller timeout or stop); the remaining \
+             nodes were not fetched",
+        ));
+    }
+    // SAFETY: desktop-relative window queries on handles obtained from the
+    // same walk (see the fn contract).
+    unsafe {
+        let role = window_class_name(hwnd);
+        let raw_name = window_text(hwnd);
+        let mut rect = RECT::default();
+        // A bounds failure means the window died mid-walk: skip without
+        // consuming budget (the churn rule above).
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return Ok(());
+        }
+        writer.remaining -= 1;
+        let index = writer.next_index;
+        writer.next_index += 1;
+        let mut flags = String::new();
+        if !IsWindowEnabled(hwnd).as_bool() {
+            flags.push_str(" disabled");
+        }
+        if focused.0 == hwnd.0 {
+            flags.push_str(" focused");
+        }
+        if IsIconic(hwnd).as_bool() {
+            // A minimized window still occupies its restore rect in this
+            // coordinate space; the physical stack reports the same shape
+            // as UIA's IsOffscreen.
+            flags.push_str(" offscreen");
+        }
+        let line = format_class_tree_line(
+            index,
+            depth,
+            &role,
+            &sanitize_name(&raw_name, MAX_NAME_CHARS),
+            rect.left,
+            rect.top,
+            (rect.right - rect.left).max(0),
+            (rect.bottom - rect.top).max(0),
+            &flags,
+        );
+        let _ = writeln!(out, "{line}");
+        // Children: the first child (GW_CHILD), then its siblings
+        // (GW_HWNDNEXT). An enumeration failure is "this branch ended",
+        // the same churn rule.
+        let Ok(first_child) = GetWindow(hwnd, GW_CHILD) else {
+            return Ok(());
+        };
+        if depth >= max_depth {
+            // Descendants exist below the depth budget but are skipped:
+            // flag depth truncation so the footer tells the caller to
+            // raise it (the physical stack's contract).
+            if !first_child.is_invalid() {
+                writer.truncated_by_depth = true;
+            }
+            return Ok(());
+        }
+        let mut current = first_child;
+        loop {
+            if current.is_invalid() {
+                break;
+            }
+            // SAFETY: see the fn contract.
+            unsafe {
+                write_class_tree_node(current, depth + 1, max_depth, focused, writer, out, cancel)?;
+            }
+            match GetWindow(current, GW_HWNDNEXT) {
+                Ok(next) => current = next,
+                Err(_) => break,
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The focused control for the focused-element query and the tree's
+/// `focused` flags: the foreground window's thread focus, read WITHOUT
+/// stealing focus (the same `GetGUIThreadInfo` read the keyboard target
+/// uses, minus the dance). `None` when there is no foreground app window
+/// or no focused control on its thread — the caller decides between an
+/// honest `None` and an honest error.
+///
+/// SAFETY: desktop-relative foreground/GUI-thread queries from the
+/// attached calling thread.
+unsafe fn current_focus_hwnd() -> Option<HWND> {
+    // SAFETY: see the fn contract.
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.is_invalid() {
+            return None;
+        }
+        if is_shell_window_class(&window_class_name(foreground)) {
+            // The blank-start shell (Progman/WorkerW/Shell_TrayWnd) holds
+            // foreground right after creation; its "focus" is not an app
+            // focus (the same exclusion the keyboard target applies).
+            return None;
+        }
+        let thread = GetWindowThreadProcessId(foreground, None);
+        if thread == 0 {
+            return None;
+        }
+        let mut info = GUITHREADINFO::default();
+        info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(thread, &mut info).is_ok() && !info.hwndFocus.is_invalid() {
+            Some(info.hwndFocus)
+        } else {
+            None
+        }
+    }
+}
+
+/// One HWND as a [`ElementInfo`] for `element_at_point` / `focused_element`:
+/// role is the window class, name is the sanitized caption, bounds are the
+/// window rect in screen coordinates, and `secure` is the classic
+/// `ES_PASSWORD` check (see [`password_style_for_class`]).
+///
+/// SAFETY: desktop-relative window queries on a handle obtained from a
+/// desktop-relative hit test / focus query, on the attached calling thread.
+unsafe fn window_element_info(hwnd: HWND, context: &str) -> Result<ElementInfo, ComputerUseError> {
+    // SAFETY: see the fn contract.
+    unsafe {
+        let role = window_class_name(hwnd);
+        let raw_name = window_text(hwnd);
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).map_err(|error| {
+            ComputerUseError::failed(format!(
+                "{context}: the window's bounds could not be read (the window \
+                 may have closed): {error}"
+            ))
+        })?;
+        Ok(ElementInfo {
+            name_screening_hit: screening_hit(&raw_name),
+            raw_binding: raw_element_binding(&raw_name, &role),
+            name: sanitize_name(&raw_name, MAX_NAME_CHARS),
+            x: rect.left,
+            y: rect.top,
+            width: (rect.right - rect.left).max(0),
+            height: (rect.bottom - rect.top).max(0),
+            secure: password_style_for_class(&role, GetWindowLongPtrW(hwnd, GWL_STYLE)),
+            role,
+        })
     }
 }
 
@@ -2042,6 +2383,16 @@ struct WindowsVirtualDesktopBackend {
     /// after each executed action (the packaged-keyboard-target advisory —
     /// see [`Self::warn_if_packaged_keyboard_target`]).
     warnings: Vec<String>,
+    /// The spawn-owned process handle of every app this session launched
+    /// and left RUNNING (`open_app` successes; a launch that never resumed
+    /// was already terminated and closed inside the spawn path). The
+    /// wind-down (`release_os_grant`) terminates each recorded process BY
+    /// HANDLE — the handle names the exact process object the session
+    /// created, so pid recycling cannot redirect a terminate — while the
+    /// hidden desktop's own shell stays alive (the Linux stack kills the
+    /// opened apps and keeps Xvfb/WM; this is the same contract). Handles
+    /// close on the wind-down or in `Drop`, whichever comes first.
+    opened_processes: Vec<HANDLE>,
 }
 
 // SAFETY: the raw OS handles (HDESK / HANDLE / HWND) are kernel objects that
@@ -2127,6 +2478,7 @@ impl WindowsVirtualDesktopBackend {
             cancel: None,
             capture_wedges: 0,
             opened_app_count: 0,
+            opened_processes: Vec::new(),
             held_press: None,
             pointer: (0, 0),
             warnings: Vec::new(),
@@ -2159,8 +2511,12 @@ impl WindowsVirtualDesktopBackend {
         let (application, command_line) =
             explorer_launch_plan(std::env::var("WINDIR").ok().as_deref());
         let application_wide = to_wide(&application);
-        // SAFETY: contained suspended launch into our job.
-        let explorer_pid = unsafe {
+        // SAFETY: contained suspended launch into our job. The shell's
+        // process handle is closed immediately: the shell is session
+        // infrastructure (it stays for a re-granted session and dies only
+        // at Drop via the job), not a recorded app — the wind-down list is
+        // for `open_app` launches only.
+        let (explorer_pid, explorer_process) = unsafe {
             launch_suspended_in_job(
                 to_wide(&desktop_target_path(&name)),
                 Some(&application_wide),
@@ -2173,6 +2529,9 @@ impl WindowsVirtualDesktopBackend {
                 "cannot start the hidden desktop's shell (explorer): {error}"
             ))
         })?;
+        // SAFETY: close of the shell's own spawn handle — see the launch
+        // comment above (the shell is not a wind-down entry).
+        let _ = unsafe { CloseHandle(explorer_process) };
         log::info!(
             "[computer_use][virtual-win] explorer shell launched on the hidden \
              desktop '{name}' (pid {explorer_pid})"
@@ -2307,6 +2666,19 @@ impl WindowsVirtualDesktopBackend {
         let Some((target, client_x, client_y)) = self.hit_test_at(px, py) else {
             return Ok(()); // pointer moved; nothing to notify
         };
+        // Non-client hover (caption/button highlights): the WM_NCMOUSEMOVE
+        // the OS delivers for a real pointer over that zone (wParam is the
+        // zone, lParam screen coordinates). A client-zone or an
+        // undeliverable zone query falls through to the client move.
+        let zone = unsafe { Self::nc_zone_of(target, px, py) };
+        if !zone_is_client(zone) {
+            return self.post(
+                target,
+                WM_NCMOUSEMOVE,
+                zone as usize,
+                pack_mouse_lparam(px, py),
+            );
+        }
         self.post(
             target,
             WM_MOUSEMOVE,
@@ -2409,6 +2781,103 @@ impl WindowsVirtualDesktopBackend {
                 current = child;
             }
         }
+    }
+
+    /// The window's hit-test ZONE at the screen point: the answer the OS
+    /// itself would route real input by (`WM_NCHITTEST` — DefWindowProc
+    /// classifies caption/buttons/menu/borders from the window's own
+    /// non-client geometry, and self-drawn title bars override it with
+    /// their own zones, so both standard and custom chrome classify the
+    /// same way real input does). The deepest hit-tested window is queried
+    /// with a bounded wait: unlike the PostMessageW posts, a SendMessage
+    /// blocks on the target thread, so `SMTO_ABORTIFHUNG` plus
+    /// [`NC_HITTEST_TIMEOUT_MS`] keeps a wedged app from stalling the
+    /// click — a timeout/failure answers "client" ([`zone_is_client`]),
+    /// the pre-routing behavior, instead of failing the action.
+    ///
+    /// SAFETY: cross-desktop SendMessage with a timeout to a window handle
+    /// from the attached worker's own hit test; the out-pointer is a valid
+    /// usize slot.
+    unsafe fn nc_zone_of(window: HWND, x: i32, y: i32) -> u32 {
+        let mut result: usize = 0;
+        // SAFETY: see the fn contract.
+        let delivered = unsafe {
+            SendMessageTimeoutW(
+                window,
+                WM_NCHITTEST,
+                WPARAM(0),
+                LPARAM(pack_mouse_lparam(x, y)),
+                SMTO_ABORTIFHUNG,
+                NC_HITTEST_TIMEOUT_MS,
+                Some(&mut result),
+            )
+        };
+        // A zero return means the message was NOT delivered (timeout, hung
+        // target, dying window): the safe answer is the client route, which
+        // is what this backend posted before routing existed.
+        if delivered.0 == 0 {
+            HTCLIENT
+        } else {
+            result as u32
+        }
+    }
+
+    /// A click whose hit-test zone is a NON-CLIENT zone (title bar, system
+    /// buttons, menu bar, system menu, scroll bars): the WM_NC* message
+    /// sequence the OS would deliver for the same real click. wParam is
+    /// the hit-test code (not the MK_* mark) and lParam is SCREEN
+    /// coordinates (not client) — the NC message contract. What each zone
+    /// does once the sequence lands is the window's own DefWindowProc /
+    /// app handling, exactly as with real input: HTCAPTION double-click
+    /// toggles maximize/restore, HTMINBUTTON/HTMAXBUTTON/HTCLOSE press
+    /// their system commands, HTMENU/HTSYSMENU open their menus (a popup
+    /// the model can then click — menu items are ordinary windows under
+    /// the client route).
+    ///
+    /// Deliberately NOT supported here (disclosed in the capability notes):
+    /// window MOVE by caption drag and border-drag resize need the
+    /// `SC_MOVE`-style modal move/size loop that pumps live coordinates —
+    /// this backend's posts are a fixed down/up pair, not a live pointer
+    /// stream; and the primitives `left_mouse_down`/`left_mouse_up` keep
+    /// posting CLIENT messages, so a manual down→up assembly over the
+    /// caption does not synthesize these zones (use `click`).
+    fn nc_click(
+        &mut self,
+        target: HWND,
+        button: MouseButton,
+        count: u8,
+        zone: u32,
+        screen_x: i32,
+        screen_y: i32,
+    ) -> Result<(), ComputerUseError> {
+        let (down, double, up) = nc_mouse_button_messages(button);
+        // NC lParam is screen coordinates — no client translation.
+        let lparam = pack_mouse_lparam(screen_x, screen_y);
+        // Real input activates the window on the first press (a title-bar
+        // click raises it before whatever the zone does); same first-press
+        // rule as the client route.
+        self.focus_dance(target);
+        for index in 0..count.max(1) {
+            if self.cancelled() {
+                return Err(ComputerUseError::unavailable(
+                    "click was cancelled (caller timeout or stop); already \
+                     injected clicks are not undone",
+                ));
+            }
+            let message = nc_multi_click_message(index, down, double);
+            self.post(target, message, zone as usize, lparam)?;
+            // Mirror the client route's stranded-button honesty: a failed
+            // NC up must surface the still-held fact.
+            if let Err(error) = self.post(target, up, zone as usize, lparam) {
+                return Err(ComputerUseError::failed(format!(
+                    "{error}; the button may still be pressed"
+                )));
+            }
+            if index + 1 < count.max(1) {
+                sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
+            }
+        }
+        Ok(())
     }
 
     /// The focus dance (rustyvnc recipe): attach the input queues, set the
@@ -2679,7 +3148,7 @@ impl WindowsVirtualDesktopBackend {
         &self,
         application: Option<&str>,
         command_line: &str,
-    ) -> Result<u32, ComputerUseError> {
+    ) -> Result<(u32, HANDLE), ComputerUseError> {
         if self.job.is_invalid() {
             return Err(ComputerUseError::unavailable(
                 "the hidden desktop session job object is gone",
@@ -2713,9 +3182,20 @@ fn capability_notes() -> String {
      typed dialog keys (Enter/Tab delivered by type_text) ride the \
      WM_CHAR text channel, which dialog managers do not act on — the \
      action reports success while the dialog's default button or \
-     focus cycle does not fire, title-bar/system-button (non-client) \
-     interactions are \
-     not injected, posted chords do not update the app's async \
+     focus cycle does not fire, non-client clicks are routed as their \
+     WM_NC* messages (title-bar double-click maximizes/restores, the \
+     caption system buttons and menu bars work, and a menu the click \
+     opens can be clicked item by item) but a window cannot be moved \
+     by dragging its title bar or resized by dragging a border (those \
+     need a live pointer stream this injection cannot provide) and the \
+     manual left_mouse_down/left_mouse_up primitives stay client-side, \
+     the structural queries serve a window-class tree, NOT UI \
+     Automation (ui_tree roles are window classes and names are \
+     window captions — cross-process control content is not read, \
+     UIA-only properties are unavailable, and the only secure-field \
+     signal is the classic Edit ES_PASSWORD style, so a password \
+     field inside a UIA-only framework answers secure=false), \
+     posted chords do not update the app's async \
      key-state table (apps that read modifier state from \
      GetKeyState may see unmodified keys), scroll events go \
      to the window under the pointer rather than the focus \
@@ -2742,7 +3222,13 @@ fn capability_notes() -> String {
      Windows Terminal host (packaged, broker-activated outside the \
      hidden desktop), so a console open can fail the same way or come \
      up with no visible window — verify with a screenshot instead of \
-     retrying blindly; there is no OS cursor on the hidden desktop \
+     retrying blindly; stopping the session (the Stop button, a grant \
+     revoke, or the master switch) winds down the apps opened on the \
+     hidden desktop — they are ended without a grace period, so \
+     unsaved work inside them is lost — while the desktop and its \
+     shell stay alive for a re-granted session, and everything, shell \
+     included, is reclaimed when the session is torn down; there is no \
+     OS cursor on the hidden desktop \
      (the input-desktop cursor APIs are documented to fail there), \
      so the session tracks a virtual pointer that starts at the \
      screen center and follows every move and drag; a manual press \
@@ -2804,9 +3290,10 @@ fn capability_target_note() -> String {
      per-window composites (no DWM on a hidden desktop) covering \
      the session's whole virtual screen (all monitors); UAC \
      elevation prompts appear on the secure desktop and cannot \
-     be driven; stopping the session does not wind the hidden \
-     desktop down mid-session — its desktop and apps remain \
-     until the backend is dropped at session end"
+     be driven; stopping the session winds down the apps opened on \
+     the hidden desktop (no grace period — unsaved work inside them \
+     is lost) while the desktop and its shell remain for a \
+     re-granted session until the backend is dropped at session end"
         .to_string()
 }
 
@@ -2815,7 +3302,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         Capabilities {
             screenshot: true,
             input: true,
-            ui_tree: false,
+            ui_tree: true,
             notes: capability_notes(),
             target: DisplayTarget::Virtual,
             target_note: capability_target_note(),
@@ -2845,6 +3332,17 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                  move_to a window first",
             ));
         };
+        // Route by the window's own hit-test zone: a point over the caption,
+        // a system button, the menu bar, or any other non-client area is
+        // NC input the client-message posts never modeled (the pre-routing
+        // click posted WM_LBUTTONDOWN into the deepest window and was
+        // ignored by every standard non-client handler). A client zone —
+        // or a zone query that failed/timed out — stays on the client
+        // route below.
+        let zone = unsafe { Self::nc_zone_of(target, x, y) };
+        if !zone_is_client(zone) {
+            return self.nc_click(target, button, count, zone, x, y);
+        }
         let (down, double, up, mark) = mouse_button_messages(button);
         let lparam = pack_mouse_lparam(client_x, client_y);
         // SAFETY: class-style query on the hit-tested desktop window.
@@ -3116,41 +3614,151 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         self.chord_to(keys, Duration::from_millis(ms))
     }
 
-    fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
-        Err(ComputerUseError::unsupported(
-            "ui_tree",
-            "the hidden-desktop virtual display cannot query UI Automation: \
-             cross-desktop UIA needs an attached helper process, which is not \
-             implemented in this release; use screenshots and coordinate-based \
-             actions instead",
-        ))
+    fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+        let (max_depth, max_nodes) = tree_budget(opts);
+        let mut out = String::new();
+        // The degradation must be visible in the payload itself, not only in
+        // the capability notes: the model that reads this tree must know the
+        // roles are window CLASSES (not UIA control types), the names are
+        // window CAPTIONS, and cross-process control content is not read.
+        out.push_str(
+            "window-class tree (Win32 HWND walk, NOT UI Automation: role is \
+             the window class, name is the window caption; control content \
+             is not read across processes, UIA-only properties are \
+             unavailable)\n",
+        );
+        let mut writer = HwndTreeWriter {
+            next_index: 0,
+            remaining: max_nodes,
+            truncated: false,
+            truncated_by_depth: false,
+        };
+        // Shell windows (Progman/WorkerW/Shell_TrayWnd) carry no drivable
+        // content and would otherwise crowd the top level of every tree
+        // (the same exclusion the keyboard-target fallback applies).
+        let focused = unsafe { current_focus_hwnd() };
+        let mut roots = Vec::new();
+        // SAFETY: desktop-relative Z-order enumeration on the attached
+        // worker thread; the cap mirrors the composite's honesty (the
+        // bottom-most windows silently absent under a pathological farm).
+        let tops = unsafe { walk_visible_toplevels(TREE_TOP_LEVEL_CAP) };
+        for top in tops {
+            // SAFETY: class-name query on a handle from the enumeration
+            // above, on the attached worker thread.
+            if is_shell_window_class(&unsafe { window_class_name(top) }) {
+                continue;
+            }
+            roots.push(top);
+        }
+        for root in roots {
+            // SAFETY: see write_class_tree_node.
+            unsafe {
+                write_class_tree_node(
+                    root,
+                    0,
+                    max_depth,
+                    focused.unwrap_or(HWND::default()),
+                    &mut writer,
+                    &mut out,
+                    self.cancel.as_deref(),
+                )?;
+            }
+        }
+        if writer.truncated {
+            let _ = writeln!(
+                out,
+                "... (truncated at {} nodes; pass a larger max_nodes to see more)",
+                writer.next_index
+            );
+        }
+        if writer.truncated_by_depth {
+            let _ = writeln!(
+                out,
+                "... (truncated by depth; pass a larger max_depth to see more)"
+            );
+        }
+        Ok(out)
     }
 
     fn element_at_point(
         &mut self,
-        _x: i32,
-        _y: i32,
+        x: i32,
+        y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
-        Err(ComputerUseError::unsupported(
-            "element_at_point",
-            "the hidden-desktop virtual display cannot query UI Automation: \
-             cross-desktop UIA needs an attached helper process, which is not \
-             implemented in this release; use screenshots and coordinate-based \
-             actions instead",
-        ))
+        // The same hit test the click route uses: the deepest window at the
+        // point (client space) or the top-level window that owns a
+        // non-client point. UIA would answer with a semantic element at
+        // arbitrary depth; the window-class tree answers with the owning
+        // HWND — the disclosed degradation.
+        let Some((target, _, _)) = self.hit_test_at(x, y) else {
+            return Ok(None);
+        };
+        // SAFETY: window queries on the hit-tested desktop window.
+        unsafe { window_element_info(target, "element_at_point") }.map(Some)
     }
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
-        Err(ComputerUseError::unsupported(
-            "focused_element",
-            "the hidden-desktop virtual display cannot query UI Automation: \
-             cross-desktop UIA needs an attached helper process, which is not \
-             implemented in this release",
-        ))
+        // "Never masquerade as none": a read that cannot name the focused
+        // control (no foreground app window, no focused control on its
+        // thread) is an ERROR, which the tool layer treats as
+        // focus-uncertain and masks the confirm preview — flattening it
+        // into Ok(None) would let full typed text ride a confirmation
+        // while a password field actually holds focus. The classic
+        // ES_PASSWORD style still drives `secure` when the control IS
+        // identified (see password_style_for_class for the UIA-only
+        // residual).
+        let Some(focused) = (unsafe { current_focus_hwnd() }) else {
+            return Err(ComputerUseError::unavailable(
+                "the focused control cannot be identified on the hidden \
+                 desktop (no app window holds keyboard focus); treat the \
+                 input target as sensitive",
+            ));
+        };
+        // SAFETY: window queries on the focus-identified desktop window.
+        unsafe { window_element_info(focused, "focused_element") }.map(Some)
     }
 
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         self.cancel = flag;
+    }
+
+    fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+        // Triggered by the command layer when the user revokes the grant /
+        // hits Stop / flips the master switch off (the same wiring that
+        // drives the Linux stack's wind-down). What Stop must undo is the
+        // apps the agent OPENED: each recorded spawn process is terminated
+        // BY HANDLE (no pid-recycling ambiguity) with no grace period —
+        // unsaved work inside those apps is lost, the same group-kill
+        // honesty the Linux stack discloses. The hidden desktop's own
+        // infrastructure — the desktop object, the session job, and the
+        // shell — stays alive, so the next action (including a re-granted
+        // session and fresh `open` calls) still works without any respawn;
+        // the shell itself is only reclaimed by Drop at session end. The
+        // kill-on-close job remains the backstop: a process that somehow
+        // survived its terminate still dies with the session.
+        let processes = std::mem::take(&mut self.opened_processes);
+        let total = processes.len();
+        let mut wound_down = 0usize;
+        for process in processes {
+            // SAFETY: termination + close of our own recorded spawn handle
+            // (PROCESS_TERMINATE right is part of CreateProcessW's return).
+            // A process that already exited on its own fails the terminate
+            // (ERROR_ACCESS_DENIED on a dead handle target) and is only
+            // closed — that is churn, not an error this channel reports.
+            let terminated = unsafe { TerminateProcess(process, 1) };
+            if terminated.is_ok() {
+                wound_down += 1;
+            }
+            let _ = unsafe { CloseHandle(process) };
+        }
+        if total > 0 {
+            log::info!(
+                "[computer_use][virtual-win] released the virtual grant — \
+                 {wound_down} of {total} opened app process(es) wound down; \
+                 the hidden desktop itself stays usable"
+            );
+        }
+        Ok(())
     }
 
     fn take_warnings(&mut self) -> Vec<String> {
@@ -3183,7 +3791,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // explicitly and pins `lpApplicationName` to dodge command-line
         // parsing ambiguity instead.
         let command_line = build_command_line(program, args);
-        let pid = self.launch_in_job(None, &command_line)?;
+        let (pid, process) = self.launch_in_job(None, &command_line)?;
+        // The spawn's own handle joins the wind-down list (release_os_grant
+        // terminates exactly these; see the field doc).
+        self.opened_processes.push(process);
         self.opened_app_count += 1;
         // The program text is model-supplied; it renders ONLY through
         // `logged_program` (Debug escaping keeps a control character from
@@ -3269,6 +3880,15 @@ impl Drop for WindowsVirtualDesktopBackend {
                      them when the handle closes)"
                 );
             }
+        }
+        // 2b. Close the wind-down list's retained spawn handles. A release
+        //     (Stop/revoke) already terminated and closed them; anything
+        //     still here was opened but never wound down, and the job
+        //     termination above already ended those processes — the close
+        //     is bookkeeping, never a second terminate.
+        for process in self.opened_processes.drain(..) {
+            // SAFETY: close of our own retained spawn handle.
+            let _ = unsafe { CloseHandle(process) };
         }
         // 3. Capture thread: disconnect the channel, give it a bounded join
         //    (a thread wedged inside a PrintWindow/RedrawWindow to a dying
@@ -3820,8 +4440,15 @@ mod tests {
              undisclosed in both directions"
         );
         assert!(
-            note.contains("does not wind the hidden desktop down mid-session"),
-            "Stop leaves the desktop and its apps alive until backend drop"
+            note.contains("winds down the apps opened on the hidden desktop")
+                && note.contains("unsaved work inside them is lost"),
+            "Stop winds down the opened apps (no grace) — the group-kill \
+             honesty the Linux stack also discloses"
+        );
+        assert!(
+            note.contains("the desktop and its shell remain"),
+            "Stop leaves the desktop and shell alive for a re-granted \
+             session until backend drop"
         );
         let notes = capability_notes();
         assert!(
@@ -3936,6 +4563,51 @@ mod tests {
                 && notes.contains("finishes a still-held left press first"),
             "the orphaned-target recovery truth and the drag's held-left \
              finish must be disclosed, not a rosier promise"
+        );
+
+        // The non-client routing must be disclosed in BOTH directions: what
+        // now works (NC clicks) and what still does not (caption-drag move,
+        // border-drag resize, manual down/up over NC zones) — a model that
+        // reads only "we support title bars" would burn actions on drags
+        // this stack cannot deliver.
+        assert!(
+            notes.contains("WM_NC* messages"),
+            "the non-client click routing must be disclosed"
+        );
+        assert!(
+            notes.contains("cannot be moved") && notes.contains("left_mouse_down/left_mouse_up"),
+            "the caption-drag/border-drag/manual-primitive residuals must be \
+             disclosed"
+        );
+        // The wind-down contract must be disclosed with its full honesty:
+        // stop kills the opened apps WITHOUT a grace period (unsaved work
+        // is lost), the desktop survives for a re-granted session, and the
+        // full teardown (shell included) waits for session end — the same
+        // shape the Linux stack discloses.
+        assert!(
+            notes.contains("winds down the apps opened on the hidden desktop")
+                && notes.contains("without a grace period")
+                && notes.contains("unsaved work inside them is lost"),
+            "the stop-time wind-down (group kill, no grace) must be disclosed"
+        );
+        assert!(
+            notes.contains("shell stay alive for a re-granted session")
+                && notes.contains("reclaimed when the session is torn down"),
+            "the survive-a-stop / reclaimed-at-teardown split must be disclosed"
+        );
+        // The structural-query contract must be disclosed both ways: the
+        // real UIA tree comes from the attached helper process, and the
+        // fallback walk's degraded semantics (class roles, caption names,
+        // no content, secure=false off the classic style) must be visible
+        // to a model that lands on it.
+        assert!(
+            notes.contains("attached helper process")
+                && notes.contains("fall back to a window-class walk")
+                && notes.contains("cross-process control")
+                && notes.contains("secure-field signal"),
+            "the UIA-helper contract and its window-class fallback must be \
+             disclosed"
+        );
         );
     }
 
@@ -4135,6 +4807,235 @@ mod tests {
             "no input-desktop cursor-API call may return: both require the \
              input desktop and fail with ERROR_ACCESS_DENIED on the hidden \
              desktop regardless of attachment"
+        );
+    }
+
+    /// The NC message selection mirrors the client triples button-by-button,
+    /// the NC double-click substitutes WITHOUT the CS_DBLCLKS gate (the OS
+    /// synthesizes NC double-clicks for every class), and the zone verdict
+    /// is exactly `HTCLIENT` — with a nonzero/degenerate answer never
+    /// mistaken for client space. Pure; pinned.
+    #[test]
+    fn nc_message_selection_follows_the_button_and_zone() {
+        assert_eq!(
+            nc_mouse_button_messages(MouseButton::Left),
+            (WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONUP)
+        );
+        assert_eq!(
+            nc_mouse_button_messages(MouseButton::Right),
+            (WM_NCRBUTTONDOWN, WM_NCRBUTTONDBLCLK, WM_NCRBUTTONUP)
+        );
+        assert_eq!(
+            nc_mouse_button_messages(MouseButton::Middle),
+            (WM_NCMBUTTONDOWN, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONUP)
+        );
+        // Press 1 = down, press 2 = DBLCLK (no class-style gate on the NC
+        // side), press 3 = down, press 4 = DBLCLK.
+        assert_eq!(
+            nc_multi_click_message(0, WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK),
+            WM_NCLBUTTONDOWN
+        );
+        assert_eq!(
+            nc_multi_click_message(1, WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK),
+            WM_NCLBUTTONDBLCLK
+        );
+        assert_eq!(
+            nc_multi_click_message(2, WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK),
+            WM_NCLBUTTONDOWN
+        );
+        assert_eq!(
+            nc_multi_click_message(3, WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK),
+            WM_NCLBUTTONDBLCLK
+        );
+        // Only HTCLIENT is the client route: every other zone code (caption,
+        // buttons, menu, borders) routes NC, and the numeric neighbors stay
+        // distinct (HTCLIENT == 1; HTNOWHERE == 0, HTCAPTION == 2).
+        assert!(zone_is_client(HTCLIENT));
+        assert!(!zone_is_client(0));
+        assert!(!zone_is_client(2));
+        assert!(!zone_is_client(u32::MAX));
+    }
+
+    /// The non-client routing has no runtime seam a CI leg could exercise
+    /// (no hidden desktop in CI), so it is source-counted like the other
+    /// stay-wired pins: the zone query, the click/hover route points, and
+    /// the NC click executor must all stay wired, or a revert to
+    /// client-only posting — the pre-routing shape that silently ignored
+    /// every caption/button/menu click — would compile and pass every leg
+    /// that cannot run a hidden desktop.
+    #[test]
+    fn non_client_routing_stays_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("nc_zone_of(").count(),
+            3,
+            "definition + the click route point + the hover route point: a \
+             revert that skips the zone query and posts client messages \
+             everywhere fails here"
+        );
+        assert_eq!(
+            src.matches("nc_click(").count(),
+            2,
+            "definition + the click dispatch: an unrouted NC zone falls back \
+             to the client posts and fails here"
+        );
+        assert_eq!(
+            src.matches("zone_is_client(").count(),
+            3,
+            "definition + both route verdicts: a route that treats NC zones \
+             as client space fails here"
+        );
+        assert_eq!(
+            src.matches("nc_multi_click_message(").count(),
+            2,
+            "definition + the nc_click press loop: the NC double-click \
+             substitution must stay wired"
+        );
+    }
+
+    /// The stop-time wind-down has no runtime seam a CI leg could exercise
+    /// either (no hidden desktop, and the release path only fires from the
+    /// command layer), so its wiring is source-counted: the trait override,
+    /// the retained-handle recording, the by-handle terminate, and the
+    /// Drop-side close must all stay wired — a revert to "stop only stops
+    /// driving" (the disclosed phase-1 shape) would compile and pass
+    /// everything that cannot run a hidden desktop.
+    #[test]
+    fn release_wind_down_stays_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("fn release_os_grant(&mut self)").count(),
+            1,
+            "the Windows stack must override the release hook (the trait \
+             default is a no-op — a revert to it silently disables the \
+             wind-down)"
+        );
+        assert_eq!(
+            src.matches("self.opened_processes.push(process)").count(),
+            1,
+            "every successful open must record its spawn handle: without the \
+             recording the wind-down terminates nothing"
+        );
+        assert_eq!(
+            src.matches("std::mem::take(&mut self.opened_processes)")
+                .count(),
+            1,
+            "the release path must consume the list (a re-stop after a \
+             release finds it empty instead of re-terminating)"
+        );
+        // The fuller statement shape keeps this pin from matching the
+        // crash-sweep's `if let Err(error) = TerminateProcess(process, 1)`
+        // (a same-named binding that predates the wind-down).
+        assert_eq!(
+            src.matches("let terminated = unsafe { TerminateProcess(process, 1) };")
+                .count(),
+            1,
+            "the by-handle terminate (no pid-recycling ambiguity) must stay \
+             in the release path"
+        );
+        assert_eq!(
+            src.matches("self.opened_processes.drain(..)").count(),
+            1,
+            "Drop must close whatever handles a release left behind (usually \
+             none — the bookkeeping keeps the handle count honest)"
+        );
+    }
+
+    /// The window-class tree's pure helpers: the password verdict fires only
+    /// for the Edit class (the same numeric style bit names unrelated styles
+    /// elsewhere), the line format matches the physical stack's
+    /// `[i] role "name" (x,y,w,h) flags` shape, and the budgets mirror the
+    /// physical defaults/caps exactly. Pure; pinned.
+    #[test]
+    fn class_tree_helpers_follow_the_shared_contract() {
+        // ES_PASSWORD on Edit is secure; the same bit on another class is
+        // that class's unrelated style and must NOT read as a password.
+        assert!(password_style_for_class("Edit", ES_PASSWORD as isize));
+        assert!(!password_style_for_class("Edit", 0));
+        assert!(!password_style_for_class("Button", ES_PASSWORD as isize));
+        // A window with no class name cannot be classified secure.
+        assert!(!password_style_for_class("", ES_PASSWORD as isize));
+
+        let line = format_class_tree_line(7, 2, "Button", "Cancel", -1920, 10, 120, 40, "");
+        assert_eq!(line, "    [7] Button \"Cancel\" (-1920,10,120,40)");
+        let flagged =
+            format_class_tree_line(0, 0, "Edit", "Password", 0, 0, 80, 20, " disabled focused");
+        assert_eq!(
+            flagged,
+            "[0] Edit \"Password\" (0,0,80,20) disabled focused"
+        );
+
+        let (depth, nodes) = tree_budget(&UiTreeOptions {
+            max_depth: None,
+            max_nodes: None,
+        });
+        assert_eq!(depth, DEFAULT_TREE_MAX_DEPTH);
+        assert_eq!(nodes, DEFAULT_TREE_MAX_NODES);
+        // Caller values ride through until a hard cap: schema caps (64 /
+        // 10000) land under these ceilings, and an over-cap request is
+        // clamped like the physical stack clamps it.
+        let (depth, nodes) = tree_budget(&UiTreeOptions {
+            max_depth: Some(2),
+            max_nodes: Some(5),
+        });
+        assert_eq!((depth, nodes), (2, 5));
+        let (depth, nodes) = tree_budget(&UiTreeOptions {
+            max_depth: Some(u32::MAX),
+            max_nodes: Some(u32::MAX),
+        });
+        assert_eq!((depth, nodes), (MAX_TREE_DEPTH, MAX_TREE_NODES));
+    }
+
+    /// The window-class tree wiring has no runtime seam a CI leg could
+    /// exercise (no hidden desktop in CI), so it is source-counted: the
+    /// capability bit, the three query surfaces, the shared walk, the
+    /// degradation header, and the shell exclusion must all stay wired —
+    /// a revert to the explicit `unsupported` errors (or to a tree that
+    /// hides its degradation from the model) would compile and pass every
+    /// leg that cannot run a hidden desktop.
+    #[test]
+    fn class_tree_stays_wired() {
+        let src = production_source();
+        assert!(
+            src.contains("ui_tree: true"),
+            "the hidden-desktop stack must advertise the (degraded) tree — a \
+             revert to `ui_tree: false` re-locks the queries behind the tool \
+             gate"
+        );
+        assert_eq!(
+            src.matches("fn ui_tree(&mut self, opts: &UiTreeOptions)")
+                .count(),
+            1,
+            "the ui_tree override must replace the unsupported stub"
+        );
+        assert_eq!(
+            src.matches("write_class_tree_node(").count(),
+            3,
+            "definition + the recursive child call + the per-root call: the \
+             depth-first serialization must stay wired"
+        );
+        assert_eq!(
+            src.matches("window_element_info(").count(),
+            3,
+            "definition + the element_at_point read + the focused_element \
+             read: a query surface reverting to `unsupported` drops the \
+             count and fails here"
+        );
+        assert_eq!(
+            src.matches("current_focus_hwnd(").count(),
+            3,
+            "definition + the ui_tree focused flag + the focused_element \
+             query: the no-focus-steal focus read must stay wired"
+        );
+        assert!(
+            src.contains("NOT UI Automation"),
+            "the payload must name its own degradation (roles are window \
+             classes, captions are names, content is unread) — a tree that \
+             hides its semantics from the model fails here"
+        );
+        assert!(
+            src.contains("tree_budget("),
+            "the shared budget helper must stay wired (physical-stack parity)"
         );
     }
 
