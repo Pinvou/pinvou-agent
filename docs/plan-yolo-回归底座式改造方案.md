@@ -97,6 +97,8 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 - **改造** M3（`992-1008`）：`mode==Plan && !plan_used && text_len>阈值` → emit `plan_text_fallback`（收口兜底，D5；⚠️ 随后被 §7 阶段3 终决放弃，现行不存在）
 - `TurnPlanTracker` 删 `write_tool_used`/`assistant_text_len` 字段（仅 M2/M3 旧逻辑用），留 `plan_tool_used`+snapshots
 
+（⚠️ 2026-11-19 r22 注：上列前三条实落**阶段2** `1725aa6dc7`——其 commit message 自述「M2 自驱续跑删、plan_ready 去 phase 条件(plan_used && Plan 即弹卡)」、diff 同批删 `write_tool_used`/`assistant_text_len` 与 `plan_has_pending`；非阶段3 执行项，阶段3 仅余 `703dd3a51c` 清残骸。）
+
 **验证**：`cargo check` + `cargo test`；真机验证 plan_ready 仍弹卡、M3 兜底卡在「写了方案没调工具」时出现
 
 ### 阶段 4：reminder 降维 + 前端联动清理 + 回归
@@ -156,7 +158,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 阶段2 已删 M3 后端 emit，前端监听器随之成死代码（永不触发）。本次评估后**决定不重做 M3，把残骸清干净**。
 
 **为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
-1. 底座 `update_plan → chat:plan_ready → 方案卡"✅就这么干"→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
+1. 底座 `update_plan → chat:plan_ready → 方案卡"✅ 就这么干"→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡ 直接动手(跳过方案)」（渲染原文，半角括号）。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 

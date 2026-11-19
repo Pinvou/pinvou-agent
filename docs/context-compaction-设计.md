@@ -60,7 +60,7 @@
 served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口（实际
 `max_model_len=262144` 完好）→ E 降到 128,000 − 24,576 − 1,024 = **102,400**（2026-11
 订正：原书 105,472 系误取 §6 表中 131,072 档的配对值；写档时点兜底常量即 128,000，
-见 `route_budget.rs:63`（写档时代内部 tag 树，本仓 checkout 不含该 tag；公开可复核锚：Pinvou/CodeWhale `v0.9.1` 同式兜底在 `:66`——2026-11-19 订正：裸 tag `v0.9.5` 在公开仓 Pinvou/CodeWhale 不可解；本地各 store 视 fetch 源可能解析到上游 DeepSeek-TUI 谱系的同名 tag，勿混用）），而写死的 190,000 > E → **倒置**，
+见 `route_budget.rs:63`（⚠️ 2026-11-19 r22 订正：该锚系 0.9.5 时代内部 tag `pinvou-v0.9.5-r1` 树——tagger 2026-08-10、晚于 2026-07-02 写档日，且本地 checkout 实含该 tag，前版「写档时代内部 tag、本仓 checkout 不含该 tag」两说均不成立；写档期同值兜底真身在 `core/engine/context.rs:50`。公开可复核锚：Pinvou/CodeWhale `v0.9.1` 同式兜底在 `:66`——裸 tag `v0.9.5` 在公开仓 Pinvou/CodeWhale 不可解；本地各 store 视 fetch 源可能解析到上游 DeepSeek-TUI 谱系的同名 tag，勿混用）），而写死的 190,000 > E → **倒置**，
 正常线永远轮不到，只剩 emergency 抖动（每次本地 trim 省 2-3K）。
 
 **单点失败：窗口来源依赖一个易丢的启动参数。** 修法 = 不靠名字，直接探测。

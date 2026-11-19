@@ -204,6 +204,8 @@ flowchart TB
 
 #### `CodexBinaryResolver`
 
+> （⚠️ 快照口径：下列解析序未被采纳——现行 `select_newest_eligible` 在系统/legacy 候选中择新可兼容者，见 §2 注与 §4 表注。）
+
 Bridge Runtime 始终使用 Pinvou 固定版本，不从系统查找 Node 或 `codex-acp`。Bridge
 通过 `CODEX_PATH` 选择实际 Codex 二进制，按以下优先级解析：
 
@@ -281,6 +283,8 @@ Bridge 不能只固定顶层 `codex-acp` 而允许每次构建重新解析不同
 系统版本。
 
 ### 6.2 目录布局
+
+> 注（2026-11 归档）：快照布局——现行 bridge 另含 `claude-agent-acp` 适配器与随包 npm（`node/lib/node_modules/npm`），见 `prepare-codex-bridge-runtime.sh`。
 
 ```text
 <app-resources>/codex-bridge/

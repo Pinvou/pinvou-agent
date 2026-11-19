@@ -8,7 +8,8 @@
 > `pinvou3_blocklist` 机制等描述已随后续版本失效。另注：快照实为基于晚于 v0.8.60 tag 的
 > fork 构建（快照桥接层注释已见「v0.8.65 上游新增字段」），正文个别行为描述混有更晚时期
 > 内容，已在相应小节就地加注。现行工具面与治理以
-> [`tool-governance.md`](./tool-governance.md) 为准。
+> [`tool-governance.md`](./tool-governance.md) 为准。姊妹篇（工具清单与计数视角）：
+> [`DeepSeek-TUI-工具系统`](./DeepSeek-TUI-工具系统.md)。
 
 ## 阅读导向
 
@@ -67,7 +68,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，自带 guard 测试（`forkguard_blocklist_golden`），`crates/tui/src/core/engine/tests.rs` 另有 `forkguard_yolo_no_deferred_activator_first_class`，防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，子模块 tag `pinvou-v0.9.0-r1..r4` 可达——r 系列仅本地克隆留存、公开仓无此 refs；author date 2026-06-29、commit date 2026-07-24 系重建链），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，自带 guard 测试（`forkguard_blocklist_golden`），`crates/tui/src/core/engine/tests.rs` 另有 `forkguard_yolo_no_deferred_activator_first_class`，防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，子模块 tag `pinvou-v0.9.0-r1..r4` 可达——r 系列在公开仓 Pinvou/CodeWhale 亦有同名 refs（⚠️ 2026-11-19 r22 订正：r21「仅本地克隆留存、公开仓无此 refs」注为假——`refs/tags/pinvou-v0.9.0-r1` 公开 API 200、tag 对象 `efa2772f` 2026-07-24 tagger，分支 `backup/pinvou3-clean-v0.9.0-r4` 同在；错在低估公开可得性）；author date 2026-06-29、commit date 2026-07-24 系重建链），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 

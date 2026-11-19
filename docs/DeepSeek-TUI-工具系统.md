@@ -8,7 +8,8 @@
 > 路径对应现 `CodeWhale/`），且工具面在 v0.9.x
 > 完成治理重构（`PINVOU3_ALLOWED_TOOLS` 白名单 + canonical 工具名，部分 builder 方法已更名/移除，
 > Plan 模式现注册只读文件/shell 之外的完整只读面）；现行工具面与迁移记录见
-> [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。
+> [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。姊妹篇（逐文件职责视角）：
+> [`DeepSeek-TUI源码职责分析`](./DeepSeek-TUI源码职责分析.md)。
 > 2026-11-15 修正：按 v0.8.37 tag 逐 builder 实测校正全部清单与计数（`append_file` 并不存在于
 > v0.8.37，系 2026-06-29 fork 提交 `092e3c885` 引入——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核、公开仓 Pinvou/CodeWhale 亦可解），属重建前内部 fork；`code_execution` 在 v0.8.37 已是独立
 > catalog 工具；`with_shell_tools` 含 exec_shell_wait / exec_shell_interact；v0.8.37 无
@@ -65,7 +66,8 @@ pub trait ToolSpec: Send + Sync {
     fn is_read_only(&self) -> bool;         // 默认从 capabilities 推
     fn supports_parallel(&self) -> bool;    // 默认 false
     fn defer_loading(&self) -> bool;        // 默认 false (true 不发给模型)
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
+    // （节选：另省略 is_sandboxable 等默认方法——2026-11-19 r22 订正引语逐字，v0.8.37 spec.rs）
 }
 ```
 

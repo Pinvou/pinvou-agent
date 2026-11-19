@@ -87,7 +87,7 @@ tauri-bridge.js listen("chat:*")
 前端更新消息流、工具卡、产物卡、token 状态、session 持久化
 ```
 
-关键文件：
+关键文件（⚠️ 快照平铺路径：下列路径均已随 `app/commands/` + `features/` + `platform/` 重构消失，见文首失效声明）：
 
 - `pinvou3-app/src/tauri-bridge.js`：所有 `invoke` 和 `listen` 的集中桥。
 - `pinvou3-app/src-tauri/src/commands.rs`：Tauri commands，含 `chat`、session、artifact、workflow、settings、update、dependency 等入口。
@@ -313,7 +313,7 @@ vllm serve /path/to/model \
 
 | 项 | 值 |
 |---|---|
-| `DEEPSEEK_BASE_URL` 默认 | `http://127.0.0.1:8000/v1` |
+| `DEEPSEEK_BASE_URL` 默认 | `http://127.0.0.1:8000/v1`（⚠️ 快照条目：现行底座默认 `https://api.deepseek.com/beta`、本地引擎默认 `http://localhost:8000/v1`（`provider_defaults.rs`）；该 env 变量本身仍被消费，唯默认值归属已变） |
 | `DEEPSEEK_PROVIDER` | 不全局注入，由当前模型预设决定 |
 | `DEEPSEEK_REASONING_EFFORT` | `off`（⚠️ 快照条目：现行主干不注入也不读取该变量，reasoning effort 已改为按模型偏好 `saved_models[].reasoning_effort`，此行仅作快照留档） |
 | 输出上限 | 本地 vLLM route 显式为 `24576`（⚠️ 快照条目：现行 route 输出声明由 `route_limits_for_model` 按窗口档位给出——≥500K→131072、≥250K→65536、否则 min(窗口/4, 32768)，未探测本地 vLLM 落 128K 回退→32000；24576 仅存于 `PINVOU3_MAX_OUTPUT_TOKENS`/prefs 回退，用于 min-clamp 显式 `max_output_tokens` 与压缩阈值推导）；云端由底座请求上限、厂商及 route 能力共同决定 |

@@ -132,7 +132,7 @@
 - pinvou3-app：`cargo check -p pinvou3-tauri` + 新 forkguard 测试过
 - 端到端：`cargo run --bin dump_system_prompt`，确认渲染出的 prompt 含 pinvou3 brand（override 生效）
 - `./scripts/fork-guard.sh --fast`（指纹层）全绿
-- 预期 submodule fork drift 净降 ~160 行（base.md 全部 + 2 品牌词）
+- 预期 submodule fork drift 净降 ~160 行（base.md 全部 + 2 品牌词；⚠️ 计划期估算——事后实测 ~130，2026-11-19 r22 注）
 
 ## 上游 PR
 

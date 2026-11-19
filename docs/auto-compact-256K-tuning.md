@@ -48,7 +48,7 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 **修复①:`token_threshold` 200K → 190K**;锚定不变式 `token_threshold + 20K margin ≤ context_input_budget`,由回归测试 `compaction_threshold_stays_below_emergency_budget`(按 `max_output_tokens()` 动态算 budget)锁住。
 
 **修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（⚠️ 写档时点口径——现行 route 级声明按窗口档位计算、机器写入的 24576 已被归一化让位，见 Round 4 节的写档时点口径注；`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
-- 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,work-bound,code}.md` 四件；≤8KB/≤16KB 分块规则文本本身未随任何可核树留存——四件与 `e34024e62` 的 instructions.md 均无此条文)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
+- 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,work-bound,code}.md` 四件；≤8KB/≤16KB 分块规则文本本身未随任何可核树留存——四件与 `e34024e62` 的 instructions.md 均无此条文)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`（⚠️ 2026-11-19 r22 注：该 skill 条款同样未随任何可核树留存——全库与公开 API 搜索均不可解，仅同源口径转述）。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
 - 对本地 vLLM，64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin，同时把**输入预算 189K(74%)→ 230,400(90%)**，自动压缩更晚触发、保留更多历史。云端 route 不复用该本地预算。
 
 ### 完整阈值表（fork 底座 env/route 接线口径的本地 vLLM，output=24K；非 9c8e4826 公开树口径，见上注）
@@ -112,7 +112,7 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 ### D. L1 harness 默认模型同步
 
-`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445`（写作期行号，现树约 :520）默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
+`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445`（写作期行号，现树约 :538——2026-11-19 r22 订正：r20 估的 :520 偏了 18 行）默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
 
 ### E. ops（用户做一次）
 
