@@ -2,7 +2,7 @@
 use super::{
     AltSide, VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
     emit_shortcut_event, handle_voice_shortcut_with_modifiers, is_voice_shortcut_router_window,
-    recording_owner, resolve_trigger_target,
+    recording_owner, resolve_trigger_target, router_hwnd_entries,
 };
 #[cfg(target_os = "windows")]
 use std::sync::{
@@ -202,41 +202,25 @@ fn refresh_router_window_hwnds(app: &AppHandle) {
     // shells never host child WebViews and keep appearing there; main is
     // resolved from its native Window handle instead, which the multi-webview
     // state does not affect.
+    // Each `hwnd()` is a blocking event-loop round trip and the keyboard hook
+    // locks the cache on every Alt gesture, so all resolution happens before
+    // the lock: non-router labels are skipped ahead of their `hwnd()` (the
+    // merge re-checks them anyway) and the merged Vec is materialized up
+    // front, keeping the critical section a plain Vec swap.
     let webviews = app
         .webview_windows()
         .into_iter()
+        .filter(|(label, _)| *label != "main" && is_voice_shortcut_router_window(label))
         .map(|(label, window)| window.hwnd().ok().map(|hwnd| (hwnd.0 as isize, label)));
     let main = app.get_window("main").and_then(|main| {
         main.hwnd()
             .ok()
             .map(|hwnd| (hwnd.0 as isize, "main".to_string()))
     });
+    let entries = router_hwnd_entries(webviews, main);
     if let Ok(mut guard) = ROUTER_WINDOWS.lock() {
-        *guard = router_hwnd_entries(webviews, main);
+        *guard = entries;
     }
-}
-
-/// Merge the router HWND cache entries from the single-WebView enumeration
-/// and the native main-window handle. The enumeration covers the detached
-/// router shells but drops the main window while any browser-tab child
-/// WebView is attached to it, so the main entry always comes from the native
-/// `Window` handle and a stale "main" entry left in the enumeration (no tab
-/// open) is ignored; non-router windows (browser tabs, pet, reader,
-/// artifacts) never join the cache.
-#[cfg(target_os = "windows")]
-fn router_hwnd_entries(
-    webview_windows: impl IntoIterator<Item = Option<(isize, String)>>,
-    main_window: Option<(isize, String)>,
-) -> Vec<(isize, String)> {
-    let mut windows: Vec<(isize, String)> = webview_windows
-        .into_iter()
-        .flatten()
-        .filter(|(_, label)| *label != "main" && is_voice_shortcut_router_window(label))
-        .collect();
-    if let Some(main_window) = main_window {
-        windows.push(main_window);
-    }
-    windows
 }
 
 #[cfg(target_os = "windows")]
@@ -690,72 +674,5 @@ mod tests {
         assert_eq!(voice_shortcut_key(VK_SPACE), VoiceShortcutKey::Space);
         assert_eq!(voice_shortcut_key(VK_ESCAPE), VoiceShortcutKey::Escape);
         assert_eq!(voice_shortcut_key(0x41), VoiceShortcutKey::Other);
-    }
-
-    /// Issue #840: while a browser tab is open the single-WebView enumeration
-    /// drops the main window, so the cache entry must come from the native
-    /// main handle; browser-tab labels and hwnd-less windows never join.
-    #[test]
-    fn router_hwnd_entries_resolve_main_from_the_native_window_handle() {
-        let entries = router_hwnd_entries(
-            [
-                Some((11, "agent-browser-tab1".to_string())),
-                Some((22, "detached-notes-abc".to_string())),
-                None,
-            ],
-            Some((7, "main".to_string())),
-        );
-        assert_eq!(
-            entries,
-            vec![
-                (22, "detached-notes-abc".to_string()),
-                (7, "main".to_string()),
-            ]
-        );
-    }
-
-    /// Without any tab the enumeration itself carries main; the duplicate is
-    /// dropped so the cache never holds the window twice (the hook matches by
-    /// hwnd, but a doubled entry would make future label-aware consumers see
-    /// the window twice).
-    #[test]
-    fn router_hwnd_entries_ignore_a_stale_enumeration_main() {
-        let entries = router_hwnd_entries(
-            [
-                Some((7, "main".to_string())),
-                Some((22, "detached-notes-abc".to_string())),
-            ],
-            Some((7, "main".to_string())),
-        );
-        assert_eq!(
-            entries,
-            vec![
-                (22, "detached-notes-abc".to_string()),
-                (7, "main".to_string()),
-            ]
-        );
-    }
-
-    /// A missing main window (mid-teardown) leaves only the detached shells
-    /// instead of poisoning the cache with a half entry.
-    #[test]
-    fn router_hwnd_entries_tolerate_a_missing_main_window() {
-        let entries = router_hwnd_entries([Some((22, "detached-notes-abc".to_string()))], None);
-        assert_eq!(entries, vec![(22, "detached-notes-abc".to_string())]);
-    }
-
-    /// Non-router windows (pet, reader, artifacts) are dropped even though
-    /// the enumeration carries them; only main/detached stay routable.
-    #[test]
-    fn router_hwnd_entries_drop_non_router_windows() {
-        let entries = router_hwnd_entries(
-            [
-                Some((31, "pet".to_string())),
-                Some((32, "code-reader".to_string())),
-                Some((33, "artifact-deadbeef".to_string())),
-            ],
-            Some((7, "main".to_string())),
-        );
-        assert_eq!(entries, vec![(7, "main".to_string())]);
     }
 }
