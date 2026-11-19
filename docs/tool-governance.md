@@ -153,7 +153,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 | 2026-08-10 | v0.9.0 能力档案曾为 code 模式从底座隐藏集放出 5 个 Git 工具及 `apply_patch`、`run_verifiers`、`exec_shell_cancel`。 |
 | 2026-08-11 | 升级 CodeWhale v0.9.5：切换到 canonical family、`allowed_tools` 正向白名单和单一 `disallowed_tools` 差量通道；旧 8 项 include 被等价迁移，不再作为模型侧工具名维护。 |
 | 2026-08-14 | 退役无运行时写入者的能力档案，模式架构差量收敛为 `MODE_TABLE`；plain 放开 `Git` family，外部能力默认姿态改由按模式 scope 管理。 |
-| 2026-09-09 | 升级 CodeWhale v0.9.12（gitlink `pinvou-v0.9.12-r1-18-g92427bd8d`）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
+| 2026-09-09 | 升级 CodeWhale v0.9.12（#453 初始 pin `1fafee7e26`；gitlink `pinvou-v0.9.12-r1-18-g92427bd8d` 系 2026-09-17 经 #530 推进后的口径）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
 | 2026-11-05 | v0.9.12 白名单组成变更（随 #832）：准入证据恢复对 `retrieve_tool_result` / `handle_read`（底座溢出尾行与 worker 记录按名点教，见 §2）；移除死条目 `revert_turn`（`snapshots_enabled=false` 使每次调用在支付一次 side-repo init 后恒败，回退由应用侧 `rewind_to_turn` 承接）。同批披露同类残留：`Run`（`agent` 描述括注）与 `create_goal` / `update_goal`（goal 面）仍不在白名单，披露见 `tool_policy.rs`；`notes_path` 死链经注释披露（NoteTool 被白名单剥离，父会话永不写、UI 不读；子代理注册面不受白名单约束仍可写，见 `bridge.rs`）。 |
 
 每次 CodeWhale 升级都必须重新核对 canonical 名称、各模式注册面、首轮/延迟加载策略、前端历史回放兼容和本文档；不能只凭旧工具名相同就判定行为等价。

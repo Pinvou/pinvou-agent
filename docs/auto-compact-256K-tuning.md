@@ -51,7 +51,7 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 - 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,work-bound,code}.md` 四件；≤8KB/≤16KB 分块规则文本本身未随任何可核树留存——四件与 `e34024e62` 的 instructions.md 均无此条文)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
 - 对本地 vLLM，64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin，同时把**输入预算 189K(74%)→ 230,400(90%)**，自动压缩更晚触发、保留更多历史。云端 route 不复用该本地预算。
 
-### 完整阈值表（写档时点的本地 vLLM，output=24K）
+### 完整阈值表（fork 底座 env/route 接线口径的本地 vLLM，output=24K；非 9c8e4826 公开树口径，见上注）
 
 | 阈值/常量 | 值 | 作用 | 层级 |
 |---|---|---|---|
@@ -200,7 +200,7 @@ codex 抓 `build_dt_config` 没 export `DEEPSEEK_MAX_OUTPUT_TOKENS`。`effective
 
 → B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（写档时按 64K=64,000 十进制粗算；严格按 `API_MAX_OUTPUT_TOKENS = 65,536` 应为 189,440，与上文初版文档核对段（2026-05-19 假设勘误处）的 189,440 同口径（非 B1 段；B1 段仅记 `256_000` 十进制窗口口径）。而非文档承诺的 ~239K），preflight emergency 提前约 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
 
-当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束（⚠️ 写档时点口径：现行 LocalVllm 上机器写入的 24576 已作为遗留哨兵被 `normalize_route_limits` 归一化为 None、让位给窗口档位——`prefs/mod.rs` 测试明言 "a legacy machine-written local 24K is normalized to unset and takes the window tiers"；24576 现仅为进程级 `max_output_tokens()` 请求预算默认，不钳 route 声明，现行档位见 Windows 手册 §10 注），云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
+当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。PR #210（本仓库，2026-08-13 合入「fix(chat): 放开云端模型输出上限，落底座 64K 兜底」；lib.rs 守卫注释「PR #210 移除全局注入」自证）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束（⚠️ 写档时点口径：现行 LocalVllm 上机器写入的 24576 已作为遗留哨兵被 `normalize_route_limits` 归一化为 None、让位给窗口档位——`prefs/mod.rs` 测试明言 "a legacy machine-written local 24K is normalized to unset and takes the window tiers"；24576 现仅为进程级 `max_output_tokens()` 请求预算默认，不钳 route 声明，现行档位见 Windows 手册 §10 注），云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
 
 同时 round 4 把 bridge 自己的 compaction 注释里 "60K-200K 区间纯本地去重" 也删了（round 3 只改了 docs，bridge 注释漏改）。
 

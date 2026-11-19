@@ -287,7 +287,7 @@ Windows 风险：
 ```bash
 ./scripts/fork-guard.sh --fast
 ./scripts/fork-guard.sh
-cargo test -p codewhale-tui --lib
+cargo test --manifest-path CodeWhale/crates/tui/Cargo.toml -p codewhale-tui --lib
 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 ```
 
@@ -415,7 +415,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-thre
 ```bash
 ./scripts/fork-guard.sh --fast
 ./scripts/fork-guard.sh
-cargo test -p codewhale-tui --lib
+cargo test --manifest-path CodeWhale/crates/tui/Cargo.toml -p codewhale-tui --lib
 ```
 
 Windows 原生后建议增加这些测试：

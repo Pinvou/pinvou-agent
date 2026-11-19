@@ -8,7 +8,7 @@
 底座（CodeWhale）**本来就有**完整的 plan→执行交接闭环：
 
 1. 模型在 Plan 模式调 `update_plan` = 交接信号（`prompts/modes/plan.md` 引导）
-2. engine 层 `should_stop_after_plan_tool`（改造基线 fork `6b3059da11` 树的 `dispatch.rs:385`；2026-11-18 r16 订正：round-15 误改的 :346 系上游 v0.8.65 行号，非改造钉树行号；`6b3059da11` 系 2026-07-24 重建前哈希，本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解）强制结束本 turn
+2. engine 层 `should_stop_after_plan_tool`（改造基线 fork `6b3059da11` 树的 `dispatch.rs:385`；2026-11-18 r16 订正：round-15 误改的 :346 系上游 v0.8.65 行号，非改造钉树行号；`6b3059da11` 系 2026-07-24 重建前哈希，本地对象库不可解析、公开仓 Pinvou/CodeWhale API 可解、不随 clone 分发）强制结束本 turn
 3. （TUI）自动弹 Plan Confirmation modal → 四选项 Accept(Agent)/Accept(YOLO)/Revise/Exit
 4. Accept(YOLO) → 自动 `set_mode(Yolo)` + 注入 `"Proceed with the accepted plan."` + 共享 `Arc<Mutex<PlanState>>` 不清
 
@@ -156,7 +156,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 阶段2 已删 M3 后端 emit，前端监听器随之成死代码（永不触发）。本次评估后**决定不重做 M3，把残骸清干净**。
 
 **为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
-1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
+1. 底座 `update_plan → chat:plan_ready → 方案卡"✅就这么干"→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡ 直接动手(跳过方案)」（渲染原文，半角括号）。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 

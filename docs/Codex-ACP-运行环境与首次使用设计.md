@@ -7,7 +7,7 @@
 > （含 §9 `RuntimeFailureKind` 失败分类）与 `codex-runtime://status` 事件**未被采纳**，
 > 现行实现为 `CodexAcpStatus` 布尔状态契约 + `acp:install-progress` 事件（§10 的 `CodexRuntimeGate`
 > 全量门控 UI 同样未被采纳，现行仅保留轻量运行时提示）；§6.1 的 Node 22.x / codex-acp
-> 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、适配器 2.2.2）；§11 的 `prepare_codex_acp` /
+> 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、codex-acp 适配器 2.2.2（claude-agent-acp 另钉 0.95.0））；§11 的 `prepare_codex_acp` /
 > `login_codex_acp` 未落库（现行命令为 `install_acp_agent` / `login_acp_agent` /
 > `submit_acp_agent_login_code` / `open_acp_agent_login_url`）；§13 的**托管 Codex 下载**供应链
 > （签名发布索引 / CDN 托管产物）未被采纳——本地构建的 staging / manifest 校验已随现行
@@ -88,7 +88,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 > 注（2026-11 归档）：本节为快照时点状态，多处「当前」已不成立——现行已带私有
 > Node Bridge（`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh` 下载并 sha256 校验 Node
 > 24.22.1，`install.rs` 含随包 bridge 候选），缺口 1 已解决；bridge 构建会剪除
-> `@openai/codex` 二进制，Codex CLI 由用户自行安装（`install.rs` 按
+> `@openai/codex` 与 `@anthropic-ai/claude-agent-sdk` 平台二进制，Codex CLI 由用户自行安装（`install.rs` 按
 > `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析的是 **adapter**；Codex CLI
 > 本体经 `resolve_codex_cli` 官方脚本→`PATH` 解析，Codex 二进制经
 > `PINVOU3_CODEX_PATH`→ 系统/legacy 随包**择新可兼容者**解析（`select_newest_eligible`
@@ -268,7 +268,7 @@ platform:        linux-x64 / linux-arm64
 ```
 
 > 注（归档时现状）：现行 Bridge 实际钉扎 Node 24.22.1、codex-acp 适配器 2.2.2
-> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`（Node 与适配器版本均钉于该脚本），适配器另钉于 `features/codex_acp/mod.rs`）；
+> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`（Node、codex-acp、claude-agent-acp、claude-agent-sdk 四个版本均钉于该脚本），适配器另钉于 `features/codex_acp/mod.rs`）；
 > 运行目录名 `codex-acp-1.1.5` 不代表适配器版本，见 `docs/codex-acp.md`。托管 Codex Runtime
 > 下载未采纳，Codex 由用户自行安装（脚本/brew/npm，应用内引导）。
 
