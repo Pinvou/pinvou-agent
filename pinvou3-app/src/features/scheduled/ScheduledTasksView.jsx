@@ -7,6 +7,8 @@ import { formatLocalDateTime } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
+import { useIntervalWhen } from '../../hooks/useIntervalWhen.js';
 import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
@@ -497,15 +499,15 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       const latestFieldSequenceRef = useRef({});
       const mountedRef = useRef(true);
 
+      // 任务列表 3s 轮询(#817 B3 走共享的 useIntervalWhen):bridge 是模块级
+      // 单例,能力位在挂载时即为最终值;首刷保持挂载即执行,与原实现一致。
       useEffect(() => {
         if (!bridge || !bridge.scheduled.refreshScheduledTaskData) return;
-        const refresh = () => bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
-        refresh();
-        const timer = setInterval(() => {
-          refresh();
-        }, 3000);
-        return () => clearInterval(timer);
+        bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
       }, []);
+      useIntervalWhen(() => {
+        bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+      }, 3000, !!(bridge && bridge.scheduled.refreshScheduledTaskData));
 
       useEffect(() => {
         if (!createForm) return;
@@ -1531,43 +1533,24 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           {DetailTaskDialog()}
           {CreateTaskDialog()}
 
-          {deleteConfirmTask && renderModal(
-            <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's cancel button */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-              <div className="absolute inset-0 bg-black/[0.28] backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
-              <div
-                role="alertdialog"
-                aria-modal="true"
-                aria-labelledby="scheduled-delete-title"
-                aria-describedby="scheduled-delete-description"
-                data-testid="scheduled-detail-delete-confirmation"
-                className={`relative w-full max-w-[270px] overflow-hidden rounded-[14px] border shadow-[0_20px_60px_rgba(0,0,0,0.28)] ${iosSeparator} bg-white dark:bg-[#2C2C2E]`}
-              >
-                <div className={`px-5 pb-4 pt-5 text-center border-b ${iosSeparator}`}>
-                  <h3 id="scheduled-delete-title" className={`text-[15px] font-semibold leading-5 ${bodyText}`}>
-                    {scheduledCopy.deleteTitle}
-                  </h3>
-                  <p id="scheduled-delete-description" className={`mt-2 text-[12px] leading-4 ${mutedValue}`}>
-                    {scheduledCopy.deleteDescription(deleteConfirmTask.name)}
-                  </p>
-                </div>
-                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/[0.16] dark:divide-[#545458]/50`}>
-                  <button type="button" data-testid="scheduled-detail-delete-cancel"
-                    onClick={(event) => cancelDeleteTask(event)}
-                    disabled={!!busyAction}
-                    className={`h-11 text-[15px] font-normal text-[#007AFF] transition-colors disabled:opacity-50 ${pressedRow}`}>
-                    {scheduledCopy.cancel}
-                  </button>
-                  <button type="button" data-testid="scheduled-detail-delete-confirm"
-                    onClick={(event) => confirmDeleteTask(event, deleteConfirmTask)}
-                    disabled={!!busyAction}
-                    className={`h-11 text-[15px] font-semibold text-[#FF3B30] transition-colors disabled:opacity-50 ${pressedRow}`}>
-                    {scheduledCopy.delete}
-                  </button>
-                </div>
-              </div>
-            </div>
+          {/* 删除任务二次确认(#817 B1 起走 components/ConfirmDialog:portal 到
+              body、role=alertdialog、Esc/busy 守卫;三个 testid 保持 smoke pin
+              原样,z-[300] 仍是全应用最高的确认层) */}
+          {deleteConfirmTask && (
+            <ConfirmDialog
+              testid="scheduled-detail-delete-confirmation"
+              cancelTestId="scheduled-detail-delete-cancel"
+              confirmTestId="scheduled-detail-delete-confirm"
+              zIndexClass="z-[300]"
+              destructive
+              title={scheduledCopy.deleteTitle}
+              description={scheduledCopy.deleteDescription(deleteConfirmTask.name)}
+              confirmLabel={scheduledCopy.delete}
+              cancelLabel={scheduledCopy.cancel}
+              busy={!!busyAction}
+              onConfirm={() => confirmDeleteTask(undefined, deleteConfirmTask)}
+              onCancel={() => cancelDeleteTask()}
+            />
           )}
 
         </div>

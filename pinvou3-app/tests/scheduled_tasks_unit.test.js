@@ -173,8 +173,8 @@ assert.ok(
   'scheduled selection must live above the remounted ScheduledTasksView'
 );
 assert.ok(
-  /const refresh = \(\) => bridge\.scheduled\.refreshScheduledTaskData\(20\)[\s\S]{0,260}setInterval\([\s\S]{0,120}refresh\(\)[\s\S]{0,120}3000/.test(indexHtml),
-  'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
+  /refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,200}useIntervalWhen\(\(\) => \{[\s\S]{0,160}refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,40}\}, 3000/.test(indexHtml),
+  'the three-second fallback (shared useIntervalWhen since #817 B3) must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
   /const handleSwitchSession = useCallback\(async \(id\) => \{[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
@@ -432,7 +432,11 @@ assert.ok(
     /data-testid="scheduled-run-history-list" className=\{`overflow-hidden rounded-\[12px\] \$\{iosHistorySurface\}`\}/.test(indexHtml) &&
     /fixed z-\[1000\][\s\S]{0,120}rounded-\[12px\] border/.test(indexHtml) &&
     /fixed z-\[1000\][\s\S]{0,120}rounded-\[14px\] border/.test(indexHtml) &&
-    /data-testid="scheduled-detail-delete-confirmation"[\s\S]{0,260}rounded-\[14px\] border/.test(indexHtml),
+    // #817 B1: the delete confirmation itself moved to the shared ConfirmDialog
+    // (shadow-2xl card, no border) — the floating-surface-border rule above now
+    // applies to the two popover surfaces; the confirm must at least keep the
+    // app's topmost confirm z-index.
+    /testid="scheduled-detail-delete-confirmation"[\s\S]{0,200}zIndexClass="z-\[300\]"/.test(scheduledViewSource),
   'embedded scheduled task form groups should not have outer borders, while floating surfaces keep borders'
 );
 assert.ok(

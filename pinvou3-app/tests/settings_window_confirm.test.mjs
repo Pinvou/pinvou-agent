@@ -24,6 +24,13 @@ const SETTINGS_VIEW = fs.readFileSync(
   path.join(appRoot, 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
+// #817 B1: the stacked confirm skeleton moved out of SettingsView into the
+// shared components/ConfirmDialog.jsx (SheetConfirmDialog was absorbed); the
+// prop pass-through and stacking invariants live there now.
+const CONFIRM_DIALOG = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ConfirmDialog.jsx'),
+  'utf8',
+);
 const SMOKE = fs.readFileSync(
   path.join(appRoot, 'tests', 'settings_ui_smoke.js'),
   'utf8',
@@ -48,12 +55,13 @@ test('SettingsView no longer calls native window.confirm', () => {
 
 test('memory delete routes through the in-app confirm dialog', () => {
   // The in-app confirm dialog must exist, with a stable testid on the OK button.
-  // MemoryDeleteDialog renders through SheetConfirmDialog, which turns the
-  // testid/confirmTestId props into data-testid attributes.
+  // MemoryDeleteDialog renders through the shared ConfirmDialog (stacked
+  // layout), which turns the testid/confirmTestId props into data-testid
+  // attributes.
   assert.match(SETTINGS_VIEW, /testid="memory-delete-confirm"/, 'memory delete confirm dialog must exist');
   assert.match(SETTINGS_VIEW, /confirmTestId="memory-delete-confirm-ok"/, 'memory delete confirm button must carry a testid');
-  assert.match(SETTINGS_VIEW, /data-testid=\{testid\}/, 'SheetConfirmDialog must render data-testid from its props');
-  assert.match(SETTINGS_VIEW, /data-testid=\{confirmTestId\}/, 'SheetConfirmDialog must render the confirm testid from its props');
+  assert.match(CONFIRM_DIALOG, /testid=\{testid\}/, 'ConfirmDialog must pass the backdrop testid through to ModalShell');
+  assert.match(CONFIRM_DIALOG, /data-testid=\{confirmTestId\}/, 'ConfirmDialog must render the confirm testid from its props');
 
   // The delete entry point must be a row-level action of the memory section (the row delete button routes into deleteItem)
   assert.match(
@@ -121,16 +129,17 @@ test('feedback close routes through the in-app confirm layer', () => {
   );
   assert.match(
     SETTINGS_VIEW,
-    /<SheetConfirmDialog\s+testid="feedback-close-confirm"/,
-    'the confirm layer must be the shared SheetConfirmDialog',
+    /<ConfirmDialog[\s\S]{0,120}?testid="feedback-close-confirm"/,
+    'the confirm layer must be the shared ConfirmDialog',
   );
   // The stacking order is the real invariant: if the shared dialog ever drops below the
   // feedback panel (z-[100]) the confirm becomes unclickable and the panel locks. Pin it
-  // on the component itself now that the inline layer was folded into SheetConfirmDialog —
-  // asserting only the call site leaves the z-index claim living in a message string.
+  // on the shared component itself (#817 B1 folded SheetConfirmDialog into
+  // ConfirmDialog) — asserting only the call site leaves the z-index claim
+  // living in a message string.
   assert.match(
-    SETTINGS_VIEW,
-    /const SheetConfirmDialog[\s\S]{0,400}?className="fixed inset-0 z-\[110\]/,
+    CONFIRM_DIALOG,
+    /zIndexClass = 'z-\[110\]'/,
     'the shared confirm dialog must stack above the feedback panel (z-[100])',
   );
 

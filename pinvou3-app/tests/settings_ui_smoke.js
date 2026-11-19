@@ -532,7 +532,7 @@ assert.match(
   /context_window_tokens: runtimeProbedLane \? null : row\.contextWindowTokens,/,
   'picker rows on ollama/lm_studio must persist a null context declaration (the row still DISPLAYS the probed value; only persistence is gated) so it cannot min-clamp later probes',
 );
-// 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
+// 批量「全部添加」:应用内 ConfirmDialog 是硬闸门(规格决策 1;原生
 // window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
 // 必须先记录挂起批次、确认后才进入逐行保存循环;同时钉去重截断文案来源
 // (splitBatchAdd/addAllTruncated)。
@@ -591,12 +591,12 @@ assert.match(
   /busy=\{addingAllModels\}/,
   'the add-all confirm must disable both buttons while the batch saves',
 );
-// 确认弹窗本体:同一 SheetConfirmDialog 配方,testid 供 smoke 驱动;标题/描述
+// 确认弹窗本体:同一 ConfirmDialog stacked 配方(#817 B1),testid 供 smoke 驱动;标题/描述
 // 仍表达规格语义(数量、去重、截断)。
 const addAllDialogIndex = settingsViewSource.indexOf('testid="add-all-models-confirm"');
 assert.ok(addAllDialogIndex !== -1, 'the add-all confirm dialog must exist');
 const addAllDialogSource = settingsViewSource.slice(Math.max(0, addAllDialogIndex - 400), addAllDialogIndex + 700);
-assert.match(addAllDialogSource, /<SheetConfirmDialog/, 'the add-all confirm must reuse the shared SheetConfirmDialog');
+assert.match(addAllDialogSource, /<ConfirmDialog/, 'the add-all confirm must reuse the shared ConfirmDialog (#817 B1)');
 assert.match(addAllDialogSource, /addAllConfirm\(/, 'the dialog title must carry the deduped count and dedup notice');
 assert.match(addAllDialogSource, /addAllTruncated\(/, 'oversized listings must surface the truncation notice in the confirm');
 assert.match(addAllDialogSource, /onConfirm=\{confirmAddAllEndpointModels\}/, 'the dialog OK button must route into the confirmed batch handler');

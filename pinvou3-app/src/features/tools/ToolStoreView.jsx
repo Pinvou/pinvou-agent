@@ -4,6 +4,7 @@ import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Server, Setting
 import { IosSearchField } from '../../components/IosControls.jsx';
 import { EmptyState } from '../../components/EmptyState.jsx';
 import { Spinner } from '../../components/Spinner.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, BuiltinPluginCard, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
@@ -1031,31 +1032,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         </ModalBackdrop>
       );
     };
-
-    // Inline double-confirm dialog skeleton (shared by the preset skill update confirm and the trash permanent-delete
-    // confirm): backdrop (shared ModalBackdrop: click-to-close) + content stopPropagation + two side-by-side buttons.
-    // confirmTone 'blue'|'rose' picks each site's confirm key color; confirmTestId is only needed by the trash
-    // permanent-delete confirm (test pin).
-    const SheetRowConfirm = ({ title, desc, cancelLabel, confirmLabel, confirmTone = 'blue', confirmTestId, onConfirm, onCancel }) => (
-      <ModalBackdrop onClose={onCancel}>
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
-        <div className="w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
-          <div className="px-6 pt-6 pb-5 text-center">
-            <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{title}</div>
-            <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{desc}</div>
-          </div>
-          <div className="border-t border-slate-200 dark:border-white/10 flex">
-            <button type="button" onClick={onCancel} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
-              {cancelLabel}
-            </button>
-            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`flex-1 py-3 text-[17px] font-semibold text-center transition-colors ${confirmTone === 'rose' ? 'text-rose-600 active:bg-slate-100 dark:text-rose-400 dark:active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5'}`}>
-              {confirmLabel}
-            </button>
-          </div>
-        </div>
-      </ModalBackdrop>
-    );
 
     /* eslint-disable sonarjs/cognitive-complexity -- tool store main view (list/detail/install/OAuth flows);legacy view; tracked separately */
     const ToolStoreView = ({ t, onNewChat }) => {
@@ -2378,18 +2354,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             }}
           />, document.body)}
           {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
-              window.confirm 不弹,应用内自绘,风格对齐 TsAlert) */}
-          {updateConfirm && createPortal((
-            <SheetRowConfirm
+              window.confirm 不弹;ConfirmDialog 自带 portal,Esc/IME 守卫与
+              backdrop 关闭由 ModalShell 统一承载,#817 B1) */}
+          {updateConfirm && (
+            <ConfirmDialog
               title={storeCopy.updateSkillTitle(updateConfirm.name)}
-              desc={storeCopy.updateSkillOverwriteHint}
+              description={storeCopy.updateSkillOverwriteHint}
               cancelLabel={storeCopy.cancel}
               confirmLabel={(t.uiToolCommon || {}).update}
-              confirmTone="blue"
               onConfirm={doSkillUpdate}
               onCancel={() => setUpdateConfirm(null)}
             />
-          ), document.body)}
+          )}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {/* 企微扫码弹窗由流程态派生（无独立 state）：factory 的 wecom:qr 监听把
               qr/qrUrl 写进跨视图流程卡，phase==='qr' 时弹出；取消/成功/失败都会让
@@ -2435,19 +2411,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onConfirm={doEditDisplaySave}
           />, document.body)}
           {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
-              (自绘确认,风格对齐预置技能更新确认) */}
-          {purgeConfirm && createPortal((
-            <SheetRowConfirm
+              (ConfirmDialog destructive,#817 B1;testid 保持回收站 pin 不变) */}
+          {purgeConfirm && (
+            <ConfirmDialog
+              destructive
               title={storeCopy.recyclePurgeTitle(purgeConfirm.name)}
-              desc={storeCopy.recyclePurgeHint}
+              description={storeCopy.recyclePurgeHint}
               cancelLabel={storeCopy.cancel}
               confirmLabel={storeCopy.recyclePurge}
-              confirmTone="rose"
               confirmTestId="recycled-purge-confirm"
               onConfirm={doPurgeRecycled}
               onCancel={() => setPurgeConfirm(null)}
             />
-          ), document.body)}
+          )}
           {/* 回收站子页面:点入口后整个插件中心内容区切换为回收站页面(非弹窗),
               返回按钮回到主列表;彻底删除二次确认仍用弹窗(见上方 purgeConfirm) */}
           {showRecycleBin && (

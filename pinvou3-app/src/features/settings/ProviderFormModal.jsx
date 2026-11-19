@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { bridge } from '../../hooks/useBridge.js';
 import {
@@ -690,53 +691,28 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
           {copy.thirdPartyWarning}
         </div>
 
-        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹，应用内
-            自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
-            z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
+        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹）：新建/无密钥
+            编辑 + 空 key、编辑清空已存密钥。z-[120] 压在整个表单弹窗（z-[110]）
+            之上；#817 B1 起统一走 components/ConfirmDialog（portal 到 body，
+            自带 Esc/IME/busy 守卫，背景点击只关确认层——不再冒泡到表单） */}
         {confirmStep && (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the real buttons inside the confirm layer
-          // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
-          <div
-            data-testid="acp-provider-form-confirm"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-            onClick={event => {
-              event.stopPropagation();
+          <ConfirmDialog
+            testid="acp-provider-form-confirm"
+            confirmTestId="acp-provider-form-confirm-ok"
+            zIndexClass="z-[120]"
+            description={confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
+            destructive={confirmStep === 'deleteKey'}
+            busy={saving}
+            confirmLabel={confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
+            cancelLabel={copy.cancel}
+            onConfirm={() => {
+              const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
+              const key = String(apiKey || '').trim();
               setConfirmStep(null);
+              doSave(action, key);
             }}
-          >
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
-            <div
-              onClick={event => event.stopPropagation()}
-              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-            >
-              <p className="text-[13px] leading-relaxed opacity-85">
-                {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
-              </p>
-              <div className="mt-6 flex justify-end gap-2">
-                <button type="button"
-                  onClick={() => setConfirmStep(null)}
-                  disabled={saving}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
-                >
-                  {copy.cancel}
-                </button>
-                <button type="button"
-                  data-testid="acp-provider-form-confirm-ok"
-                  onClick={() => {
-                    const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
-                    const key = String(apiKey || '').trim();
-                    setConfirmStep(null);
-                    doSave(action, key);
-                  }}
-                  disabled={saving}
-                  className={`h-9 px-4 rounded-full text-white text-[13px] font-semibold disabled:opacity-50 ${confirmStep === 'emptyKey' ? 'bg-[#007AFF]' : 'bg-red-500'}`}
-                >
-                  {confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
-                </button>
-              </div>
-            </div>
-          </div>
+            onCancel={() => setConfirmStep(null)}
+          />
         )}
 
         <div className="mt-6 flex justify-end gap-2">

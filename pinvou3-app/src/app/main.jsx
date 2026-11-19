@@ -4612,7 +4612,6 @@ const App = () => {
                 <Suspense fallback={null}>
                   <LazySavedPersonaConfirmDialog
                     savedConfirm={savedConfirm}
-                    theme={activeTheme}
                     t={t}
                     onClose={() => setSavedConfirm(null)}
                     onView={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }}

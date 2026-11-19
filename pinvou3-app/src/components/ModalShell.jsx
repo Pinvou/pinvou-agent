@@ -9,7 +9,10 @@
 // branch-switch dialog uses only the shell + its own panel, and the settings provider
 // delete/uninstall/transfer dialogs keep their local wrappers on top of it. Promoted out of
 // features/codex/ModalDialogShell.jsx per the 2026-10 reuse audit (its header already said it
-// was meant to be shared); keep the prop surface minimal until a second shape actually needs it.
+// was meant to be shared); the prop surface grew only when a second shape actually needed it:
+// `role` (ConfirmDialog renders role=alertdialog — destructive-confirm semantics per the
+// ArchiveConfirmDialog reference) and `describedBy` (descriptions announced alongside the
+// title, scheduled-delete confirm).
 
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -42,6 +45,8 @@ export function ModalShell({
   busy = false,
   initialFocusRef,
   labelledBy,
+  describedBy,
+  role = 'dialog',
   title = null,
   error = null,
   footer = null,
@@ -62,9 +67,10 @@ export function ModalShell({
       />
       <div
         ref={dialogRef}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={labelledBy}
+        aria-describedby={describedBy}
         tabIndex={-1}
         className={`relative ${panelClass}`}
       >

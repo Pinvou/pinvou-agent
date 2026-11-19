@@ -1,101 +1,40 @@
-import { useEffect } from 'react';
-
 // Session archive dialogs stay out of the startup chunk: the archive confirm
 // dialog and toast load on first use through VIEW_LOADERS, and the
 // archived-delete confirm is only used by lazily loaded views.
 
-// Shared iOS-style confirm dialog: backdrop + Escape handling + panel +
-// 2-button footer. ArchiveConfirmDialog and ArchivedDeleteConfirmDialog
-// differ only in copy and the confirm-action tint; the destructive
-// variant is the newer semantics and wins for the shared role/aria
-// attributes (role=alertdialog).
-const ConfirmDialogShell = ({ theme, t, labelledById, title, message, detail, actionLabel, destructive = false, onCancel, onConfirm }) => {
-  const isDark = theme === 'dark';
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') onCancel();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel]);
-  return (
-    // Backdrop click-to-close; keyboard path: Escape (effect listener below) and the real "Cancel" button inside the dialog.
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the Escape listener and the cancel button
-    <div
-      role="presentation"
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
-      style={{
-        background: 'rgba(0,0,0,.34)',
-        backdropFilter: 'blur(14px) saturate(140%)',
-        WebkitBackdropFilter: 'blur(14px) saturate(140%)',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
-      }}
-      onClick={onCancel}
-    >
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body only stops bubbling to avoid accidentally triggering backdrop close; not an interactive control itself */}
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={labelledById}
-        className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
-        style={{
-          // isDark stays for the dynamic boxShadow value.
-          boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
-        }}
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="px-6 pt-6 pb-5 text-center">
-          <div id={labelledById} className="text-[20px] font-semibold leading-[26px]">{title}</div>
-          <div className="mt-2.5 text-[15px] leading-[22px] text-[rgba(60,60,67,.72)] dark:text-[rgba(235,235,245,.72)]">
-            <div>{message}</div>
-            {detail && <div className="mt-1">{detail}</div>}
-          </div>
-        </div>
-        <div className="h-px bg-[rgba(60,60,67,.24)] dark:bg-[rgba(84,84,88,.65)]" />
-        <div className="grid grid-cols-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="h-[50px] text-[17px] active:opacity-70 text-[#007AFF] dark:text-[#0A84FF]"
-          >
-            {t.cpCancel}
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className={`h-[50px] text-[17px] font-semibold active:opacity-70 ${destructive ? 'text-[#FF3B30]' : 'text-[#007AFF] dark:text-[#0A84FF]'} border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]`}
-          >
-            {actionLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
+// #817 B1: this file's internal ConfirmDialogShell was the audit's reference
+// template (role=alertdialog + aria) and is now components/ConfirmDialog.jsx
+// itself — the two wrappers keep only their copy and the destructive tint.
+// `theme` used to pick a boxShadow tone; the shared dialog handles dark via
+// Tailwind, so the callers' theme prop is simply no longer read. ArchiveToast
+// is untouched.
+import { ConfirmDialog } from './ConfirmDialog.jsx';
 
-export const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => (
-  <ConfirmDialogShell
-    theme={theme}
-    t={t}
-    labelledById="archive-confirm-title"
+export const ArchiveConfirmDialog = ({ t, onCancel, onConfirm }) => (
+  <ConfirmDialog
     title={t.archiveConfirmTitle}
-    message={t.archiveConfirmMessage}
-    detail={t.archiveConfirmDetail}
-    actionLabel={t.archiveConfirmAction}
+    description={(
+      // The message + detail two-line block (detail is empty in zh — the
+      // conditional keeps the old "no empty second line" behavior).
+      <>
+        <span className="block">{t.archiveConfirmMessage}</span>
+        {t.archiveConfirmDetail ? <span className="block mt-1">{t.archiveConfirmDetail}</span> : null}
+      </>
+    )}
+    confirmLabel={t.archiveConfirmAction}
+    cancelLabel={t.cpCancel}
     onCancel={onCancel}
     onConfirm={onConfirm}
   />
 );
 
-export const ArchivedDeleteConfirmDialog = ({ theme, t, onCancel, onConfirm }) => (
-  <ConfirmDialogShell
-    theme={theme}
-    t={t}
-    labelledById="archived-delete-confirm-title"
-    title={t.archivedDeleteTitle}
-    message={t.archivedDeleteMessage}
-    actionLabel={t.archivedDeleteAction}
+export const ArchivedDeleteConfirmDialog = ({ t, onCancel, onConfirm }) => (
+  <ConfirmDialog
     destructive
+    title={t.archivedDeleteTitle}
+    description={t.archivedDeleteMessage}
+    confirmLabel={t.archivedDeleteAction}
+    cancelLabel={t.cpCancel}
     onCancel={onCancel}
     onConfirm={onConfirm}
   />
