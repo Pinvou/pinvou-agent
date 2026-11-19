@@ -168,6 +168,55 @@ pub const MAX_SESSION_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_WEB_ATTACHMENTS: usize = 16;
 const MAX_WEB_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WEB_ATTACHMENTS_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// The serialized parsed result must fit the desktop Web-attachment cache
+/// (`MAX_WEB_ATTACHMENT_BYTES`). Overflow is an ordinary outcome at the
+/// raised 50 MiB ingest cap (issue #842): a text-heavy upload transfers all
+/// chunks and only then lands here, so it must surface the stable wire code
+/// for localized zh/en/ja client copy — raw single-language text must never
+/// cross the Relay. Free fn so the code + boundary are pinnable without a
+/// full manager (no mock_app precedent in this repo).
+fn web_attachment_cache_overflow(bytes: usize) -> Option<String> {
+    (bytes > MAX_WEB_ATTACHMENT_BYTES)
+        .then(|| transfer::WEB_ATTACHMENT_PARSED_CACHE_TOO_LARGE.to_string())
+}
+
+/// The parsed-result cache total (`MAX_WEB_ATTACHMENTS_TOTAL_BYTES`) must
+/// absorb the incoming result, evicting unpinned entries first; entries
+/// pinned by an in-flight chat submission cannot be evicted. Overflow is an
+/// ordinary outcome at the raised 50 MiB ingest cap (issue #842): two
+/// ~30 MiB parsed results fill the 64 MiB total, so it must surface the
+/// stable wire code for localized zh/en/ja client copy — raw single-language
+/// text must never cross the Relay. Free fn so the code + eviction order are
+/// pinnable without a full manager (no mock_app precedent in this repo).
+fn ensure_web_attachment_cache_room(inner: &mut Inner, bytes: usize) -> Result<(), String> {
+    let mut eviction_attempts = inner.web_attachment_order.len();
+    while (inner.web_attachments.len() >= MAX_WEB_ATTACHMENTS
+        || inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES)
+        && eviction_attempts > 0
+    {
+        eviction_attempts -= 1;
+        let Some(oldest) = inner.web_attachment_order.pop_front() else {
+            break;
+        };
+        if inner
+            .web_attachments
+            .get(&oldest)
+            .is_some_and(|cached| cached.reservation_id.is_some())
+        {
+            inner.web_attachment_order.push_back(oldest);
+            continue;
+        }
+        if let Some(removed) = inner.web_attachments.remove(&oldest) {
+            inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_sub(removed.bytes);
+            remove_web_attachment_upload_dir(&removed);
+        }
+    }
+    if inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES {
+        return Err(transfer::WEB_ATTACHMENT_CACHE_FULL.into());
+    }
+    Ok(())
+}
 const MAX_WEB_ATTACHMENT_UPLOADS: usize = 4;
 const MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 /// 浏览器本机上传在桌面端的短生命周期暂存目录前缀。仅带此前缀的目录会被
@@ -1542,11 +1591,8 @@ impl RemoteControlManager {
         let bytes = serde_json::to_vec(&result)
             .map_err(|error| format!("serialize Web attachment: {error}"))?
             .len();
-        if bytes > MAX_WEB_ATTACHMENT_BYTES {
-            return Err(format!(
-                "解析后的附件超过远程控制桌面缓存上限 {} MiB",
-                MAX_WEB_ATTACHMENT_BYTES / (1024 * 1024)
-            ));
+        if let Some(error) = web_attachment_cache_overflow(bytes) {
+            return Err(error);
         }
         let handle = format!(
             "attachment_{}",
@@ -1561,32 +1607,7 @@ impl RemoteControlManager {
             warning: result.warning.clone(),
         };
         let mut inner = self.inner.lock();
-        let mut eviction_attempts = inner.web_attachment_order.len();
-        while (inner.web_attachments.len() >= MAX_WEB_ATTACHMENTS
-            || inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES)
-            && eviction_attempts > 0
-        {
-            eviction_attempts -= 1;
-            let Some(oldest) = inner.web_attachment_order.pop_front() else {
-                break;
-            };
-            if inner
-                .web_attachments
-                .get(&oldest)
-                .is_some_and(|cached| cached.reservation_id.is_some())
-            {
-                inner.web_attachment_order.push_back(oldest);
-                continue;
-            }
-            if let Some(removed) = inner.web_attachments.remove(&oldest) {
-                inner.web_attachment_bytes =
-                    inner.web_attachment_bytes.saturating_sub(removed.bytes);
-                remove_web_attachment_upload_dir(&removed);
-            }
-        }
-        if inner.web_attachment_bytes.saturating_add(bytes) > MAX_WEB_ATTACHMENTS_TOTAL_BYTES {
-            return Err("远程控制附件缓存已满，请移除一个附件后重试".into());
-        }
+        ensure_web_attachment_cache_room(&mut inner, bytes)?;
         inner.web_attachment_bytes = inner.web_attachment_bytes.saturating_add(bytes);
         inner.web_attachment_order.push_back(handle.clone());
         inner.web_attachments.insert(
@@ -1694,7 +1715,7 @@ impl RemoteControlManager {
 
     /// 累积浏览器本机文件的一个有界分块；最后一块 `commit` 时返回完整文件名
     /// 与字节。单文件上限收紧为 `file_ingest::MAX_FILE_BYTES`，避免传完
-    /// 20 MiB 才拿到一个 oversize 降级附件。
+    /// 50 MiB 才拿到一个 oversize 降级附件。
     pub fn append_web_attachment_upload(
         &self,
         upload_id: &str,
@@ -3617,6 +3638,106 @@ mod tests {
             "the precheck failure must surface as a stable wire code for localized client copy"
         );
         assert!(inner.web_attachment_uploads.is_empty());
+    }
+
+    #[test]
+    fn web_attachment_upload_rejects_when_the_buffer_aggregate_is_full() {
+        let mut inner = Inner::default();
+        let mib = 1024 * 1024_usize;
+        // One retained 40 MiB upload + a 25 MiB incoming chunk crosses the
+        // 64 MiB aggregate — the ordinary two-large-attachments case since
+        // the per-file cap rose to 50 MiB (issue #842).
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_1",
+            "a.bin",
+            0,
+            40 * mib,
+            &vec![0_u8; 40 * mib],
+            false,
+            None,
+        )
+        .expect("the first upload must fit the aggregate buffer");
+        let error = append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_2",
+            "b.bin",
+            0,
+            30 * mib,
+            &vec![0_u8; 25 * mib],
+            false,
+            None,
+        )
+        .expect_err("40 MiB retained + 25 MiB incoming must exceed the 64 MiB aggregate");
+        assert_eq!(
+            error,
+            transfer::WEB_ATTACHMENT_UPLOAD_CACHE_FULL,
+            "the aggregate-buffer failure must surface as a stable wire code for localized client copy"
+        );
+    }
+
+    #[test]
+    fn web_attachment_upload_accepts_the_exact_aggregate_bound() {
+        let mut inner = Inner::default();
+        let mib = 1024 * 1024_usize;
+        // One retained 40 MiB upload + a 24 MiB incoming chunk lands on
+        // exactly 64 MiB: the strict > boundary must accept it (the rejection
+        // side is pinned by the 40+25 leg above; without this leg a `>` →
+        // `>=` flip stays green on that test alone).
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_1",
+            "a.bin",
+            0,
+            40 * mib,
+            &vec![0_u8; 40 * mib],
+            false,
+            None,
+        )
+        .expect("the first upload must fit the aggregate buffer");
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_2",
+            "b.bin",
+            0,
+            24 * mib,
+            &vec![0_u8; 24 * mib],
+            false,
+            None,
+        )
+        .expect("40 MiB retained + 24 MiB incoming must exactly fill the 64 MiB aggregate");
+    }
+
+    #[test]
+    fn web_attachment_cache_overflow_surfaces_the_parsed_too_large_wire_code() {
+        assert_eq!(
+            web_attachment_cache_overflow(MAX_WEB_ATTACHMENT_BYTES),
+            None,
+            "exactly-at-cap serialized results must stay accepted (strict > boundary)"
+        );
+        assert_eq!(
+            web_attachment_cache_overflow(MAX_WEB_ATTACHMENT_BYTES + 1).as_deref(),
+            Some(transfer::WEB_ATTACHMENT_PARSED_CACHE_TOO_LARGE),
+            "the serialized-cache overflow must surface as a stable wire code for localized client copy"
+        );
+    }
+
+    #[test]
+    fn web_attachment_cache_full_surfaces_the_cache_full_wire_code() {
+        let mut inner = Inner::default();
+        let mib = 1024 * 1024_usize;
+        // Two ~30 MiB parsed results are ordinary at the raised per-file cap
+        // (issue #842), so a full cache total is a routine state.
+        inner.web_attachment_bytes = 40 * mib;
+        let error = ensure_web_attachment_cache_room(&mut inner, 30 * mib)
+            .expect_err("40 MiB cached + 30 MiB incoming must exceed the 64 MiB total");
+        assert_eq!(
+            error,
+            transfer::WEB_ATTACHMENT_CACHE_FULL,
+            "the cache-total failure must surface as a stable wire code for localized client copy"
+        );
+        ensure_web_attachment_cache_room(&mut inner, 24 * mib)
+            .expect("exactly-at-cap totals (40 MiB + 24 MiB = 64 MiB) must stay accepted");
     }
 
     #[test]

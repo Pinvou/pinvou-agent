@@ -15,6 +15,10 @@ const chunkedUpload = readSource(
   path.join(root, 'src', 'shared', 'chunked-file-upload.js'),
   'utf8',
 );
+const fileIngest = readSource(
+  path.join(root, 'src-tauri', 'src', 'features', 'files', 'file_ingest.rs'),
+  'utf8',
+);
 const webBridge = readSource(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
 const webDomainAdapter = readSource(
   path.join(root, 'src', 'platform', 'web', 'bridge', 'domain-adapter.js'),
@@ -584,8 +588,10 @@ assert.match(chatView, /bridge\.attachments\.pickAndAttach\(\)/,
   'the desktop-instance picker entry must keep using the existing remote browser');
 assert.match(chunkedUpload, /CHUNK_BYTES = 256 \* 1024/,
   'upload chunks must stay aligned with the desktop MAX_TRANSFER_CHUNK_BYTES limit');
-assert.match(chunkedUpload, /MAX_FILE_BYTES = 20 \* 1024 \* 1024/,
+assert.match(chunkedUpload, /MAX_FILE_BYTES = 50 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
+assert.match(fileIngest, /MAX_FILE_BYTES: u64 = 50 \* 1024 \* 1024/,
+  'the Rust ingest cap must keep the same literal the browser preflight mirrors — without this pin a Rust-only cap change leaves every test green while the browser falsely rejects files the desktop accepts');
 assert.match(webBridge, /PinvouChunkedFileUpload/,
   'Web chat uploads must use the shared chunk uploader');
 assert.doesNotMatch(webBridge, /function bytesToBase64/,
@@ -714,6 +720,123 @@ assert.equal((i18n.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
   'the ACP malformed-digest copy must exist in all three i18n dictionaries');
 assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
   'the ACP mismatch copy must exist in all three i18n dictionaries');
+
+// The two size-bound rejections of the upload lane (64 MiB in-flight
+// aggregate; 32 MiB serialized parsed-result cache) are ordinary outcomes
+// since the per-file cap rose to 50 MiB (issue #842), so they follow the
+// same stable-wire-code rule as the digest failures: defined as codes,
+// localized on every client path, raw single-language text never crossing
+// the Relay.
+assert.match(remoteControlManager, /WEB_ATTACHMENT_UPLOAD_CACHE_FULL: &str = "web_attachment_upload_cache_full"/,
+  'the upload-buffer overflow must be a stable wire code');
+assert.match(remoteControlManager, /WEB_ATTACHMENT_PARSED_CACHE_TOO_LARGE: &str =\s*"web_attachment_parsed_cache_too_large"/,
+  'the parsed-result cache overflow must be a stable wire code');
+assert.match(remoteControlManager, /WEB_ATTACHMENT_UPLOAD_CACHE_FULL\.to_string\(\)/,
+  'the aggregate-buffer gate must return the stable wire code');
+assert.match(remoteControlManager, /fn web_attachment_cache_overflow[\s\S]*?WEB_ATTACHMENT_PARSED_CACHE_TOO_LARGE/,
+  'the serialized-cache gate must return the stable wire code');
+assert.doesNotMatch(remoteControlManager, /远程控制附件上传缓存超过总容量上限/,
+  'single-language upload-buffer errors must not cross the Relay');
+assert.doesNotMatch(remoteControlManager, /解析后的附件超过远程控制桌面缓存上限/,
+  'single-language cache-overflow errors must not cross the Relay');
+// The localized copy names the bound ("32 MB"); pin the Rust literal it
+// mirrors and the number inside every language so a one-sided change —
+// the constant moved without the copy, or one language drifted — turns
+// CI red instead of shipping a lying message (same rule as the 50 MiB
+// file_ingest::MAX_FILE_BYTES mirror above).
+assert.match(remoteControlManager, /MAX_WEB_ATTACHMENT_BYTES: usize = 32 \* 1024 \* 1024/,
+  'the parsed-cache bound literal must stay in sync with the localized copy');
+assert.equal((i18n.match(/deviceParsedTooLarge:[^,\n]*32 MB/g) || []).length, 3,
+  'the parsed-cache copy must name the same 32 MB bound in all three languages');
+assert.match(acpErrors, /'web_attachment_upload_cache_full'[\s\S]*?'web_attachment_parsed_cache_too_large'/,
+  'the session-level fallback must fold both cache codes into localized copy');
+assert.match(webBridge, /rawUploadError === "web_attachment_upload_cache_full"[\s\S]*?bt\("deviceUploadCacheFull"\)/,
+  'the Web chat upload path must localize the upload-buffer code');
+assert.match(webBridge, /raw === "web_attachment_parsed_cache_too_large"[\s\S]*?bt\("deviceParsedTooLarge"\)/,
+  'the shared limit mapper must localize the parsed-cache code');
+assert.equal((webBridge.match(/deviceUploadCacheFull:/g) || []).length, 3,
+  'the upload-buffer copy must exist in all three BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceParsedTooLarge:/g) || []).length, 3,
+  'the parsed-cache copy must exist in all three BT_TABLE language blocks');
+assert.match(webBridge, /const limitError = attachmentLimitDisplayError\(e, att\.basename\)/,
+  'the desktop-picked ingest path must map limit codes instead of storing raw text');
+assert.match(codexView, /const attachmentLimitError = formatAttachmentLimitError\(err, t\.uiAttachments\)/,
+  'the ACP attachment path must localize limit codes through the shared formatter');
+assert.equal((i18n.match(/deviceUploadCacheFull:/g) || []).length, 3,
+  'the ACP upload-buffer copy must exist in all three i18n dictionaries');
+assert.equal((i18n.match(/deviceParsedTooLarge:/g) || []).length, 3,
+  'the ACP parsed-cache copy must exist in all three i18n dictionaries');
+
+// The third size-bound rejection of the same lane — the 64 MiB parsed-result
+// cache TOTAL, reachable when entries pinned by in-flight submissions block
+// eviction and ordinary ~30 MiB parsed results (routine since the per-file
+// cap rose to 50 MiB, issue #842) fill the cache — follows the same
+// stable-wire-code rule as its two siblings above.
+assert.match(remoteControlManager, /WEB_ATTACHMENT_CACHE_FULL: &str = "web_attachment_cache_full"/,
+  'the attachment-cache overflow must be a stable wire code');
+assert.match(remoteControlManager, /Err\(transfer::WEB_ATTACHMENT_CACHE_FULL\.into\(\)\)/,
+  'the cache-total gate must return the stable wire code');
+assert.doesNotMatch(remoteControlManager, /远程控制附件缓存已满/,
+  'single-language cache-full errors must not cross the Relay');
+assert.match(webBridge, /raw === "web_attachment_cache_full"[\s\S]*?bt\("deviceCacheFull"\)/,
+  'the shared limit mapper must localize the cache-full code');
+assert.equal((webBridge.match(/deviceCacheFull:/g) || []).length, 3,
+  'the cache-full copy must exist in all three BT_TABLE language blocks');
+assert.equal((i18n.match(/deviceCacheFull:/g) || []).length, 3,
+  'the ACP cache-full copy must exist in all three i18n dictionaries');
+assert.match(acpErrors, /'web_attachment_cache_full'/,
+  'the session-level fallback must fold the cache-full code into localized copy');
+
+// The shared formatter's code table must keep mirroring the Rust wire
+// literals one-for-one: a value drift in attachment-limit-errors.js breaks
+// chip mapping while every behavioral test stays green (the tests import the
+// module and compare it against itself).
+const limitErrors = readSource(path.join(root, 'src', 'features', 'attachments', 'attachment-limit-errors.js'), 'utf8');
+for (const [rustSource, codes] of [
+  [fileIngest, ['attachment_file_too_large', 'attachment_archive_too_many_entries', 'attachment_archive_expanded_too_large', 'attachment_archive_unsafe_entry']],
+  [remoteControlManager, ['web_attachment_upload_cache_full', 'web_attachment_parsed_cache_too_large', 'web_attachment_cache_full']],
+]) {
+  for (const code of codes) {
+    assert.match(limitErrors, new RegExp(`'${code}'`),
+      `the shared limit formatter must map ${code}`);
+    assert.match(rustSource, new RegExp(`"${code}"`),
+      `the Rust emitter must keep the ${code} literal the shared formatter mirrors`);
+  }
+}
+
+// The BT_TABLE copy names hard bounds ("50 MB" / "32 MB"); key-presence pins
+// alone let a one-sided figure edit ship a lying notice in the web chat while
+// the shared-i18n figure pins stay green (same rule as the 32 MB i18n pin
+// above, extended to the bridge's own language blocks).
+assert.equal((webBridge.match(/deviceUploadTooLarge:[^,\n]*50 MB/g) || []).length, 3,
+  'the web chat oversize notice must name the 50 MB bound in all three BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceParsedTooLarge:[^,\n]*32 MB/g) || []).length, 3,
+  'the web chat parsed-cache notice must name the 32 MB bound in all three BT_TABLE language blocks');
+
+// The zh upload-limit copy bodies are kept identical between the bridge
+// BT_TABLE and the shared i18n dict so both surfaces translate the same
+// truth; BT rows carry a sanctioned "⚠️ " notice prefix the dict rows lack
+// (a473cbcb9's "byte-identical" wording overstates this — pin the bodies
+// modulo that prefix), so a one-sided punctuation/wording edit (halfwidth
+// vs fullwidth comma) turns CI red instead of shipping split copy. BT
+// blocks are ordered en/ja/zh, so the last match is the zh row.
+const i18nZh = readSource(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+const stripWarningPrefix = (value) => (value && value.startsWith('⚠️ ') ? value.slice('⚠️ '.length) : value);
+const zhBtValue = (key) => {
+  const matches = [...webBridge.matchAll(new RegExp(`${key}:\\s*"([^"]+)"`, 'g'))];
+  return matches.length ? matches.at(-1)[1] : null;
+};
+const zhDictValue = (key) => {
+  const match = i18nZh.match(new RegExp(`${key}:'([^']+)'`));
+  return match ? match[1] : null;
+};
+for (const key of ['deviceUploadCacheFull', 'deviceParsedTooLarge', 'deviceCacheFull']) {
+  assert.equal(stripWarningPrefix(zhBtValue(key)), zhDictValue(key),
+    `zh ${key} body must stay identical between the bridge BT_TABLE (minus its ⚠️ prefix) and the shared i18n dict`);
+}
+
+assert.match(chunkedUpload, /device attachment exceeds \$\{MAX_FILE_BYTES\} bytes/,
+  'the dev-facing oversize message must derive from the mirrored constant, not a stale literal');
 
 // After the watchdog skips a stalled predecessor, the web live stream shows
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch

@@ -148,7 +148,7 @@ assert.equal(invokedCommands.at(-1).command, 'discard_dropped_attachment');
 assert.equal(invokedCommands.at(-1).args.sessionId, 'session_test_123');
 
 const oversized = fakeFile('oversized.zip');
-oversized.size = 20 * 1024 * 1024 + 1;
+oversized.size = 50 * 1024 * 1024 + 1;
 await api.uploadDeviceFiles([oversized]);
 assert.equal(state.attachments.at(-1).status, 'error');
 assert.equal(

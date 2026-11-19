@@ -2346,6 +2346,11 @@ export function CodexAcpView({
           // message (transfer.rs); map to the current-language copy instead
           // of passing the raw error through.
           const uploadErrorText = String(err?.message || '');
+          // The three web_attachment_* size-limit codes are already mapped by
+          // formatAttachmentLimitError above, in both the plain-string and
+          // {message: code} shapes; listing them here again would duplicate
+          // the shared formatter and tip this handler over the complexity
+          // lint (sonarjs/cognitive-complexity, enforced by npm run lint:ui).
           const attachmentLimitError = formatAttachmentLimitError(err, t.uiAttachments);
           const displayError = attachmentLimitError || (err?.code === 'device_upload_empty'
               ? t.uiAttachments.deviceUploadEmpty(file.name)
