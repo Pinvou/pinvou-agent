@@ -575,10 +575,12 @@ assert.ok(
 );
 // Issue #821: CRON rules get their own editor mode; the weekly fallback
 // that silently rewrote them on save must be unreachable for FREQ=CRON.
+// The routing pin targets the buildCronRrule call itself so neutering the
+// guard (falling back to the weekly builder) fails the assert.
 assert.ok(
   scheduledViewSource.includes("fields.FREQ === 'CRON'") &&
     scheduledViewSource.includes("repeat: 'cron'") &&
-    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)[\s\S]{0,900}return currentRrule;/.test(scheduledViewSource),
+    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)\s*\{\s*return buildCronRrule\(fields, key, value, currentRrule\);/.test(scheduledViewSource),
   'the schedule editor must give CRON rules their own mode instead of the weekly fallback that silently rewrote them on save (issue #821)'
 );
 assert.ok(
@@ -588,9 +590,14 @@ assert.ok(
   'both schedule forms must expose the CRON expression row for cron-mode tasks'
 );
 assert.ok(
-  /key === 'expr' && cronExprInvalid\(scheduleEditorValue\(nextRrule\)\.cronExpr\)/.test(scheduledViewSource) &&
+  /nextEditor\.repeat === 'cron' && cronExprInvalid\(nextEditor\.cronExpr\)/.test(scheduledViewSource) &&
     /createEditorValue\.repeat === 'cron' && cronExprInvalid\(createEditorValue\.cronExpr\)/.test(scheduledViewSource),
-  'an in-progress invalid CRON expression must stay a local draft in the detail editor and block create submit'
+  'an in-progress invalid CRON expression must stay a local draft in the detail editor (every edit key, so a wheel rewrite cannot bounce a save) and block create submit'
+);
+assert.ok(
+  scheduledViewSource.includes("detailCronEditor && detailCronEditor.repeat === 'cron' && cronExprInvalid(detailCronEditor.cronExpr)") &&
+    scheduledViewSource.includes("createScheduleEditor && createScheduleEditor.repeat === 'cron' && cronExprInvalid(createScheduleEditor.cronExpr)"),
+  'the detail save/run actions and the create submit button must stay disabled while a CRON draft is invalid'
 );
 assert.ok(
   zhScheduledDict.includes("cron:'自定义计划'") &&
@@ -9122,24 +9129,43 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 }
 
 // Issue #821: behavioral check of the shared CRON subset validator — the
-// same accept/reject boundary creation_requests.rs and server.py enforce.
+// same accept/reject boundary creation_requests.rs and server.py enforce
+// structurally, plus the engine's deterministic semantics (field bounds,
+// range order, step, names, impossible dates): an expression the engine
+// would reject must read invalid so the editor holds it as a local draft
+// instead of bouncing a save off the bridge and wedging the panel.
 function scheduleCronExprBehavior() {
   assert.strictEqual(scheduleCronExpr.parseCronExprFields(' 30  9 1 * * ').length, 5);
+  assert.strictEqual(scheduleCronExpr.parseCronExprFields('30\t9\u30001 * *').length, 5);
   assert.strictEqual(scheduleCronExpr.cronExprInvalid('30 9 1 * *'), false);
   assert.strictEqual(scheduleCronExpr.cronExprInvalid('0 9-18 1,15 * MON-FRI'), false);
   assert.strictEqual(scheduleCronExpr.cronExprInvalid('15 9 */2 * *'), false);
   assert.strictEqual(scheduleCronExpr.cronExprInvalid('5 9 1 JAN *'), false);
+  for (const good of [
+    '059 9 1 * *', '30 9 29 2 *', '0 9 31 2,3 *', '30 9 30 2,4 *',
+    '30 9 1-5/2 * *', '30 9 5/2 * *', '30 9 1 * 7', '30 9 1 JAN/2 *',
+    '30\t9 1 * *',
+  ]) {
+    assert.strictEqual(scheduleCronExpr.cronExprInvalid(good), false, good);
+  }
   for (const bad of [
     '', '30 9 1 *', '30 9 1 * * *', '*/5 * * * *', '0,30 * * * *', '5-55/10 * * * *',
     '60 9 1 * *', 'abc 9 1 * *', '30 9 1,3 * *;BYDAY=MO', '30 9 1,,3 * *', '30 9 1 * ?',
+    '30 99 1 * *', '30 9 32 * *', '30 9 1 13 *', '30 9 1 * 8',
+    '30 9 31 2 *', '30 9 30 2 *', '30 9 31 2,4 *', '30 9 5-1 * *',
+    '30 9 1-5/0 * *', '30 9 1/0 * *', '30 9 1 * MON/0', '30 9 1 * XYZ',
+    '99999999999999999999 9 1 * *', '\uFEFF30 9 1 * *', '30 9 1 * *\u001c',
   ]) {
     assert.strictEqual(scheduleCronExpr.cronExprInvalid(bad), true, bad);
   }
   assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('30 9 1 * *'), { minute: '30', hour: '09' });
   assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('05 8 31 * *'), { minute: '05', hour: '08' });
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('059 9 1 * *'), { minute: '59', hour: '09' });
   assert.strictEqual(scheduleCronExpr.fixedCronTime('0 9-18 1 * *'), null);
   assert.strictEqual(scheduleCronExpr.fixedCronTime('* 9 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('30 99 1 * *'), null);
   assert.strictEqual(scheduleCronExpr.cronExprWithTime('30 9 1 * *', '07:05'), '5 7 1 * *');
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('059 9 1 * *', '07:05'), '5 7 1 * *');
   assert.strictEqual(scheduleCronExpr.cronExprWithTime('0 9-18 1 * *', '07:05'), '0 9-18 1 * *');
 }
 

@@ -601,10 +601,15 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           ...template,
           ...scheduledCopy.templateMap[template.id],
         }));
+      // scheduleEditorValue is hoisted; the CRON leg keeps save/run disabled
+      // while an invalid draft is held (closing the panel would discard it,
+      // and the buttons must not present that loss as a save).
+      const detailCronEditor = detailForm ? scheduleEditorValue(detailForm.rrule) : null;
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
         !!String(detailForm.prompt || '').trim() &&
-        !!String(detailForm.rrule || '').trim();
+        !!String(detailForm.rrule || '').trim() &&
+        !(detailCronEditor && detailCronEditor.repeat === 'cron' && cronExprInvalid(detailCronEditor.cronExpr));
       function taskForm(task) {
         if (!task) return null;
         return {
@@ -1056,10 +1061,13 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         else if (key === 'days') setScheduleRepeatIntent('weekly');
         const nextRrule = buildEditedRrule(key, value);
         // An in-progress CRON expression is a local draft only: the detail
-        // editor persists every patch immediately, and a half-typed rule
-        // would bounce off the engine on each keystroke. The invalid draft
-        // never reaches persistDetailPatch, so the last valid rule survives.
-        if (key === 'expr' && cronExprInvalid(scheduleEditorValue(nextRrule).cronExpr)) {
+        // editor persists every patch immediately, and a rule the engine
+        // would reject (a half-typed expr, or one left invalid by a time
+        // wheel rewrite) would bounce off update_scheduled_task and wedge
+        // the pending-patch flush on every later action. The draft never
+        // reaches persistDetailPatch, so the last valid rule survives.
+        const nextEditor = scheduleEditorValue(nextRrule);
+        if (nextEditor.repeat === 'cron' && cronExprInvalid(nextEditor.cronExpr)) {
           setDetailForm(current => current ? {...current, rrule: nextRrule} : current);
           return;
         }
@@ -1143,12 +1151,16 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
                 <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
                 <div className="flex items-center gap-1.5">
-                  <ScheduledSelect value={editor.repeat} options={editor.repeat === 'once'
-                    ? [{ value: 'once', label: scheduledCopy.repeatOptions.once }, ...repeatOptions]
-                    : editor.repeat === 'cron'
-                      ? [{ value: 'cron', label: scheduledCopy.repeatOptions.cron },
-                         ...repeatOptions.filter(option => option.value !== 'cron')]
-                      : repeatOptions}
+                <ScheduledSelect value={editor.repeat} options={editor.repeat === 'once'
+                  ? [{ value: 'once', label: scheduledCopy.repeatOptions.once }, ...repeatOptions]
+                  : editor.repeat === 'cron'
+                    ? [{ value: 'cron', label: scheduledCopy.repeatOptions.cron },
+                       ...repeatOptions.filter(option => option.value !== 'cron')]
+                    : repeatOptions}
+                  // 'once' stays out of cron mode on purpose: buildRrule has
+                  // no cron→once builder (a cron rule carries no AT date), so
+                  // a repeat switch to 'once' would fall through to the
+                  // weekly builder and silently make the task recurring.
                     onChange={value => onEdit('repeat', value)}
                     testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
                 </div>
@@ -1187,11 +1199,12 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                     <input data-testid={`${prefix}-cron-expr`} value={editor.cronExpr}
                       onChange={event => onEdit('expr', event.target.value)}
                       aria-label={scheduledCopy.cronExprAria} aria-invalid={exprInvalid}
+                      aria-describedby={`${prefix}-cron-expr-hint`}
                       placeholder="30 9 1 * *" spellCheck={false}
                       className={`min-h-9 w-full max-w-[220px] rounded-xl px-3 py-1.5 text-center font-mono text-[14px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#FFFFFF] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#1C1C1E] dark:text-white dark:placeholder:text-[#98989D] ${exprInvalid ? 'ring-1 ring-[#FF3B30]/60' : ''}`} />
                   </div>
                 </div>
-                <p className={`px-4 pb-3 text-[12px] leading-4 ${exprInvalid ? 'text-[#FF3B30] dark:text-[#FF453A]' : mutedValue}`}>
+                <p id={`${prefix}-cron-expr-hint`} aria-live="polite" className={`px-4 pb-3 text-[12px] leading-4 ${exprInvalid ? 'text-[#FF3B30] dark:text-[#FF453A]' : mutedValue}`}>
                   {exprInvalid ? scheduledCopy.cronExprInvalid : scheduledCopy.cronExprHint}
                 </p>
               </div>
@@ -1265,7 +1278,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
             <div className={`flex shrink-0 justify-end gap-3 ${dialogFooterSurface}`}>
               <button type="submit" data-testid="scheduled-create-submit"
-                disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
+                disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()
+                  || (createScheduleEditor && createScheduleEditor.repeat === 'cron' && cronExprInvalid(createScheduleEditor.cronExpr))}
                 className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
                 {scheduledCopy.saveTask}
               </button>
