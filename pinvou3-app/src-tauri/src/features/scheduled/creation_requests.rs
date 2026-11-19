@@ -573,9 +573,8 @@ fn validate_cron_expr(expr: &str) -> Result<()> {
         bail!("invalid rrule: CRON EXPR minute must be between 0 and 59");
     }
     for field in &fields[1..] {
-        if field.is_empty() {
-            bail!("invalid rrule: CRON EXPR field must not be empty");
-        }
+        // split_whitespace never yields an empty item (same reason server.py
+        // has no empty-field arm), so no explicit empty-field check here.
         if !field
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b',' | b'-' | b'/'))
@@ -1311,7 +1310,7 @@ fn is_permanent_domain_error(error: &str) -> bool {
     // handles field shape, mode, schedule syntax and body limits. I/O, registry
     // recovery and index-read failures remain bounded retries. A typed error
     // migration is deferred; do not classify generic OS/parse text as poison.
-    const PERMANENT_MARKERS: [&str; 11] = [
+    const PERMANENT_MARKERS: [&str; 13] = [
         "only scheduled-message tasks can change their target session",
         "target_session not found:",
         "scheduled task not found:",
@@ -1328,6 +1327,12 @@ fn is_permanent_domain_error(error: &str) -> bool {
         "Failed to parse CRON",
         "range start must be <=",
         "can never occur",
+        // Engine CRON next-run guards: deterministic for a fixed rule, and
+        // reachable from gate-admitted shapes (a leap-day rule resumed in
+        // 2097-2098 has no Feb 29 inside the 5-year window — 2100 is not a
+        // leap year). Both name CRON, so they cannot swallow HOURLY/WEEKLY.
+        "Unable to compute next CRON run within 5 years",
+        "CRON schedule exceeded its range",
     ];
     PERMANENT_MARKERS
         .iter()
@@ -7246,6 +7251,10 @@ mod tests {
             "Failed to create scheduled task: CRON hour step must be >= 1",
             "Failed to create scheduled task: Failed to parse CRON hour step",
             "Failed to create scheduled task: CRON day-of-month range start must be <= end",
+            // Next-run guards (round-3 review minor 5): deterministic for a
+            // fixed rule once a gate-admitted shape reaches activation.
+            "Failed to create scheduled task: Unable to compute next CRON run within 5 years",
+            "Failed to create scheduled task: CRON schedule exceeded its range",
         ] {
             assert!(is_permanent_domain_error(error));
         }
