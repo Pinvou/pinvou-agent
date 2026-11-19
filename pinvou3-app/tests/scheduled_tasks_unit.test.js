@@ -584,8 +584,12 @@ assert.ok(
   'the schedule editor must give CRON rules their own mode instead of the weekly fallback that silently rewrote them on save (issue #821)'
 );
 assert.ok(
-  scheduledViewSource.includes('data-testid="scheduled-live-cron-expr"') &&
-    scheduledViewSource.includes('testId="scheduled-create-cron-expr"') &&
+  // The real markup is a runtime template literal inside the shared
+  // FormScheduleRows component — the round-2 pin matched only the comment
+  // anchors and stayed green with the whole row deleted (round-3 review),
+  // so pin the construction itself plus the cron-mode row gate.
+  /data-testid=\{`\$\{prefix\}-cron-expr`\}/.test(scheduledViewSource) &&
+    /\{editor\.repeat === 'cron' && \(\(\) => \{/.test(scheduledViewSource) &&
     scheduledViewSource.includes("{ value: 'cron', label: scheduledCopy.repeatOptions.cron }"),
   'both schedule forms must expose the CRON expression row for cron-mode tasks'
 );
@@ -598,6 +602,12 @@ assert.ok(
   scheduledViewSource.includes("detailCronEditor && detailCronEditor.repeat === 'cron' && cronExprInvalid(detailCronEditor.cronExpr)") &&
     scheduledViewSource.includes("createScheduleEditor && createScheduleEditor.repeat === 'cron' && cronExprInvalid(createScheduleEditor.cronExpr)"),
   'the detail save/run actions and the create submit button must stay disabled while a CRON draft is invalid'
+);
+assert.ok(
+  /function scheduledTaskDraftCronReject\(rrule\)/.test(bridgeSharedHelpers) &&
+    /const cronReject = scheduledTaskDraftCronReject\(lockedDraft\.rrule\);\s*if \(cronReject\) throw new Error\(cronReject\);/.test(bridgeSharedHelpers) &&
+    (bridgeSharedHelpers.match(/scheduledTaskDraftCronReject: b\.scheduledTaskDraftCronReject/g) || []).length === 2,
+  'chat auto-create must structurally reject out-of-subset CRON drafts before createScheduledTask runs, exported from both shared clusters (round-3 review M2)'
 );
 assert.ok(
   zhScheduledDict.includes("cron:'自定义计划'") &&
@@ -9145,6 +9155,10 @@ function scheduleCronExprBehavior() {
     '059 9 1 * *', '30 9 29 2 *', '0 9 31 2,3 *', '30 9 30 2,4 *',
     '30 9 1-5/2 * *', '30 9 5/2 * *', '30 9 1 * 7', '30 9 1 JAN/2 *',
     '30\t9 1 * *',
+    // U+0085 (NEL) is Unicode White_Space: the watcher's split_whitespace
+    // and server.py's str.split() both split it, so the mirror must too
+    // (round-3 review minor 2 — the class used to miss exactly this char).
+    '30\u00859\u00851\u0085*\u0085*', '\u008530 9 1 * *\u0085',
   ]) {
     assert.strictEqual(scheduleCronExpr.cronExprInvalid(good), false, good);
   }
@@ -9169,8 +9183,44 @@ function scheduleCronExprBehavior() {
   assert.strictEqual(scheduleCronExpr.cronExprWithTime('0 9-18 1 * *', '07:05'), '0 9-18 1 * *');
 }
 
+// Round-3 review M2 (issue #821): the chat draft fence auto-creates with the
+// model's rrule and the engine accepts the full cron vocabulary, so the
+// shared helpers must structurally reject out-of-subset CRON drafts — the
+// one product constraint with no engine backstop. Run the real helpers file
+// in a bare context and drive the exported predicate like the lane does.
+function scheduledTaskDraftCronRejectBehavior() {
+  const helpersContext = {
+    window: {},
+    console: { log: function () {}, warn: function () {}, error: function () {} },
+  };
+  vm.runInNewContext(bridgeSharedHelpers, helpersContext, { filename: 'bridge-shared-helpers.js' });
+  const reject = helpersContext.window.PinvouBridgeShared
+    .create('tauriScheduled', {}).scheduledTaskDraftCronReject;
+  assert.strictEqual(typeof reject, 'function');
+  // out-of-subset CRON drafts are refused, with gate-aligned wording
+  assert.match(reject('FREQ=CRON;EXPR=*/5 * * * *'), /minute field must be a fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=0,30 9 1 * *'), /minute field must be a fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1 * *;BYDAY=MO'), /unsupported field/);
+  assert.match(reject('FREQ=CRON;BYDAY=MO'), /requires EXPR/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1 *'), /exactly 5 fields/);
+  assert.match(reject('FREQ=CRON;EXPR=abc 9 1 * *'), /fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1,,3 * *'), /empty list item/);
+  // everything the engine rejects on its own stays engine's error: the
+  // structural subset passes it through so the engine message surfaces
+  assert.strictEqual(reject('FREQ=CRON;EXPR=30 9 1 * *'), null);
+  assert.strictEqual(reject('freq=cron;expr=05 08 31 JAN *'), null);
+  // deliberately out of scope: impossible dates are the engine's semantic
+  // authority — the guard must not duplicate the editor mirror here
+  assert.strictEqual(reject('FREQ=CRON;EXPR=30 9 31 2 *'), null);
+  // non-CRON drafts are untouched (engine validates those shapes itself)
+  assert.strictEqual(reject('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30'), null);
+  assert.strictEqual(reject('FREQ=ONCE;AT=2027-06-01T09:30'), null);
+  assert.strictEqual(reject('FREQ=HOURLY;INTERVAL=6;BYMINUTE=0'), null);
+}
+
 Promise.resolve()
   .then(scheduleCronExprBehavior)
+  .then(scheduledTaskDraftCronRejectBehavior)
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
