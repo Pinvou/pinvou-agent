@@ -326,7 +326,7 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 - `error`
 - `unknown`
 
-> 注（2026-11 归档）：以上为首期合同草案。现行 `acp:event` 实际载荷为
+> 注（2026-11 归档）：以上及下方合同规则为首期合同草案（其中「`unknown` 保留」规则现行未实现——未识别事件按 `_ => {}` 静默丢弃）。现行 `acp:event` 实际载荷为
 > `user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
 > `tool_call_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
 > elicitation、`runtime_notice` / `runtime_ready` 等事件（`features/codex_acp/events.rs`），
@@ -380,6 +380,8 @@ MVP 不硬编码 `workspace-write + on-request` 这类未经当前 codex-acp cap
   `set_config_option` 的 `Result` 与 `runtime_notice` 事件为准，见 [`codex-acp.md`](./codex-acp.md)。）
 
 ## 11. Codex ACP 对话 UI
+
+> ⚠️ 2026-11 注：本节对话 UI 为目标架构构想（未按原样实现，见文首 banner；现行前端落地面见 §15 阶段3 注与 `src/features/codex/`），组件边界与交互决策仅设计稿留档。
 
 ### 11.1 组件边界
 
@@ -519,7 +521,7 @@ running -> cancelling -> ready
 
 - MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。（2026-11 注：现行 Bridge 运行时自带私有 Node 24.22.1、适配器 2.2.2，系统 Node 依赖已移除；[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)文首注记同。）
 - 如果 adapter/node_modules 已随包提供，运行时只需要 Node；npm 仅用于未内置或损坏后的安装回退。
-- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)§6.1 归档注及其文首 banner（含 §1 的最终态修正）记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
+- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp` / `claude-agent-acp` 两 ACP 适配器），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)§6.1 归档注及其文首 banner（含 §1 的最终态修正）记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
 - 正式用户不需要理解或手工安装 Node/npm。
 - 保留 `PINVOU3_CODEX_ACP_BIN` 作为开发/诊断覆盖，不作为普通用户安装步骤。
 
@@ -655,7 +657,7 @@ running -> cancelling -> ready
 6. MVP 只保留 Codex 自身 system prompt、tools、tool loop、skills、MCP 配置和 context，不接入 pinvou skill、MCP、知识库和 persona。
 7. pinvou 扩展统一后置：skill 走 Codex 原生目录，工具和知识库走 MCP，persona 只允许可见、可选的首次 prompt 扩展。
 8. collaboration mode 与 security permission 分离；Host 不再按 Plan/YOLO 自动允许或拒绝。
-9. MVP 开发/内部体验允许依赖 system Node 20+；正式 Linux x64 / arm64 包内置 pinvou 私有 Node runtime，用户无需安装 Node/npm。
+9. MVP 开发/内部体验允许依赖 system Node 20+；正式 Linux x64 / arm64 包内置 pinvou 私有 Node runtime，用户无需安装 Node/npm。（2026-11 注：system Node 依赖已移除，现行自带私有 Node 24.22.1，见 §13 注。）
 10. DeepSeek 跨后端能力兼容后置，但现有 DeepSeek 功能必须零回归。
 11. 不引入 AionCore，不重构 DeepSeek-TUI 底座。
 12. Codex workspace 在创建会话时明确选择项目或临时目录，开始后不可更换；Pinvou 会话数据与项目目录分离。

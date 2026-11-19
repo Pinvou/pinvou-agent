@@ -46,7 +46,7 @@
 
 `crates/tui/src/prompts.rs` 加了 3 个 `OnceLock` override + setter + `effective_*()` getter，
 三处使用点改用 getter。**向后兼容**：override 未 set → 返回原 const，行为完全不变。
-验证：`cargo check` 0 error；36 个 prompt/forkguard 测试全过。
+验证：`cargo check` 0 error；36 个 prompt/forkguard 测试全过（同款注：重建前内部仓运行记录，现树不可复跑）。
 
 | override const | setter（pub） | effective getter | 使用点 |
 |---|---|---|---|

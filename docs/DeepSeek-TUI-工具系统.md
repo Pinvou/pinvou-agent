@@ -192,12 +192,11 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### 4.3 审批门控
 
-每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequired`：
+每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequired`（2026-11 订正：v0.8.37 门控无 Suggest/Required 行为分层——`turn_loop.rs:1162` 对一切非 `Auto` 的 requirement 同样发审批事件）：
 - `Auto` — 直接跑（read_file / git_log / web_search 等）
-- `Suggest` — 默认跑，但 `approval_mode=suggest` 时弹审批（write_file / edit_file 等）
-- `Required` — 必须用户点同意才跑（exec_shell 等；apply_patch 在 v0.8.37 是显式 `ApprovalRequirement::Suggest` 覆盖，不走 capabilities 推断）
+- `Suggest` / `Required` — 同样发审批事件（write_file / edit_file / exec_shell 等；apply_patch 在 v0.8.37 是显式 `ApprovalRequirement::Suggest` 覆盖，不走 capabilities 推断）；是否弹窗由 UI 侧 `approval_mode` 决定——`suggest`（默认档）弹审批、`auto`（YOLO）全部自动放行、`never` 一律拒绝
 
-`auto_approve: true`（YOLO）跳过所有 Required 审批。
+`auto_approve: true`（YOLO，即 `approval_mode=auto`）跳过**全部**审批弹窗（`Suggest`/`Required` 一视同仁），非仅「Required」。
 
 ### 4.4 大输出处理
 

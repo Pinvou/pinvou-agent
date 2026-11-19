@@ -123,7 +123,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 - 不接管 Codex system prompt、tools、tool loop、skills、MCP 和上下文管理。
 - 不要求应用启动时就安装 Codex Runtime；只有进入“代码”模式或用户显式启用时才检查。
 - 不将托管 Codex 的更新与 Pinvou 主程序 OTA 强制绑定；Bridge 与 Pinvou 主程序一起
-  发布。
+  发布。（⚠️ 快照口径：托管 Codex 下载/更新链路未被采纳，见文首失效清单；「Bridge 与 Pinvou 主程序一起发布」现行仍成立。）
 - 不在本阶段建设通用 ACP Agent Runtime 市场。
 
 ## 4. 参考 AionUI 后的取舍
@@ -193,6 +193,8 @@ flowchart TB
 ### 5.1 组件职责
 
 #### `CodexRuntimeManager`
+
+（⚠️ 快照口径：`CodexRuntimeManager`/`CodexBinaryResolver`/`RuntimeInstaller`/`CodexHealthProbe` 四个组件均未被采纳、代码零匹配，仅设计稿留档；见文首失效清单。）
 
 - Codex Runtime 的唯一后端入口。
 - 串行化安装、修复、登录和健康检查，避免重复任务。
@@ -398,6 +400,8 @@ Linux 若目标发行版没有可用的 Secret Service，则第一阶段宁可�
 
 ## 8. Runtime 状态机
 
+> ⚠️ 快照口径：本节 `CodexRuntime*` 状态机未被采纳，仅设计稿留档，见文首失效清单。
+
 ### 8.1 稳定状态
 
 ```rust
@@ -468,6 +472,8 @@ stateDiagram-v2
 
 ## 9. 错误分类
 
+> ⚠️ 快照口径：本节 `RuntimeFailureKind` 失败分类未被采纳，仅设计稿留档，见文首失效清单。
+
 `RuntimeFailureKind` 至少覆盖：
 
 | 类型 | 含义 | UI 操作 |
@@ -490,6 +496,8 @@ stateDiagram-v2
 包含 API Key、Authorization header、OAuth token 或 `auth.json` 内容。
 
 ## 10. 首次使用 UI
+
+> ⚠️ 快照口径：本节 `CodexRuntimeGate` 门 UI 未被采纳，仅设计稿留档，见文首失效清单。
 
 Codex Runtime Gate 位于主页“代码”模式。Runtime 未就绪时，不跳转到设置页，也不把
 错误塞进对话 timeline，而是在内容区显示 `CodexRuntimeGate`；左侧统一会话列表仍可
@@ -655,6 +663,8 @@ codex-runtime://status
 
 ## 14. 分阶段实施
 
+> ⚠️ 快照口径：本节分阶段实施计划未被采纳，仅设计稿留档，见文首失效清单。
+
 ### 阶段 A：状态模型与真实健康检查
 
 - 引入单一 `CodexRuntimeStatus` 和错误分类。
@@ -718,6 +728,8 @@ codex-runtime://status
 - 平台差异只进入 Runtime 构建和进程启动层，不分叉上层 UI 与会话逻辑。
 
 ## 15. 测试与验收矩阵
+
+> ⚠️ 快照口径：本节验收矩阵针对未被采纳的 Runtime 状态机，仅留档，见文首失效清单。
 
 | 场景 | 预期结果 |
 |---|---|
@@ -798,10 +810,10 @@ pinvou3-app/scripts/codex-runtime/
 
 1. **系统 Codex 优先**：检测路径和版本，兼容时直接使用，不重复下载大体积二进制。（⚠️ 现行按 `select_newest_eligible` 择新可兼容者，非固定系统优先，见 §2 注）
 2. **缺失或不兼容时下载**：Pinvou 提供固定托管版本的一键下载，不要求用户安装
-   Node/npm。
-3. **默认共享用户 `~/.codex`**：Pinvou 不创建隔离配置目录，也不静默修改用户配置。
+   Node/npm。（⚠️ 快照口径：托管下载未被采纳——现行由用户显式自装/自升级，见 §6.4 注与文首失效清单。）
+3. **默认共享用户 `~/.codex`**：Pinvou 不创建隔离配置目录，也不静默修改用户配置。（2026-11 注：现行仍不静默改写 `~/.codex`，仅在用户显式配置时经 relay 写入，见 §7.1 注。）
 4. **ChatGPT 登录为默认路径**：API Key 是高级备选；没有安全凭据存储前不在 Pinvou
-   配置文件中保存 Key。
+   配置文件中保存 Key。（2026-11 注：现行登录经 Codex CLI 自身完成，见 §2 注。）
 
 实施顺序为阶段 A → B → C → D：先改善判断和 UI，再接私有 Bridge 和系统 Codex
 检测，然后完成托管 Codex 按需下载，最后完成不打开终端的首次登录闭环。

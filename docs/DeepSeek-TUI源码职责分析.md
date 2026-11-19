@@ -67,7 +67,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，子模块 tag `pinvou-v0.9.0-r1..r4` 可达；author date 2026-06-29、commit date 2026-07-24 系重建链），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，自带 guard 测试（`forkguard_blocklist_golden`），`crates/tui/src/core/engine/tests.rs` 另有 `forkguard_yolo_no_deferred_activator_first_class`，防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，子模块 tag `pinvou-v0.9.0-r1..r4` 可达；author date 2026-06-29、commit date 2026-07-24 系重建链），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 
@@ -92,7 +92,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - 通过 `EngineHandle::send(...)` 注入 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext` 等操作。
 - 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。其中只有底座明确产生的 `ThinkingStarted` / `ThinkingDelta` / `ThinkingComplete` 才会形成独立思考生命周期，普通回答文本不会被推断为思考。（2026-11 注：本条的 `chat:reasoning_start/delta/done` 转发与「Thinking\* 独立思考生命周期」均为快照后行为——`chat:reasoning_*` 2026-07-29 起才加入转发，快照邻近可复核副本 `d49bcd40a`（2026-07-02）的 `engine.rs:449-451` 反而显式丢弃 `Event::ThinkingDelta`，思考流不单独转发成生命周期。）
 
-（2026-11 注：本段为快照后行为，快照期不成立——快照 `bridge/mod.rs` 除 Kimi→`"moonshot"` 外把 GLM/MiniMax/MiMo/豆包 预设一律映射 wire provider `"openai"`；`Zai`/`Minimax`/`XiaomiMimo`/`Volcengine` 分厂商映射与「腾讯 Coding Plan」预设为 2026-07 起的后续版本内容，Kimi `reasoning_effort = "high"` 则为 2026-11-06（`135456026`，preset catalog 刷新）才进入 pinvou3；`reasoning_stream_style` 为上游 v0.8.65 才引入的字段，不在本文声明的 v0.8.60 基线内。）模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
+（2026-11 注：本段为快照后行为，快照期不成立——快照 `bridge/mod.rs` 除 Kimi→`"moonshot"` 外把 GLM/MiniMax/MiMo/豆包 预设一律映射 wire provider `"openai"`；`Zai`/`Minimax`/`XiaomiMimo`/`Volcengine` 分厂商映射与「腾讯 Coding Plan」预设同 Kimi `reasoning_effort = "high"` 均为 2026-11-06（`135456026`，preset catalog 刷新）才进入 pinvou3；`reasoning_stream_style` 为上游 v0.8.65 才引入的字段，不在本文声明的 v0.8.60 基线内。）模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
 
 ### engine_pool：多 session 生命周期管理
 
@@ -218,9 +218,9 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 | 首屏长时间白屏 | `lib.rs` 初始化、`Pinvou3Bridge::boot()`、`EnginePool::new()`、前端首屏日志 | 用时间戳日志判断卡在前端资源、bridge boot、路径访问还是 engine lazy spawn |
 | 编译失败 | `pinvou3-app/src-tauri/Cargo.toml`、`Cargo.lock`、`DeepSeek-TUI/Cargo.toml`、`bridge/mod.rs::build_engine_config` | 先看子模块提交和 Rust 版本，再看上游字段变更 |
 | 会话异常 | `bridge/sessions.rs`、`engine_pool.rs::get_or_spawn`、`engine.rs::sync_session`、`SessionManager` | 检查 session 目录、messages 是否加载、是否发了 `Op::SyncSession` |
-| 工具不可用 | `DeepSeek-TUI/crates/tui/src/tools/registry.rs`、`crates/tui/src/core/engine/tool_setup.rs`、`pinvou3_blocklist.rs`、`bridge/mod.rs` features | 判断是工具未注册、被隐藏、feature 未开、还是 MCP/server 配置问题 |
+| 工具不可用 | `DeepSeek-TUI/crates/tui/src/tools/registry.rs`、`crates/tui/src/core/engine/tool_setup.rs`、`pinvou3_blocklist.rs`、`bridge/mod.rs` features | （⚠️ blocklist 机制已退役，见顶部注记）判断是工具未注册、被隐藏、feature 未开、还是 MCP/server 配置问题 |
 | 技能不可用 | `commands.rs::list_skills_v2`、`SkillRegistry::discover`、`bridge/paths.rs::bundle_workflow_dir` | 检查 bundle skill 目录、`SKILL.md` 是否存在、是否被 skiplist 隐藏 |
-| workflow 异常 | `commands.rs::start_workflow`、`kick_workflow`、`engine.rs::AgentComplete` 分支、`harness.rs` | 判断卡在项目初始化、SubAgent 派发、AgentComplete 回传、gate 推进还是前端状态 |
+| workflow 异常 | `commands.rs::start_workflow`、`kick_workflow`、`engine.rs::AgentComplete` 分支、`harness.rs`（⚠️ 已随 SpawnSubAgent 退役，见顶部注记） | 判断卡在项目初始化、SubAgent 派发、AgentComplete 回传、gate 推进还是前端状态 |
 | 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（至迟上游 v0.8.47 起既有；2026-11 起新增用户可选档位，见上文 2026-11 注）、vision config |
 | 压缩异常 | `bridge/mod.rs` 中 `CompactionConfig`、`engine.rs` 的 `Event::Compaction*` 分支、`compaction.rs` | 判断是阈值过高、模型名不匹配、压缩事件未转译还是 context overflow |
 | MCP 不可用 | `mcp_config_path`、`DeepSeek-TUI/crates/mcp/src/lib.rs`、`ToolRegistryBuilder` MCP adapter | 先看 MCP 配置路径，再看 server 启动状态和工具是否进入 registry |
