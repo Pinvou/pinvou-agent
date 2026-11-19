@@ -49,7 +49,10 @@ test('voice and web-bridge commands stay callable while browser tabs attach chil
   // and the voice router HWND cache must resolve main natively.
   for (const path of ['app/commands/voice.rs', 'app/commands/remote_control.rs']) {
     const source = rust(path);
-    assert.doesNotMatch(source, /window: (?:tauri::)?WebviewWindow/, path);
+    // Any by-value `WebviewWindow` command param breaks argument injection
+    // once a browser tab attaches, whatever the param is called; `&`-borrowed
+    // handles and `WebviewWindowBuilder` stay allowed.
+    assert.doesNotMatch(source, /:\s*(?:tauri::)?WebviewWindow\b/, path);
   }
   assert.match(
     rust('app/commands/voice.rs'),
