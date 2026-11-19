@@ -22,6 +22,10 @@
 正式版 Pinvou 不要求用户预先安装 Node、npm、Codex CLI 或 `codex-acp`，但会优先检测
 并复用设备上已经安装且兼容的 Codex。设备没有 Codex，或系统版本与当前
 `codex-acp` 不兼容时，Pinvou 再按需下载固定版本的托管 Codex。
+（⚠️ 2026-11-20 订正：现行选取序并非「系统优先」——在随 adapter 托管安装的
+Codex（legacy）与系统安装之间择版本最新的兼容者，旧系统版会被
+`MIN_CODEX_VERSION` 过滤让位于新候选（`runtime.rs` `select_newest_eligible`，见 §2 注）；
+「按需下载固定版本的托管 Codex」属未被采纳的托管下载设计，见文首 banner。）
 
 Pinvou 安装包只携带体积较小的 **ACP Bridge Runtime**（私有 Node +
 `codex-acp` / `claude-agent-acp` 等适配器，不携带大体积 Codex 平台二进制），从而保证
@@ -36,6 +40,8 @@ Pinvou 安装包管理
     └── codex-acp
 
 系统已有，兼容时优先使用
+（⚠️ 2026-11-20 订正：现行非固定「系统优先」序——与随 adapter 托管安装的
+Codex（legacy）择版本最新的兼容者，见 §2 注；本组与下组「按需下载」树均为设计口径）
 └── <resolved-from-PATH>/codex
 
 Pinvou 按需下载，仅在系统 Codex 缺失或不兼容时存在
@@ -314,6 +320,10 @@ CODEX_PATH=<system-codex-or-managed-codex>
 
 ### 6.3 Manifest
 
+> （⚠️ 快照口径：本节为未被采纳的托管下载设计中的 manifest 草图（`schema_version 1`），
+> 现行代码无此 manifest；现行落地为 `prepare-codex-bridge-runtime.sh` 构建并校验的
+> Bridge manifest（`schema_version 3`），见 §13 注与文首 banner。）
+
 最小 manifest 字段：
 
 ```json
@@ -384,6 +394,8 @@ Pinvou 不应：
 4. Pinvou 显示“等待浏览器授权”，支持取消和重新打开。
 5. 登录命令结束后自动执行真实 ACP 健康检查。
 6. 探测成功才进入 `ready`；仍是认证错误则继续显示“重新登录”。
+   （⚠️ 2026-11 注：步 5-6 的真实 ACP 握手健康检查未采纳——现行登录结束后仅经
+   `codex login status` 复查认证态，见 §3.1 与 §4 注。）
 
 登录过程中不得在普通日志、timeline 或前端事件中传递凭证。
 
@@ -823,3 +835,5 @@ pinvou3-app/scripts/codex-runtime/
 
 实施顺序为阶段 A → B → C → D：先改善判断和 UI，再接私有 Bridge 和系统 Codex
 检测，然后完成托管 Codex 按需下载，最后完成不打开终端的首次登录闭环。
+（⚠️ 快照口径：本句为写档时的四阶段实施顺序；其中「托管 Codex 按需下载」未采纳，
+见文首 banner。）

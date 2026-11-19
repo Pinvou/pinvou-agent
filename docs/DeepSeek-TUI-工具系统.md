@@ -54,7 +54,7 @@ core/engine/tool_execution.rs::execute_tool_with_lock
 
 ## 2. ToolSpec trait
 
-每个工具实现这套接口（`tools/spec.rs:598`）：
+每个工具实现这套接口（`tools/spec.rs:599`——v0.8.37 树行号；`:598` 为 `#[async_trait]`，doc 注释起于 `:597`。2026-11-20 订正）：
 
 ```rust
 pub trait ToolSpec: Send + Sync {

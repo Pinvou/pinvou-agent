@@ -27,7 +27,7 @@ ACP 会话仍使用独立的 ACP 事件、权限和持久化链路，不进入 C
 2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 优先 `PINVOU3_CODEX_PATH` 指定的 Codex；未设置时在内置 Bridge 随包与系统安装之间择版本最新的兼容者（不低于
    0.144.6；低于官方最新版时仍会显示可暂缓的升级提醒，活动会话期间抑制）。
    缺失或全部版本过旧时，经用户确认后按
-   [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。（2026-11-18 订正：选取序并非固定「系统优先」，现行于内置 Bridge 随包与系统安装间择版本最新的兼容者——`PINVOU3_CODEX_PATH` 设但不兼容时该覆盖同样被弃用、并入同一择新序（`runtime.rs` 候选兼容性过滤），详见 [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md) §2 注。）
+   [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。（2026-11-18 订正：选取序并非固定「系统优先」，现行于内置 Bridge 随包与系统安装间择版本最新的兼容者——`PINVOU3_CODEX_PATH` 设但不兼容时该覆盖同样被弃用、并入同一择新序（`runtime.rs` 候选兼容性过滤），详见 [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md) §2 注。2026-11-20 订正：「随包」系指随 adapter 托管安装的 legacy Codex（`~/.pinvou3/runtimes/` 下经 `install.rs` `codex_path_for_adapter` 于 adapter `node_modules/.bin` 解析），并非随 Pinvou 安装包分发——正式安装包 Bridge 打包剪除 `@openai/codex-*` 平台二进制（`prepare-codex-bridge-runtime.sh` 残留即拒打包），见「发布」节与 multi-agent-acp.md「CLI 探测与安装」节。）
 3. 在主页选择“代码”，输入框下方默认选择“临时会话”；直接发送首条消息时才创建
    会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`

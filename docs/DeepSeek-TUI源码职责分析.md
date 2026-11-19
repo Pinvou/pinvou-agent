@@ -191,7 +191,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | 用户目录路径 | `bridge/paths.rs` 和 `bridge/sessions.rs` 指向 `~/.pinvou3/...` | Windows 路径修复要注意盘符、UNC、中文用户名、rooted path |
 | session/artifact/settings 边界 | session 在 `~/.pinvou3/sessions/`，artifact 随 session 元数据，settings 在 pinvou3 用户目录 | 不要把 `~/.deepseek` 和 `~/.pinvou3` 混用 |
 | 打包产物路径 | Tauri release 产物在 `pinvou3-app/src-tauri/target/release/`，bundle/msi 在 `pinvou3-app/src-tauri/target/release/bundle/` | 问 exe 位置和 msi 位置时要区分 |
-| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（字段至迟 v0.8.47 起既有（v0.8.40 已大量命中，376 vs 383）、快照期已用于本地 vLLM=off；2026-11 起新增的是用户可选档位与 Kimi 预设 high，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
+| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（字段至迟 v0.8.47 起既有（v0.8.40 已大量命中，376 vs 383——计数口径：tag 树 v0.8.40/v0.8.47 整仓 `grep -ro reasoning_effort` 的逐次出现计数；2026-11-20 补口径注）、快照期已用于本地 vLLM=off；2026-11 起新增的是用户可选档位与 Kimi 预设 high，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
 | 搜索 provider/API key | `bridge/mod.rs` 将 pinvou3 prefs 翻译为 DeepSeek-TUI `SearchProvider` 和 `search_api_key` | 搜索不可用时先核对 provider 与 key 是否符合底座要求 |
 | 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`（⚠️ 均已随机制退役不存在——现行白名单口径见顶部注记与 `tool-governance.md`） | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失（⚠️ 本条排障路径已失效） |
 | 合并后冒烟 | `cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml`，再启动 release exe 观察 20 秒 | 确认进程未立即退出、窗口响应、日志没有 fatal |
