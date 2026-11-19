@@ -135,6 +135,9 @@ class RruleValidationTests(unittest.TestCase):
             "FREQ=CRON;EXPR=30 9 1,3 * *;BYDAY=MO",
             "FREQ=CRON;EXPR=30 9 1,,3 * *",
             "FREQ=CRON;EXPR=30 9 1 * ?",
+            # Minute overflowing u32: the watcher's parse fails where this
+            # side's bounds check fires — the same shape, rejected.
+            "FREQ=CRON;EXPR=99999999999999999999 9 1 * *",
         ]:
             _, error = server.validate_rrule(rrule)
             self.assertIsNotNone(error, rrule)
@@ -145,6 +148,26 @@ class RruleValidationTests(unittest.TestCase):
         self.assertIsNotNone(error)
         _, error = server.validate_rrule("FREQ=CRON;EXPR=1_0 9 1 * *")
         self.assertIsNotNone(error)
+
+    def test_control_separator_shapes_rejected_like_the_watcher(self):
+        # B9: Python's isspace() strips and splits U+001C-U+001F but the
+        # watcher's Unicode White_Space does not. normalize_rrule maps the
+        # four separators to DEL so every later check refuses exactly the
+        # shapes the watcher refuses (round-2 review minor 1).
+        for rrule in [
+            "FREQ=CRON;EXPR=30\u001c9 1 * *",
+            "FREQ=CRON;EXPR=\u001c30 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1 * *\u001c",
+            "FREQ=WEEKLY;BYDAY=\u001cMO;BYHOUR=9;BYMINUTE=30",
+            "FREQ=HOURLY;INTERVAL=1;BYHOUR=8;BYMINUTE=\u001c30",
+        ]:
+            _, error = server.validate_rrule(rrule)
+            self.assertIsNotNone(error, rrule)
+        # Unicode White_Space separators (here U+3000) stay accepted on both
+        # sides — the same five fields the watcher's split_whitespace sees.
+        normalized, error = server.validate_rrule("FREQ=CRON;EXPR=30\u30009 1 * *")
+        self.assertIsNone(error)
+        self.assertEqual(normalized, "FREQ=CRON;EXPR=30\u30009 1 * *")
 
     def test_once_at_past_and_timezone_suffix_rejected(self):
         for rrule in [

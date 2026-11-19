@@ -597,9 +597,17 @@ ISOLATED_SENDER_PREFIXES = ("eval_", "aux-", "agentic_")
 ISOLATED_TARGET_PREFIXES = ("sched-", "eval_", "aux-", "agentic_")
 
 
+# B9 mirror: Python's isspace() strips and splits U+001C-U+001F, but the
+# watcher's Rust whitespace (Unicode White_Space) does not — the server must
+# not treat those four separators as padding either. Mapping them to DEL
+# (never valid cron vocabulary) keeps every later strip/split/charset check
+# aligned with the watcher on both sides.
+_ISPACE_ONLY_SEPARATORS = str.maketrans({chr(code): "\x7f" for code in range(0x1C, 0x20)})
+
+
 def normalize_rrule(rrule):
     """trim + uppercase (the domain stores the uppercase form; B8)."""
-    return str(rrule or "").strip().upper()
+    return str(rrule or "").translate(_ISPACE_ONLY_SEPARATORS).strip().upper()
 
 
 def _parse_rrule_segments(rrule):
@@ -747,7 +755,6 @@ def validate_rrule(rrule):
         if error:
             return None, error
         return normalized, None
-
 
     if freq == "HOURLY":
         allowed = {"FREQ", "INTERVAL", "BYDAY", "BYHOUR", "BYMINUTE"}
