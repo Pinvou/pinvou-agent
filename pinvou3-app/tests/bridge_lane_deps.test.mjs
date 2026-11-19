@@ -207,7 +207,12 @@ const EXPECTED_SURFACE = {
   // count moves.
   // probeEndpointModels (endpoint model auto-discovery wave) reads only
   // `invoke` as well; the settings cluster already passes it — count only.
-  sharedFnCount: 318,
+  // scheduledTaskDraftCronReject (issue #821 round-3 M2: the chat draft
+  // fence) is pure — it reads only its parameter and JS builtins, so no
+  // cluster literal gains a dep; autoCreateScheduledTaskDraft's new call
+  // resolves it as a base-local declaration. Exported from web and
+  // tauriScheduled, neither of which carries a REQUIRED pin — count only.
+  sharedFnCount: 319,
 };
 
 assert.equal(
