@@ -1,6 +1,6 @@
 # PINVOU Windows 端功能清单与测试用例
 
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004/005 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5.5 的 WIN-MODEL-001..004A 用例与 §6.1 的「内置模型账号暂时失败保留缓存」项同属该能力，一并作废）；§3.12 的 SET-06「用户反馈」提交链路（现行主干 `submit_feedback` 为社区版桩：无条件返回校验失败、不可重试，仅本地回执并引导社区 Issue——`pinvou3-app/src-tauri/src/features/feedback/mod.rs`；§5.10 的 WIN-SET-004..006 提交/重试用例同属该链路，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。编号空缺两处为快照期原貌、非漏排：§3.5 功能条目表的 `MODEL-08`（MODEL-07 直跳 MODEL-09）与 §5.7 用例表的 `WIN-TOOL-008`（§5.5 的 `WIN-MODEL-008` 用例存在）；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004/005 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5.5 的 WIN-MODEL-001..004A 用例与 §6.1 的「内置模型账号暂时失败保留缓存」项同属该能力，一并作废）；§3.12 的 SET-06「用户反馈」提交链路（现行主干 `submit_feedback` 为社区版桩：无条件返回校验失败、不可重试，仅本地回执并引导社区 Issue——`pinvou3-app/src-tauri/src/features/feedback/mod.rs`；§5.10 的 WIN-SET-004..006 提交/重试用例同属该链路，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。编号空缺两处为快照期原貌、非漏排：§3.5 功能条目表的 `MODEL-08`（MODEL-07 直跳 MODEL-09）与 §5.7 用例表的 `WIN-TOOL-008`（§5.5 的 `WIN-MODEL-008` 用例存在）；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致（附件上限 4 处经 2026-11-19 #894 单附件上限 20→50 MiB 后带行内注；§2.3/§4.1/§6.3 三处 OTA 相关行注不在上列逐节枚举内），正式验收前以当前代码为准。
 
 ## 1. 文档信息
 
@@ -115,9 +115,9 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 |---|---|---|---|
 | SHELL-01 | Windows 命令执行 | 基础能力 | 模型可通过 Shell 工具调用 CMD、PowerShell、WinGet 等命令 |
 | SHELL-02 | 前台实时 stdout/stderr | 可用 | Tauri 复用 session 级共享 `ShellManager`，把底座内部跟踪的前台任务完整快照转换为 `chat:tool_delta`；运行中快照尾部的半个 UTF-8 字符延迟到下一轮发送，避免中文跨读取块损坏 |
-| SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID（⚠️ 快照口径：无自动 5 秒阈值；现行底座为前台默认 120 秒超时、超时终止并附后台重跑提示，显式 `task_shell_start` 才后台启动；`background=true` 参数仅存于隐藏重放面 `BashTool`，模型可见 `bash` 无此参数） |
+| SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID（⚠️ 快照口径：无自动 5 秒阈值；现行 App 会话为前台默认 120 秒超时、超时终止并附后台重跑提示；模型可见 `bash` 无后台启动参数，`background=true` 仅存于隐藏重放面 `BashTool`；后台启动/等待由宿主侧续传承接——底座 `task_shell_start`/`task_shell_wait` 仅存于 agent/worker 注册面，不在 App 会话模型可见目录（`PINVOU3_ALLOWED_TOOLS` 无该名）） |
 | SHELL-04 | 后台任务持续输出 | 可用 | 后台启动结果返回后，原工具卡继续接收 stdout/stderr；`chat:done` 不会直接清掉该任务卡 |
-| SHELL-05 | 后台任务等待/快照 | 可用 | `exec_shell_wait` 默认读取当前快照；明确等待时持续读取直到依赖满足或任务终止（⚠️ 快照口径：`exec_shell_wait` 系写档时点工具名，已随底座改名退役——现行模型可见等待/快照面为 `task_shell_start`/`task_shell_wait`，`pinvou3-app/tests/canonical_tool_contract.test.js` 的 RETIRED 名单含该名；本行结论按现行名仍成立） |
+| SHELL-05 | 后台任务等待/快照 | 可用 | `exec_shell_wait` 默认读取当前快照；明确等待时持续读取直到依赖满足或任务终止（⚠️ 快照口径：`exec_shell_wait` 系写档时点工具名，已随底座改名退役；现行 App 会话**无模型可调等待/快照工具**——等待与快照由宿主侧续传承接（SHELL-04 行为）；底座 `task_shell_start`/`task_shell_wait` 仅存于 agent/worker 注册面、不在 App 模型可见目录，且 `canonical_tool_contract.test.js` 的 RETIRED 名单同时含 `exec_shell_wait` 与 `task_shell_start`；本行「后台任务等待/快照」结论由宿主续传机制承接仍成立） |
 | SHELL-06 | 后台任务独立终态 | 可用 | 后台任务结束、失败或取消后更新工具卡终态，不依赖聊天 turn 是否已结束 |
 | SHELL-07 | 按任务 ID 取消 | 可用 | 前端从工具卡取消后台 Shell 任务，后端终止任务并返回状态 |
 | SHELL-08 | Windows 进程树终止 | 可用 | 使用 Windows 进程树/Job Object 相关策略清理子进程，避免只结束父 Shell 后下载器继续运行 |
@@ -141,7 +141,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | FILE-09 | 压缩包 | 可用 | ZIP、RAR、7Z 解压后递归识别，最多 50 个条目、解压后总量最多 100 MiB |
 | FILE-10 | 邮件 | 可用 | EML 和 MSG 提取标题、发件人、正文和附件名称；Windows 原生 MSG 解析无需 `msgconvert` |
 | FILE-11 | 音视频附件 | 降级可用 | 当前只登记元数据并提示未处理，不对附件自动转写 |
-| FILE-12 | 单附件大小限制 | 设计约束 | 超过 20 MiB 的文件拒绝进入解析链路 |
+| FILE-12 | 单附件大小限制 | 设计约束 | 超过 20 MiB 的文件拒绝进入解析链路（⚠️ 快照口径：现行单附件上限 50 MiB——2026-11-19 #894 将 `MAX_FILE_BYTES` 提至 50 MiB，20 MiB+1 现行可摄入；压缩包 50 条目/100 MiB 两条现行有效） |
 | ART-01 | 制品卡片 | 可用 | 工具产生文件后显示制品卡；未显式展示时 turn 结束有兜底补卡 |
 | ART-02 | 制品预览 | 可用 | 支持文本、Markdown、HTML、图片和可渲染办公制品预览 |
 | ART-03 | Markdown 直接编辑 | 可用 | 在应用内编辑、保存，支持选区触发 AI 修改 |
@@ -379,14 +379,14 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 
 | 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
 |---|---:|---|---|---|
-| WIN-FILE-001 | P0 | 准备小于 20 MiB 文本/Markdown/JSON | 分别添加并发送 | 文件名、大小、解析内容正确；模型可引用内容 |
+| WIN-FILE-001 | P0 | 准备小于 20 MiB 文本/Markdown/JSON | 分别添加并发送 | 文件名、大小、解析内容正确；模型可引用内容（⚠️ 快照口径：现行上限 50 MiB（2026-11-19 #894），本用例不再贴上界——贴界正向用例须按约 49 MiB 重设） |
 | WIN-FILE-002 | P1 | 准备中英文 PDF 和扫描 PDF | 添加文件 | 文本 PDF 可提取；扫描 PDF OCR 最多处理 30 页并在截断时提示 |
 | WIN-FILE-003 | P1 | 准备 DOCX/ODT | 添加并提问 | 随包 Pandoc 可用，文本顺序和中文正常 |
 | WIN-FILE-004 | P1 | 已安装 LibreOffice | 添加 DOC/WPS、PPT/DPS、XLS/ET | 各格式按文档、演示、表格路径正确转换和提取 |
 | WIN-FILE-005 | P1 | 未安装 LibreOffice | 添加依赖 LibreOffice 的文件 | 显示缺失依赖或降级提示，不崩溃、不生成伪内容 |
 | WIN-FILE-006 | P1 | 准备 PNG/JPG/WEBP/BMP | 添加并请求识图 | 图片保存和 MIME 识别正确，视觉链可读取 |
 | WIN-FILE-007 | P1 | 准备 EML 和 MSG | 添加并提问 | 标题、人员、正文和附件名可读；中文及 UTF-16 内容正常 |
-| WIN-FILE-008 | P0 | 准备大于 20 MiB 文件 | 尝试添加 | 明确拒绝，应用内存和会话数据不异常增长 |
+| WIN-FILE-008 | P0 | 准备大于 20 MiB 文件 | 尝试添加 | 明确拒绝，应用内存和会话数据不异常增长（⚠️ 快照口径：现行上限 50 MiB（2026-11-19 #894）——21–49 MiB 样本现行会被接受而非拒绝，按本文执行须以 50 MiB 以上样本重设，否则验收误报） |
 | WIN-FILE-009 | P0 | 构造超 50 条目或解压后超 100 MiB 压缩包 | 添加文件 | 拒绝展开并提示限制，不发生压缩炸弹资源耗尽 |
 | WIN-FILE-010 | P1 | 路径含中文、空格、`#`、`%` | 添加和系统打开 | 路径规范化、文件 URL 和外部打开均正确 |
 | WIN-FILE-011 | P1 | 准备 MP3/MP4 | 添加文件 | 显示当前未处理/仅元数据状态，不误称已经转写 |
@@ -621,13 +621,13 @@ npm run build:nsis
 
 1. **当前 Windows 发布链只面向 x64。** Embedded Python、Node.js、Pandoc、ONNX Runtime 和 VC++ 检测均使用 x64 资源；不能把 Linux ARM64 兼容代码视为 Windows ARM64 安装包支持。
 2. **定时任务要求 PINVOU 正在运行。** 当前不创建 Windows Task Scheduler 系统任务；应用关闭、关机或休眠期间错过的时段会跳过，下一次启动只安排未来时段。
-3. **Shell 转发不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。（底座 `task_shell_start` 工具另支持显式 `tty` 参数按需开 PTY——不自动启用，见 SHELL-12 行；旧名 `exec_shell` 系写档时点名、已退役。）
+3. **Shell 转发不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。（底座 `task_shell_start` 工具另支持显式 `tty` 参数按需开 PTY——不自动启用，见 SHELL-12 行；该工具系底座 agent/worker 注册面、不在 App 会话模型可见目录（SHELL-03/05 行注同口径）；旧名 `exec_shell` 系写档时点名、已退役。）
 4. **实时 Shell 转发不再以丢块降压。** 宿主以 250ms 轮询快照差量合并输出（64KiB 有界已发尾），作业完整输出缓冲不丢块；极端持续输出的主要风险变为内存增长，仍应限制工具卡展示量并验证最终结果。
 5. **桌伴的置顶和透明渲染依赖 Windows 窗口/WebView 能力。** 运行时置顶重申失败会降级为普通可用窗口；混合 DPI、多显示器空洞和显卡驱动环境仍需真机验收。
 6. **大型语音模型不随安装包提供。** 首次语音输入依赖网络下载；断网环境只能使用已经下载并校验的模型。
 7. **LibreOffice 不在当前随包运行时清单中。** DOC、WPS、PPT、DPS、XLS、ET 等路径需要外部 LibreOffice；缺失时必须给出依赖提示。
 8. **音视频附件尚未自动转写。** 聊天框麦克风输入已有离线 ASR，但添加 MP3/MP4 文件当前只登记元数据。
-9. **附件单文件上限为 20 MiB。** 压缩包另有 50 条目和解压后 100 MiB 总量限制。
+9. **附件单文件上限为 20 MiB。** 压缩包另有 50 条目和解压后 100 MiB 总量限制。（⚠️ 快照口径：单附件上限现行已提至 50 MiB——2026-11-19 #894；压缩包两条限制未变）
 10. **模型高级参数当前不在设置页开放。** 上下文窗口和最大输出预算由保存的部署事实、探测结果与路由上限决定；普通用户不能直接在 UI 中修改这些字段（快照口径：现行设置页已开放「上下文窗口」「最大输出」输入字段，用户声明优先、后端再按路由与进程级输出预算钳制，见 §3.5 MODEL-10 注）。
 11. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在或凭据无效；只有权威“无账号/已撤销/鉴权失败”结果才能清理缓存、回滚安装或熔断重试。
 

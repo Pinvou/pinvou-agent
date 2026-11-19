@@ -192,7 +192,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### 4.3 审批门控
 
-每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequired`（2026-11 订正：v0.8.37 门控无 Suggest/Required 行为分层——`turn_loop.rs:1162` 对一切非 `Auto` 的 requirement 同样发审批事件）：
+每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequired`（2026-11 订正：v0.8.37 门控无 Suggest/Required 行为分层——`turn_loop.rs:1162` 把 requirement 折叠为单一布尔、对一切非 `Auto` 同样发审批事件（实发点 :1585））：
 - `Auto` — 直接跑（read_file / git_log / web_search 等）
 - `Suggest` / `Required` — 同样发审批事件（write_file / edit_file / exec_shell 等；apply_patch 在 v0.8.37 是显式 `ApprovalRequirement::Suggest` 覆盖，不走 capabilities 推断）；是否弹窗由 UI 侧 `approval_mode` 决定——`suggest`（默认档）弹审批、`auto`（YOLO）全部自动放行、`never` 一律拒绝
 
@@ -294,7 +294,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 `agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，后续各版本至现行 HEAD 也未将其注册为工具名——系被移除/替代的遗留，而非「后来才注册」）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
-### RLM（Recursive Language Model，递归语言模型）持久会话（2026-11-18 订正：原书「Read-Eval-Loop Model」系写档误展开，v0.8.37 源码全部作 Recursive Language Model——`rlm/mod.rs:1`、`commands/mod.rs:707`）
+### RLM（Recursive Language Model，递归语言模型）持久会话（2026-11-18 订正：原书「Read-Eval-Loop Model」系写档误展开，v0.8.37 源码全部作 Recursive Language Model——`src/rlm/mod.rs:1`、`commands/mod.rs:707`）
 
 `rlm_open / rlm_eval / rlm_configure / rlm_close` —— 起一个保留状态的 Python/REPL 子内核，多轮共享变量。Qwen3.6 撑不住这套编排，pinvou3 不引导。
 
@@ -328,7 +328,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 ## 6. pinvou3 实际可见的工具
 
 `build_turn_tool_registry_builder` Yolo 路径展开后约 **74 个不同名注册**（构建器对同名工具按 v0.8.37 覆盖语义去重，末态 74 名，见 §8 overwrite-warn 披露），`engine.rs` 另注入 3 个 `agent_*` 子代理工具，合计约 **77 个**（pandoc/OCR 探测失败时 75；含
-exec_wait/exec_interact 两个别名）。catalog 层 `ensure_advanced_tooling`（`turn_loop.rs` 每种模式都会调用）另推送 4 个：code_execution / js_execution（Python/Node 探针门控）与
+exec_wait/exec_interact 两个别名）。catalog 层 `ensure_advanced_tooling`（`turn_loop.rs` 每种模式都会调用——精确条件 `if !tool_catalog.is_empty()`，默认特性下三模式 catalog 均非空）另推送 4 个：code_execution / js_execution（Python/Node 探针门控）与
 tool_search_tool_regex / tool_search_tool_bm25（无条件推送，`base.md` 即列有这两个 deferred
 discovery 工具），模型可见合计约 **81**（pandoc/OCR 探测失败时约 79，解释器探针亦不可用则约 77）：
 

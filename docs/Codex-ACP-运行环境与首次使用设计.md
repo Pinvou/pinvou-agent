@@ -268,7 +268,7 @@ platform:        linux-x64 / linux-arm64
 ```
 
 > 注（归档时现状）：现行 Bridge 实际钉扎 Node 24.22.1、codex-acp 适配器 2.2.2
-> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`（Node 钉），适配器 2.2.2 钉于 `features/codex_acp/mod.rs`）；
+> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`（Node 与适配器版本均钉于该脚本），适配器另钉于 `features/codex_acp/mod.rs`）；
 > 运行目录名 `codex-acp-1.1.5` 不代表适配器版本，见 `docs/codex-acp.md`。托管 Codex Runtime
 > 下载未采纳，Codex 由用户自行安装（脚本/brew/npm，应用内引导）。
 

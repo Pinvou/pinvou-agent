@@ -31,7 +31,7 @@
 
 ## 当前实测阈值与修正（2026-06-03 核对）
 
-> 本节是对照**写档时点代码**(当时 submodule HEAD = `9c8e4826`,晚于本文初版 `7e5288e3`;现行 gitlink 已前移至 `687358f7efde`,本节行号属 `9c8e4826` 时代——`7e5288e3` 为 2026-07-24 重建前哈希,本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解,下文其余 `7e5288e3` 引用同此)逐行核对后的更新。下方「全套修复」「Codex review 历程」是设计/推导记录,保留不动;**实际生效以本节为准**。
+> 本节是对照**写档时点代码**(当时 submodule HEAD = `9c8e4826`,晚于本文初版 `7e5288e3`;现行 gitlink 已前移至 `687358f7efde`,本节行号属 `9c8e4826` 时代——`7e5288e3` 为 2026-07-24 重建前哈希,本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解,下文其余 `7e5288e3` 引用同此)逐行核对后的更新。下方「全套修复」「Codex review 历程」是设计/推导记录,保留不动;**实际生效以本节为准**。（⚠️ 双底座口径（r20 订正）：下表 230,400/24,576 系 fork 底座 env/route 接线后的口径——公开对照树 `9c8e4826` 的引擎不读 `DEEPSEEK_MAX_OUTPUT_TOKENS`、`effective_max_output_tokens` 硬帽 min(窗口/2, 65,536)，同场景 E=189,440（即上文核对段之值）；fork 接入完成前（:201 B2 自述「没有 wire 给 engine」）亦同。「以本节为准」仅对 env 接线后的 fork 底座成立。）
 
 ### 修正历程（2026-06 核对 → 重调）
 
@@ -48,7 +48,7 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 **修复①:`token_threshold` 200K → 190K**;锚定不变式 `token_threshold + 20K margin ≤ context_input_budget`,由回归测试 `compaction_threshold_stays_below_emergency_budget`(按 `max_output_tokens()` 动态算 budget)锁住。
 
 **修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（⚠️ 写档时点口径——现行 route 级声明按窗口档位计算、机器写入的 24576 已被归一化让位，见 Round 4 节的写档时点口径注；`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
-- 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,work-bound,code}.md` 四件)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
+- 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,work-bound,code}.md` 四件；≤8KB/≤16KB 分块规则文本本身未随任何可核树留存——四件与 `e34024e62` 的 instructions.md 均无此条文)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
 - 对本地 vLLM，64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin，同时把**输入预算 189K(74%)→ 230,400(90%)**，自动压缩更晚触发、保留更多历史。云端 route 不复用该本地预算。
 
 ### 完整阈值表（写档时点的本地 vLLM，output=24K）
@@ -153,7 +153,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 担心"单个大工具输出(几十 K 的 grep/read)一步污染上下文、跳过 nice 压缩直奔 emergency"。调研结论:**底座已防住,无需配 large_output_router / workshop**。
 
 **底座每-工具-结果截断(始终生效):** `turn_loop.rs`（写档 era HEAD `9c8e4826` 约 :1847/:1880，文中旧行号 :1970/:2004 勿按现树查）对**每个**工具结果调 `compact_tool_result_for_context`,产出的压缩版(`output_for_context`)才进 `session.messages` 喂模型;全文只给前端显示(`tool_call.set_result`)。
-- 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。(⚠️ 时代口径:档位数字为 `9c8e4826` 时点;现行 per-result 内联预算改为窗口 3%×4 字符、上限 `TOOL_OUTPUT_INLINE_MAX_CHARS = 100_000`(route_budget.rs `route_inline_char_budget`),256K 约 31K 字符/条;「大工具输出会被截断」的结论本身仍有效。)
+- 档位由窗口决定(`context.rs` 判定约 :248-252):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。(⚠️ 时代口径:档位数字为 `9c8e4826` 时点;现行 per-result 内联预算改为窗口 3%×4 字符、上限 `TOOL_OUTPUT_INLINE_MAX_CHARS = 100_000`(route_budget.rs `route_inline_char_budget`),256K 约 31K 字符/条;「大工具输出会被截断」的结论本身仍有效。)
 - 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
 
 **`large_output_router`(#548——重建前内部仓库编号，非本仓 #548；/ workshop)是冗余且不完整,不要开:**

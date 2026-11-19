@@ -26,7 +26,7 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 | `pinvou3-app/src/` | 前端入口，`index.html` + `tauri-bridge.js` + vendor JS | `tauri-bridge.js` 是前后端通信唯一集中封装 |
 | `pinvou3-app/src-tauri/` | Rust 后端、Tauri 配置、bundle 资源 | Windows 兼容主要改这里和打包配置 |
 | `DeepSeek-TUI/` | 底座 submodule，Cargo path dependency | 当前工作区该目录可能为空；必须先初始化 submodule |
-| `docs/` | 项目设计、阶段报告、fork 说明、测试方案 | 接手时要先读 `fork-modifications.md` 和 `process.md` |
+| `docs/` | 项目设计、阶段报告、fork 说明、测试方案 | 接手时要先读 `fork-modifications.md` 和 `process.md`（后者未随本仓库发布，见 §16 注） |
 | `workflows/` | 开发源工作流数据与 Python 调度脚本（快照条目：已在主干整体移除） | `build.rs` 同步到 Tauri bundle 快照（该同步已不存在） |
 | `scripts/` | 辅助脚本，包括 fork guard、模拟脚本、release 脚本 | 多数脚本偏 Bash/Linux，需要 Windows 适配 |
 
@@ -275,7 +275,7 @@ Windows 风险：
 |---|---|
 | library facade | pinvou3-app 需要把底座作为库调用 |
 | tool blocklist | Qwen3.6 可见工具需精简，且要防 tool_search 绕过（⚠️ 快照条目：blocklist 已于 2026-08-11 退役，现行以 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理，见 `docs/tool-governance.md`） |
-| append_file / 大产物保护 | 本地慢 vLLM 和大文件生成依赖分块写 |
+| append_file / 大产物保护 | 本地慢 vLLM 和大文件生成依赖分块写（⚠️ 快照口径：`append_file` 系已退役工具名，分块写语义现行由 canonical `write` 64KiB 硬帽与分块写引导承接） |
 | YOLO careful hook | 危险命令在 YOLO 下也要拦 |
 | project_context / skills 路径收窄 | GUI 助手不应乱读其他 AI 工具上下文 |
 | static prompt composer | pinvou3 用它密封系统 prompt，防上游新增块泄漏 |
@@ -370,7 +370,7 @@ Windows 迁移必须重做或拆分：
 | Poppler/Tesseract/LibreOffice/7z 路径 | `file_ingest.rs` | P1（⚠️ 快照后已消解：`platform::os::*_tool_path` 跨平台探测 + 安装包内置运行时，见 §7 注） |
 | Python 命令名 `python3` | `file_ingest.rs`、workflow scripts | P1（⚠️ 快照后已消解：`platform::os::python_command` 跨平台命令名） |
 | 工作流绝对路径注入 | `harness.rs`、workflow scripts | P1（快照条目：`harness.rs` 与工作流子系统已在主干移除，此风险随之消失） |
-| 打开文件/目录命令 | `commands.rs` | P1 |
+| 打开文件/目录命令 | `commands.rs` | P1（⚠️ 快照后已消解：Windows 打开能力经 `platform/os/windows/windows_system.rs` explorer.exe 直启落地） |
 | vLLM 默认本机地址 | `bridge/mod.rs`、settings | P1（⚠️ 快照后已消解：Windows/macOS 首启默认预设已改远端 DeepSeek，`platform/prefs/model.rs`） |
 | Windows 路径反斜杠与模型提示 | prompt / workflow | P2 |
 | fork guard Bash 脚本 | `scripts/fork-guard.sh` | P2 |

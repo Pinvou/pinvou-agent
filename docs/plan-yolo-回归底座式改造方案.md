@@ -8,7 +8,7 @@
 底座（CodeWhale）**本来就有**完整的 plan→执行交接闭环：
 
 1. 模型在 Plan 模式调 `update_plan` = 交接信号（`prompts/modes/plan.md` 引导）
-2. engine 层 `should_stop_after_plan_tool`（改造基线 fork `6b3059da11` 树的 `dispatch.rs:385`；2026-11-18 r16 订正：round-15 误改的 :346 系上游 v0.8.65 行号，非改造钉树行号）强制结束本 turn
+2. engine 层 `should_stop_after_plan_tool`（改造基线 fork `6b3059da11` 树的 `dispatch.rs:385`；2026-11-18 r16 订正：round-15 误改的 :346 系上游 v0.8.65 行号，非改造钉树行号；`6b3059da11` 系 2026-07-24 重建前哈希，本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解）强制结束本 turn
 3. （TUI）自动弹 Plan Confirmation modal → 四选项 Accept(Agent)/Accept(YOLO)/Revise/Exit
 4. Accept(YOLO) → 自动 `set_mode(Yolo)` + 注入 `"Proceed with the accepted plan."` + 共享 `Arc<Mutex<PlanState>>` 不清
 
@@ -160,4 +160,4 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡ 直接动手(跳过方案)」（渲染原文，半角括号）。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 
-**已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明（现行位于 `features/assistant/forwarder.rs` 注）；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**
+**已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明（现行位于 `features/assistant/forwarder.rs` 注）；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**（⚠️ 本节运行数字系改造时旧态记录，现树不可复跑）
