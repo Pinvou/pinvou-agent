@@ -231,7 +231,7 @@ fn helper_at_point(
         .map_err(|e| map_uia_err("element_at_point", e))?;
     // SAFETY: cache request and element live for the call.
     let cache = build_tree_cache(uia)?;
-    let info = element_info_from_handle_cache(uia, &element, &cache, "element_at_point")?;
+    let info = element_info_from_handle_cache(&element, &cache, "element_at_point")?;
     Ok(Some(info))
 }
 
@@ -269,7 +269,7 @@ fn helper_focus(uia: &UIAutomation) -> Result<Option<WireElement>, ComputerUseEr
             .element_from_handle(info.hwndFocus.into())
             .map_err(|e| map_uia_err("focused_element", e))?;
         let cache = build_tree_cache(uia)?;
-        let wire = element_info_from_handle_cache(uia, &element, &cache, "focused_element")?;
+        let wire = element_info_from_handle_cache(&element, &cache, "focused_element")?;
         Ok(Some(wire))
     }
 }
@@ -277,7 +277,6 @@ fn helper_focus(uia: &UIAutomation) -> Result<Option<WireElement>, ComputerUseEr
 /// ElementInfo fields as the wire shape — computed HERE where the raw cached
 /// name still exists (screening + binding), transported display-truncated.
 fn element_info_from_handle_cache(
-    uia: &UIAutomation,
     element: &uiautomation::UIElement,
     cache: &uiautomation::core::UICacheRequest,
     context: &str,
@@ -363,7 +362,6 @@ impl UiaHelperClient {
             super::uia_helper_protocol::HELPER_ARG
         );
         let exe_wide = to_wide(&exe.display().to_string());
-        let cmdline_wide = to_wide(&command_line);
         let desktop_wide = to_wide(&format!("WinSta0\\{desktop_name}"));
         // SAFETY: pipe creation with default security; the inherit flags are
         // set on exactly the child ends below.
@@ -636,16 +634,15 @@ unsafe fn make_inheritable_pipe(read_end: bool) -> Result<(HANDLE, HANDLE), Comp
     unsafe { CreatePipe(&mut read, &mut write, None, 0) }.map_err(|error| {
         ComputerUseError::failed(format!("cannot create the UIA helper pipe: {error}"))
     })?;
-    let (inherit, keep) = if read_end {
-        (read, write)
-    } else {
-        (write, read)
-    };
+    let inherit = if read_end { read } else { write };
     // SAFETY: flag set on our own newly created handle.
     unsafe { SetHandleInformation(inherit, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT) }.map_err(
         |error| {
-            let _ = CloseHandle(read);
-            let _ = CloseHandle(write);
+            // SAFETY: close of our own pipe ends on the failure path (an
+            // unsafe fn body still requires the explicit block under the
+            // rust-2024 compatibility gate).
+            let _ = unsafe { CloseHandle(read) };
+            let _ = unsafe { CloseHandle(write) };
             ComputerUseError::failed(format!(
                 "cannot mark the UIA helper pipe end inheritable: {error}"
             ))
