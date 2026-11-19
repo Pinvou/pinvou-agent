@@ -40,8 +40,6 @@ export function ConfirmDialog({
   destructive = false,
   layout = 'grid',
   busy = false,
-  describedBy,
-  children = null,
   onCancel,
   onConfirm,
 }) {
@@ -49,8 +47,9 @@ export function ConfirmDialog({
   // derive stable ids for the title (labelledby) and the description
   // (describedby) so screen readers announce both without callers wiring ids.
   // alertdialog requires an accessible name, so a title-less confirm (the
-  // provider-form confirm layer) names itself from the description instead.
-  // An explicit `describedBy` (pointing at richer external copy) wins.
+  // provider-form confirm layer) names itself from the description instead —
+  // and describedby stays off there, or SR users would hear the same sentence
+  // twice (once as the name, once as the description).
   const titleId = useId();
   const descriptionId = useId();
   const stacked = layout === 'stacked';
@@ -64,7 +63,7 @@ export function ConfirmDialog({
       busy={busy}
       role="alertdialog"
       labelledBy={title ? titleId : (description ? descriptionId : undefined)}
-      describedBy={describedBy ?? (description ? descriptionId : undefined)}
+      describedBy={title && description ? descriptionId : undefined}
       panelClass={`max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] ${stacked ? 'w-[270px]' : 'w-[320px]'}`}
       onCancel={onCancel}
     >
@@ -76,7 +75,6 @@ export function ConfirmDialog({
           </p>
         )}
       </div>
-      {children}
       <div className={stacked ? `border-t ${HAIRLINE}` : `grid grid-cols-2 border-t ${HAIRLINE}`}>
         {stacked ? (
           <>

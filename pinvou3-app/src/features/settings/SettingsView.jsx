@@ -3769,7 +3769,7 @@ function hasStoredCredential(record) {
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
-          {/* Delete confirm: same iOS dialog recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click does not close) */}
+          {/* Delete confirm: same ConfirmDialog stacked recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click closes, same as Cancel) */}
           {memoryDeleteConfirm && (
             <MemoryDeleteDialog
               item={memoryDeleteConfirm}

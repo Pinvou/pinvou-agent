@@ -62,6 +62,10 @@ export function ModalShell({
         type="button"
         aria-label={backdropLabel}
         className={backdropClass}
+        // Pointer-only affordance (click = cancel): kept out of Tab order so
+        // keyboard users walk the real controls instead of landing on a
+        // full-viewport invisible button or escaping the modal through it.
+        tabIndex={-1}
         disabled={busy}
         onClick={onCancel}
       />

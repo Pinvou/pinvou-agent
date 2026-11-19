@@ -206,6 +206,16 @@ test('the shared confirm keeps its alertdialog semantics on the shared shell', (
     2,
     'cancelTestId must be rendered in both the stacked and grid layouts',
   );
+  // The backdrop button is a pointer-only affordance: tabIndex={-1} keeps it
+  // out of Tab order so keyboard users cannot land on a full-viewport invisible
+  // "Cancel" or escape the modal through it (the 2026-11-20 round). Anchored to
+  // the button's own attribute order — the panel div also carries tabIndex={-1}
+  // and must not satisfy this pin.
+  assert.match(
+    MODAL_SHELL,
+    /aria-label=\{backdropLabel\}[\s\S]{0,500}tabIndex=\{-1\}[\s\S]{0,60}disabled=\{busy\}[\s\S]{0,30}onClick=\{onCancel\}/,
+    'the ModalShell backdrop button must stay out of Tab order (tabIndex={-1} between its label and handlers)',
+  );
 });
 
 test('absorbed confirms keep their pre-absorption stacking tier', () => {

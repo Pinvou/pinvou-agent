@@ -210,8 +210,9 @@ try {
   assert.equal(reenabledCalls, 1, 'the re-enabled timer must fire the callback');
 
   // T8: degenerate delays must disable the timer like enabled:false — the
-  // platform would coerce 0/NaN to a ~4ms hot interval (and a negative delay
-  // is equally degenerate), so none of them may reach setInterval.
+  // platform would coerce 0/NaN/+Infinity to a ~4ms hot interval (and a
+  // negative delay is equally degenerate), so none of them may reach
+  // setInterval.
   const h8 = createHarness(useIntervalWhen);
   h8.render(() => {}, 0, true);
   assert.equal(h8.fakeWindow.intervals.size, 0, 'a zero delay must not schedule a hot interval');
@@ -219,6 +220,10 @@ try {
   assert.equal(h8.fakeWindow.intervals.size, 0, 'a NaN delay must not schedule a timer');
   h8.render(() => {}, -5, true);
   assert.equal(h8.fakeWindow.intervals.size, 0, 'a negative delay must not schedule a timer');
+  h8.render(() => {}, Number.POSITIVE_INFINITY, true);
+  assert.equal(h8.fakeWindow.intervals.size, 0, 'a +Infinity delay must not schedule a hot interval');
+  h8.render(() => {}, Number.NEGATIVE_INFINITY, true);
+  assert.equal(h8.fakeWindow.intervals.size, 0, 'a -Infinity delay must not schedule a timer');
 
   console.log('useIntervalWhen regression tests passed');
 } finally {

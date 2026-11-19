@@ -1548,8 +1548,8 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               confirmLabel={scheduledCopy.delete}
               cancelLabel={scheduledCopy.cancel}
               busy={!!busyAction}
-              onConfirm={() => confirmDeleteTask(undefined, deleteConfirmTask)}
-              onCancel={() => cancelDeleteTask()}
+              onConfirm={(event) => confirmDeleteTask(event, deleteConfirmTask)}
+              onCancel={cancelDeleteTask}
             />
           )}
 

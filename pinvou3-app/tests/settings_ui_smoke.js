@@ -912,6 +912,14 @@ assert.match(
   /if \(event\.key === 'Escape' && !isImeComposing\(event\)\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
   'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only), IME-guarded',
 );
+// 复审 2026-11-20:确认层 portal 到 body 后,表单卡片的 stopPropagation 仍是
+// 承载层——React 合成事件沿 React 树冒泡,删掉它确认弹层的背景点击会一路
+// 冒到表单根节点的 onClose,连带关掉整个表单。
+assert.match(
+  providerFormModalSource,
+  /onClick=\{event => event\.stopPropagation\(\)\}/,
+  'the form card must keep its stopPropagation shield: the confirm layer portals to body, but React synthetic events still bubble through the React tree to the form root onClose',
+);
 // 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
 assert.match(
   providerFormModalSource,

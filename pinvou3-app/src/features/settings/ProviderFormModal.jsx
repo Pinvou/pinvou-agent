@@ -470,6 +470,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
+      {/* 这层 stopPropagation 仍承载作用：二级确认弹层虽已 portal 到 body，
+          但 React 合成事件沿 React 树冒泡——删掉它，确认弹层的背景点击就会
+          一路冒到表单根节点的 onClose，连带关掉整个表单（#817 B1 复审钉回）。 */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
       <div
