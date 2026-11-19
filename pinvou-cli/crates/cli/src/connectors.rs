@@ -4119,7 +4119,7 @@ fn compose_user_code(url: Option<&str>, user_code: Option<&str>) -> Option<Strin
 /// login link, which is this flow's phishing main channel. A URL that does
 /// not parse is not a link worth surfacing.
 fn url_host_matches_auth_domain(url: &str, domains: &[&str]) -> bool {
-    url::Url::parse(url).ok().is_some_and(|parsed| {
+    reqwest::Url::parse(url).ok().is_some_and(|parsed| {
         parsed.host_str().is_some_and(|host| {
             let host = host.to_ascii_lowercase();
             domains.iter().any(|domain| {
