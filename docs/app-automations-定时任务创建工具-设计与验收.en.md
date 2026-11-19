@@ -113,7 +113,7 @@ Test names in the "Verification" column are marked: ◇ = to be added, ○ = exi
 
 | # | Scenario | Input | Expected result | Verification | Priority |
 |---|---|---|---|---|---|
-| B1 | Valid rrule shapes | The three documented samples (HOURLY INTERVAL; WEEKLY BYDAY; ONCE AT) | Accepted and persisted | ◇python parameterized cases | P0 |
+| B1 | Valid rrule shapes | The four documented samples (HOURLY INTERVAL; WEEKLY BYDAY; ONCE AT; monthly CRON) | Accepted and persisted | ◇python parameterized cases | P0 |
 | B2 | Minute granularity rejected | "every 5 minutes"-style expressions (MINUTELY/CRON */5 etc.) | Rejected, error guides the user to every-N-hours/daily/weekly/monthly | ◇python | P0 |
 | B3 | CRON fixed-minute subset (revised by issue #821) | `FREQ=CRON;EXPR=30 9 1 * *` (monthly) passes; minute-granular CRON (`*/5`, `0,30`, i.e. a non-fixed minute field) is rejected | Passes and is stored / rejected with guidance | ◇python | P0 |
 | B4 | Past/timezone-carrying ONCE | `AT` earlier than now; a `Z`/`+08:00` suffix | Both rejected; the error explains a future local time is required | ◇python | P0 |
@@ -333,6 +333,17 @@ In the rebuilt Linux desktop, two paused fixtures had the same name and differen
 Parked terminal records and unpublished receipts do not consume apply or tail-quarantine slots. Each poll retries the identity-checked terminal move for unchanged parked records, without another domain apply; a genuine newer replacement retains its filename-scoped spent retry budget. When the bounded in-memory evidence capacity is exhausted, fresh requests stay queued until storage recovers, with a streak warning, rather than receiving a false ceiling failure. Successful evidence moves automatically release capacity without restart. Directory enumeration remains bounded; flood starvation is not solved by this change.
 
 Replacing a keyed request while the watcher is already applying the previous payload can apply both payloads. This is a separate at-least-once window even without a crash. The retry result describes its own apply and explicitly warns that the earlier request may also have applied; inspect the panel before retrying again. No exactly-once or in-flight cancellation guarantee is made.
+
+## CRON fixed-minute subset (issue #821, finalized 2026-11-19/20)
+
+The engine always accepted `FREQ=CRON`, but the product surfaces disagreed: the wizard create path bypassed the product-subset rrule gate, the schedule editor silently rewrote any CRON rule to `FREQ=WEEKLY` on an unrelated save, and task lists showed the raw rrule string. This wave opens the subset per option (a):
+
+- `FREQ=CRON` with a standard 5-field `EXPR`: the minute field must be one fixed value 0-59; the other four fields keep the standard cron vocabulary (`*`, lists, `a-b` ranges, `p/s` steps, JAN-DEC/SUN-SAT names); only FREQ/EXPR fields are allowed. Field bounds and impossible dates remain the engine's (`ParsedCronExpr`) on every dispatch path.
+- The structural rules are mirrored on three surfaces: the spool watcher's `validate_product_rrule`, the server's `validate_cron_expr`, and the editor's `schedule-cron-expr.js` (an engine-semantics mirror: bounds, range order, steps, month names, impossible dates). The chat draft auto-create — the only free-form rrule entry left — is backed by the shared structural gate `scheduledTaskDraftCronReject`: the engine accepts the full vocabulary, so CRON is the one product constraint with no engine backstop.
+- B9 byte alignment: both `normalize_rrule` and the create funnel map U+001C-U+001F to DEL before any strip/split (Python isspace ⊃ Unicode White_Space by exactly those four), so the server and the watcher accept/reject identical byte strings; jointly accepted whitespace such as U+0085 passes on both sides alike.
+- Permanent classification: six engine CRON parse classes plus the two next-run guards ("within 5 years" / "exceeded its range") join PERMANENT_MARKERS, so a doomed rule lands its failure marker on the first attempt instead of burning the 3-attempt budget.
+- Editor: an in-progress invalid expression stays a local draft (save/run-now/create submit disabled with an aria-announced hint), the time wheel rewrites only fixed minute/hour fields, converting into CRON lands on a monthly shape, and no code path rebuilds a CRON rule as WEEKLY anymore; `humanize_rrule` renders `每月 D 日 HH:MM` / `自定义 CRON（expr）`.
+- Acceptance: rows B3/I4 and this section; the rust/python/js accept/reject vectors live in the individual commits and review threads (rounds 1-3, COMMENT verdicts).
 
 ---
 

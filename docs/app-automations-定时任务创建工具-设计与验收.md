@@ -113,7 +113,7 @@
 
 | # | 场景 | 输入 | 预期结果 | 验证方式 | 优先级 |
 |---|---|---|---|---|---|
-| B1 | rrule 合法形态 | 文档三种样例（HOURLY INTERVAL；WEEKLY BYDAY；ONCE AT） | 通过并落库 | ◇python 参数化用例 | P0 |
+| B1 | rrule 合法形态 | 文档四种样例（HOURLY INTERVAL；WEEKLY BYDAY；ONCE AT；CRON 每月） | 通过并落库 | ◇python 参数化用例 | P0 |
 | B2 | 分钟级拒绝 | "每 5 分钟"类表达（MINUTELY/CRON */5 等） | 拒绝，错误指引用户改每 N 小时/每天/每周/每月 | ◇python | P0 |
 | B3 | CRON 固定分钟子集（issue #821 修订） | `FREQ=CRON;EXPR=30 9 1 * *`（每月）通过；分钟级 CRON（`*/5`、`0,30` 等分钟字段非固定值）拒绝 | 通过并落库 / 拒绝并指引 | ◇python | P0 |
 | B4 | 过去/带时区 ONCE | `AT` 早于当前时刻；带 `Z`/`+08:00` 后缀 | 均拒绝，错误说明需未来本地时刻 | ◇python | P0 |
@@ -333,6 +333,17 @@
 停放的终态记录和未发布回执不占应用或尾部隔离名额。每轮对未更换的停放记录仅重试带身份检查的终态移动，不再执行领域操作；合法的新替换仍保留按文件名累计的已用重试预算。内存证据达到有界容量时，新请求保持排队并按故障持续期告警，直到存储恢复，不再收到虚假的上限失败。隔离成功后自动释放容量，无需重启。目录枚举仍有界，本次不保证洪泛下的公平性。
 
 同键替换若发生在 watcher 正在应用旧内容期间，两份内容都可能应用。这是不依赖进程崩溃的另一个至少一次窗口。重试回执仅描述本次应用，并明确提示旧请求也可能已应用；再次重试前应检查面板。不承诺恰好一次或取消已经开始的旧请求。
+
+## CRON 固定分钟子集（issue #821，2026-11-19/20 定稿）
+
+引擎一直接受 `FREQ=CRON`，但产品面此前不一致：向导创建路径绕过产品子集门、编辑器在无关保存时把 CRON 静默改写为 WEEKLY、任务列表只显示原始 rrule。本波按 option (a) 打开子集：
+
+- `FREQ=CRON` + 标准 5 字段 `EXPR`，分钟字段必须是单一固定值 0-59，其余四字段保留标准 cron 词汇（`*`、列表、`a-b` 范围、`p/s` 步长、JAN-DEC/SUN-SAT 名称），仅允许 FREQ/EXPR 两个字段；字段边界与不可能日期仍由引擎（`ParsedCronExpr`）在每条派发路径裁决。
+- 结构规则三面镜像：spool watcher 的 `validate_product_rrule`、服务端 `validate_cron_expr`、编辑器 `schedule-cron-expr.js`（引擎语义镜像：边界/范围序/步长/月份名/不可能日期）。聊天草稿自动创建是唯一自由格式 rrule 入口，由共享结构门 `scheduledTaskDraftCronReject` 兜底 —— 引擎接受全量词汇，CRON 是唯一没有引擎回背的产品约束面。
+- B9 字节对齐：`normalize_rrule` 与创建漏斗都先把 U+001C-U+001F 映射为 DEL（Python isspace ⊃ Unicode White_Space，恰差这四个），服务端与 watcher 对同一字节串接受/拒绝一致；U+0085 等共同空白两侧同样放行。
+- 持久分类：六个引擎 CRON 解析类 + 两个 next-run 守卫（"within 5 years"/"exceeded its range"）进入 PERMANENT_MARKERS，注定失败的规则首轮即落失败标记，不烧 3 次重试预算。
+- 编辑器：无效表达式保持本地草稿（保存/立即运行/创建提交禁用并给出 aria 提示），时间滚轮只重写固定分/时字段，转换进 CRON 落在每月形态，不存在任何把 CRON 重建为 WEEKLY 的路径；`humanize_rrule` 输出 `每月 D 日 HH:MM` / `自定义 CRON（expr）`。
+- 验收：B3/I4 行与本节；rust/python/js 三套接受/拒绝向量见各提交与评审记录（round-1~3 COMMENT）。
 
 ---
 
