@@ -4,7 +4,10 @@
 
 // #817 B1: this file's internal ConfirmDialogShell was the audit's reference
 // template (role=alertdialog + aria) and is now components/ConfirmDialog.jsx
-// itself — the two wrappers keep only their copy and the destructive tint.
+// itself — the two wrappers keep only their copy, the destructive tint, and
+// the old shell's z-[200] tier (explicit, so the confirms stay peers of the
+// other body-portal dialogs instead of dropping to ConfirmDialog's z-[110]
+// default and losing to e.g. the blocking WebConnectionStatus overlay).
 // `theme` used to pick a boxShadow tone; the shared dialog handles dark via
 // Tailwind, so the callers' theme prop is simply no longer read. ArchiveToast
 // is untouched.
@@ -12,6 +15,7 @@ import { ConfirmDialog } from './ConfirmDialog.jsx';
 
 export const ArchiveConfirmDialog = ({ t, onCancel, onConfirm }) => (
   <ConfirmDialog
+    zIndexClass="z-[200]"
     title={t.archiveConfirmTitle}
     description={(
       // The message + detail two-line block (detail is empty in zh — the
@@ -30,6 +34,7 @@ export const ArchiveConfirmDialog = ({ t, onCancel, onConfirm }) => (
 
 export const ArchivedDeleteConfirmDialog = ({ t, onCancel, onConfirm }) => (
   <ConfirmDialog
+    zIndexClass="z-[200]"
     destructive
     title={t.archivedDeleteTitle}
     description={t.archivedDeleteMessage}

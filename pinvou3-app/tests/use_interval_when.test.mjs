@@ -85,14 +85,17 @@ function createRuntime() {
 function createHarness(hook) {
   const fakeWindow = {
     intervals: new Map(),
+    delays: new Map(),
     nextId: 1,
-    setInterval(cb) {
+    setInterval(cb, delayMs) {
       const id = this.nextId++;
       this.intervals.set(id, cb);
+      this.delays.set(id, delayMs);
       return id;
     },
     clearInterval(id) {
       this.intervals.delete(id);
+      this.delays.delete(id);
     },
   };
   const runtime = createRuntime();
@@ -124,11 +127,15 @@ function createHarness(hook) {
 try {
   const { useIntervalWhen } = await import(pathToFileURL(hookTmp).href);
 
-  // T1: enabled mount schedules exactly one interval; ticks fire the callback.
+  // T1: enabled mount schedules exactly one interval; ticks fire the callback,
+  // and the requested delay reaches setInterval (a swapped/dropped delay arg
+  // would silently change every site's cadence).
   let calls = 0;
   const h1 = createHarness(useIntervalWhen);
   h1.render(() => { calls += 1; }, 1000, true);
   assert.equal(h1.fakeWindow.intervals.size, 1, 'an enabled mount schedules exactly one interval');
+  const t1Id = [...h1.fakeWindow.intervals.keys()][0];
+  assert.equal(h1.fakeWindow.delays.get(t1Id), 1000, 'the requested delay must reach setInterval');
   h1.tick();
   h1.tick();
   assert.equal(calls, 2, 'each tick fires the callback once');
@@ -160,13 +167,15 @@ try {
   assert.equal(seen, 'new', 'the tick must invoke the latest closure, not the captured one');
 
   // T5: a null/undefined delay disables the timer like enabled:false; a delay
-  // change replaces the timer (old one cleared, a fresh one created).
+  // change replaces the timer (old one cleared, a fresh one created, carrying
+  // the new cadence).
   const h5 = createHarness(useIntervalWhen);
   h5.render(() => {}, null, true);
   assert.equal(h5.fakeWindow.intervals.size, 0, 'null delay must not schedule a timer');
   h5.render(() => {}, 500, true);
   assert.equal(h5.fakeWindow.intervals.size, 1, 'a real delay schedules the timer');
   const idAt500 = [...h5.fakeWindow.intervals.keys()][0];
+  assert.equal(h5.fakeWindow.delays.get(idAt500), 500, 'the pre-change delay must reach setInterval');
   h5.render(() => {}, 2000, true);
   const idsAfterDelayChange = [...h5.fakeWindow.intervals.keys()];
   assert.equal(idsAfterDelayChange.length, 1, 'a delay change keeps exactly one timer');
@@ -175,6 +184,11 @@ try {
     idAt500,
     'a delay change must clear the old timer and create a new one',
   );
+  assert.equal(
+    h5.fakeWindow.delays.get(idsAfterDelayChange[0]),
+    2000,
+    'the post-change delay must reach setInterval',
+  );
 
   // T6: unmount clears the interval.
   const h6 = createHarness(useIntervalWhen);
@@ -182,6 +196,29 @@ try {
   assert.equal(h6.fakeWindow.intervals.size, 1);
   h6.unmount();
   assert.equal(h6.fakeWindow.intervals.size, 0, 'unmount cleanup must clear the interval');
+
+  // T7: re-enabling (false → true) must create a fresh timer that fires —
+  // the true→false→true cycle is every poll site's steady state (install
+  // watchers, indexing polls) and must not strand the component timerless.
+  let reenabledCalls = 0;
+  const h7 = createHarness(useIntervalWhen);
+  h7.render(() => {}, 1000, true);
+  h7.render(() => {}, 1000, false);
+  h7.render(() => { reenabledCalls += 1; }, 1000, true);
+  assert.equal(h7.fakeWindow.intervals.size, 1, 're-enabling must create a fresh timer');
+  h7.tick();
+  assert.equal(reenabledCalls, 1, 'the re-enabled timer must fire the callback');
+
+  // T8: degenerate delays must disable the timer like enabled:false — the
+  // platform would coerce 0/NaN to a ~4ms hot interval (and a negative delay
+  // is equally degenerate), so none of them may reach setInterval.
+  const h8 = createHarness(useIntervalWhen);
+  h8.render(() => {}, 0, true);
+  assert.equal(h8.fakeWindow.intervals.size, 0, 'a zero delay must not schedule a hot interval');
+  h8.render(() => {}, Number.NaN, true);
+  assert.equal(h8.fakeWindow.intervals.size, 0, 'a NaN delay must not schedule a timer');
+  h8.render(() => {}, -5, true);
+  assert.equal(h8.fakeWindow.intervals.size, 0, 'a negative delay must not schedule a timer');
 
   console.log('useIntervalWhen regression tests passed');
 } finally {

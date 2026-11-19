@@ -31,6 +31,22 @@ const CONFIRM_DIALOG = fs.readFileSync(
   path.join(appRoot, 'src', 'components', 'ConfirmDialog.jsx'),
   'utf8',
 );
+// ModalShell is the shell ConfirmDialog renders on; its aria wiring is part of
+// the confirm contract (the alertdialog semantics came from the absorbed shell).
+const MODAL_SHELL = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ModalShell.jsx'),
+  'utf8',
+);
+// Absorbed confirms that must keep their pre-absorption stacking tier (they
+// used to ride the z-[200] ConfirmDialogShell / ModalBackdrop band).
+const ARCHIVE_CONFIRM = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ArchiveConfirmDialog.jsx'),
+  'utf8',
+);
+const TOOL_STORE_VIEW = fs.readFileSync(
+  path.join(appRoot, 'src', 'features', 'tools', 'ToolStoreView.jsx'),
+  'utf8',
+);
 const SMOKE = fs.readFileSync(
   path.join(appRoot, 'tests', 'settings_ui_smoke.js'),
   'utf8',
@@ -156,6 +172,57 @@ test('the settings smoke no longer stubs native confirm', () => {
     SMOKE,
     /window\.confirm\s*=/,
     'settings smoke must not stub window.confirm again (a reintroduced native confirm must fail loudly)',
+  );
+});
+
+test('the shared confirm keeps its alertdialog semantics on the shared shell', () => {
+  // ConfirmDialog must render as an alertdialog (destructive-confirm semantics
+  // per the absorbed reference shell); a dropped role would silently regress
+  // every absorbed confirm to a generic dialog.
+  assert.match(
+    CONFIRM_DIALOG,
+    /role="alertdialog"/,
+    'ConfirmDialog must render role=alertdialog',
+  );
+  // ModalShell can only emit aria-* for roles that support them; `role` is a
+  // prop, so the attributes must ride a conditional spread gated on the
+  // dialog/alertdialog roles (static aria-modal/labelledby/describedby next to
+  // role={role} fails Biome's useAriaPropsSupportedByRole and would red CI —
+  // the 2026-11-19 round).
+  assert.match(
+    MODAL_SHELL,
+    /\{\.\.\.\(role === 'dialog' \|\| role === 'alertdialog'[\s\S]{0,80}'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy[\s\S]{0,20}:\s*\{\}\)\}/,
+    'ModalShell must gate its aria attributes on the dialog/alertdialog roles via a conditional spread',
+  );
+  assert.doesNotMatch(
+    MODAL_SHELL,
+    /aria-modal="true"|aria-labelledby=\{|aria-describedby=\{/,
+    'the shell panel must carry no static aria-* attributes (they would fail useAriaPropsSupportedByRole against the implicit generic role)',
+  );
+  // The cancel testid must exist in BOTH layouts — a stacked-only gap would
+  // silently break smoke drivers that target the cancel button of a stacked confirm.
+  assert.strictEqual(
+    (CONFIRM_DIALOG.match(/data-testid=\{cancelTestId\}/g) || []).length,
+    2,
+    'cancelTestId must be rendered in both the stacked and grid layouts',
+  );
+});
+
+test('absorbed confirms keep their pre-absorption stacking tier', () => {
+  // ArchiveConfirmDialog/ArchivedDeleteConfirmDialog used to ride the
+  // z-[200] ConfirmDialogShell; dropping to ConfirmDialog's z-[110] default
+  // would let blocking z-[200] overlays (e.g. WebConnectionStatus) cover them.
+  assert.strictEqual(
+    (ARCHIVE_CONFIRM.match(/zIndexClass="z-\[200\]"/g) || []).length,
+    2,
+    'both archive confirms must explicitly keep the z-[200] tier',
+  );
+  // The two SheetRowConfirm sites (skill update, recycle purge) rode the
+  // z-[200] ModalBackdrop before absorption — same tier preservation.
+  assert.strictEqual(
+    (TOOL_STORE_VIEW.match(/zIndexClass="z-\[200\]"/g) || []).length,
+    2,
+    'both tool-store confirms must explicitly keep the z-[200] tier',
   );
 });
 

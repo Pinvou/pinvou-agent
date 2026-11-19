@@ -906,10 +906,11 @@ assert.doesNotMatch(
 );
 // 复审 ACP minor(Escape 逐层关闭):候选面板打开时 Escape 只关面板,其次二级
 // 确认层,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+// IME 守卫随 #817 B1 复审补齐:组合词窗口中的 Escape(取消候选词)不得关闭任何层。
 assert.match(
   providerFormModalSource,
-  /if \(event\.key === 'Escape'\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
-  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only)',
+  /if \(event\.key === 'Escape' && !isImeComposing\(event\)\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
+  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only), IME-guarded',
 );
 // 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
 assert.match(

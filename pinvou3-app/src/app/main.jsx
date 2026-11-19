@@ -3776,7 +3776,6 @@ const App = () => {
             <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
                 <LazyArchiveConfirmDialog
-                  theme={activeTheme}
                   t={t}
                   onCancel={() => setArchiveConfirm(null)}
                   onConfirm={confirmArchiveSession}

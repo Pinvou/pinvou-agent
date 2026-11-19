@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
 import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { bridge } from '../../hooks/useBridge.js';
 import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
@@ -223,8 +224,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
     const onKey = event => {
       // Escape 逐层关闭(复审 ACP minor):候选面板打开时只关面板,其次二级
       // 确认弹窗(打开时只关确认层),最后才是整个表单——上层浮层绝不连带
-      // 下层一起消失。
-      if (event.key === 'Escape') {
+      // 下层一起消失。与全应用对话框一致,IME 组合中的 Escape(取消候选词)
+      // 不关闭任何层(shared/ime-guard.mjs)。
+      if (event.key === 'Escape' && !isImeComposing(event)) {
         if (endpointPickerOpen) setEndpointPickerOpen(false);
         else if (confirmStep) setConfirmStep(null);
         else onClose();

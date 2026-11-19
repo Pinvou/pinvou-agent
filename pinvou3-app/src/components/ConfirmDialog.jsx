@@ -11,10 +11,12 @@
 //   (model / search / memory delete, feedback close, add-all models).
 // Absorbed per the audit: SheetConfirmDialog, SheetRowConfirm,
 // SavedPersonaConfirmDialog, ProviderFormModal's confirm layer, the scheduled
-// delete confirm, ArchiveConfirmDialog/ArchivedDeleteConfirmDialog, and
-// ProvidersSection's CardConfirm. TsAlert deliberately stays separate (it is an
-// OK-only loading/result alert, not a cancel/confirm pair — force-fitting it
-// here would be the over-abstraction the audit warns against).
+// delete confirm, and ArchiveConfirmDialog/ArchivedDeleteConfirmDialog.
+// Deliberately NOT absorbed: TsAlert (an OK-only loading/result alert, not a
+// cancel/confirm pair — force-fitting it here would be the over-abstraction
+// the audit warns against) and ProvidersSection's CardConfirm /
+// TransferModalShell (already rebuilt on ModalShell; converging their pill
+// footer onto this iOS idiom is follow-up material, not dedup).
 // No copy lives here: callers pass their own `t.*` labels, so trilingual
 // parity stays with the sites (tests/ui_language_coverage keeps enforcing it).
 
@@ -38,8 +40,6 @@ export function ConfirmDialog({
   destructive = false,
   layout = 'grid',
   busy = false,
-  cancelDisabled = false,
-  confirmDisabled = false,
   describedBy,
   children = null,
   onCancel,
@@ -48,6 +48,8 @@ export function ConfirmDialog({
   // A confirm without an accessible name is the exact gap the audit flagged;
   // derive stable ids for the title (labelledby) and the description
   // (describedby) so screen readers announce both without callers wiring ids.
+  // alertdialog requires an accessible name, so a title-less confirm (the
+  // provider-form confirm layer) names itself from the description instead.
   // An explicit `describedBy` (pointing at richer external copy) wins.
   const titleId = useId();
   const descriptionId = useId();
@@ -61,7 +63,7 @@ export function ConfirmDialog({
       backdropLabel={cancelLabel}
       busy={busy}
       role="alertdialog"
-      labelledBy={title ? titleId : undefined}
+      labelledBy={title ? titleId : (description ? descriptionId : undefined)}
       describedBy={describedBy ?? (description ? descriptionId : undefined)}
       panelClass={`max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] ${stacked ? 'w-[270px]' : 'w-[320px]'}`}
       onCancel={onCancel}
@@ -82,15 +84,16 @@ export function ConfirmDialog({
               type="button"
               data-testid={confirmTestId}
               onClick={onConfirm}
-              disabled={busy || confirmDisabled}
+              disabled={busy}
               className={`w-full h-12 text-[17px] font-semibold border-b ${HAIRLINE} disabled:opacity-45 ${confirmTone}`}
             >
               {confirmLabel}
             </button>
             <button
               type="button"
+              data-testid={cancelTestId}
               onClick={onCancel}
-              disabled={busy || cancelDisabled}
+              disabled={busy}
               className={`w-full h-12 text-[17px] font-semibold disabled:opacity-45 ${CANCEL_BLUE}`}
             >
               {cancelLabel}
@@ -102,7 +105,7 @@ export function ConfirmDialog({
               type="button"
               data-testid={cancelTestId}
               onClick={onCancel}
-              disabled={busy || cancelDisabled}
+              disabled={busy}
               className={`h-12 text-[17px] font-normal border-r ${HAIRLINE} disabled:opacity-45 ${CANCEL_BLUE}`}
             >
               {cancelLabel}
@@ -111,7 +114,7 @@ export function ConfirmDialog({
               type="button"
               data-testid={confirmTestId}
               onClick={onConfirm}
-              disabled={busy || confirmDisabled}
+              disabled={busy}
               className={`h-12 text-[17px] font-semibold disabled:opacity-45 ${confirmTone}`}
             >
               {confirmLabel}

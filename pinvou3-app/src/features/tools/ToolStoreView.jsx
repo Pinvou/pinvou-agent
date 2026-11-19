@@ -2355,9 +2355,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           />, document.body)}
           {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
               window.confirm 不弹;ConfirmDialog 自带 portal,Esc/IME 守卫与
-              backdrop 关闭由 ModalShell 统一承载,#817 B1) */}
+              backdrop 关闭由 ModalShell 统一承载;原 SheetRowConfirm 挂在
+              z-[200] 的 ModalBackdrop 上,层级显式保持 z-[200],#817 B1) */}
           {updateConfirm && (
             <ConfirmDialog
+              zIndexClass="z-[200]"
               title={storeCopy.updateSkillTitle(updateConfirm.name)}
               description={storeCopy.updateSkillOverwriteHint}
               cancelLabel={storeCopy.cancel}
@@ -2411,9 +2413,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onConfirm={doEditDisplaySave}
           />, document.body)}
           {/* 回收站彻底删除二次确认:物理删除包文件与回收站条目,不可恢复
-              (ConfirmDialog destructive,#817 B1;testid 保持回收站 pin 不变) */}
+              (ConfirmDialog destructive,层级保持原 ModalBackdrop 的 z-[200],
+              #817 B1;testid 保持回收站 pin 不变) */}
           {purgeConfirm && (
             <ConfirmDialog
+              zIndexClass="z-[200]"
               destructive
               title={storeCopy.recyclePurgeTitle(purgeConfirm.name)}
               description={storeCopy.recyclePurgeHint}

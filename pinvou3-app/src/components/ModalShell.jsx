@@ -68,11 +68,18 @@ export function ModalShell({
       <div
         ref={dialogRef}
         role={role}
-        aria-modal="true"
-        aria-labelledby={labelledBy}
-        aria-describedby={describedBy}
         tabIndex={-1}
         className={`relative ${panelClass}`}
+        // The aria attributes ride a conditional spread rather than static JSX
+        // attributes: `role` is a prop, so Biome's useAriaPropsSupportedByRole
+        // cannot tie static aria-* to a statically-known role and flags them
+        // against the div's implicit `generic` role. `dialog` and `alertdialog`
+        // support all three; any other role gets none. Undefined labelledBy/
+        // describedBy values are omitted by React, so the rendered DOM is
+        // identical to static attributes for every consumer.
+        {...(role === 'dialog' || role === 'alertdialog'
+          ? { 'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy }
+          : {})}
       >
         {title}
         {children}
