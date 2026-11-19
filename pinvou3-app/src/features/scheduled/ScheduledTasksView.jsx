@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, Database, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
+import { cronExprInvalid, cronExprWithTime, fixedCronTime } from './schedule-cron-expr.js';
 import { formatLocalDateTime } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
@@ -779,6 +780,11 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         const name = String(createForm.name || '').trim();
         const prompt = String(createForm.prompt || '').trim();
         if (!name || !prompt) return;
+        // Issue #821: an invalid CRON expression must not reach the engine.
+        // The field shows the inline hint; submit stays a no-op like the
+        // blank name/prompt case above.
+        const createEditorValue = scheduleEditorValue(createForm.rrule);
+        if (createEditorValue.repeat === 'cron' && cronExprInvalid(createEditorValue.cronExpr)) return;
         if (!bridge || !bridge.scheduled.createScheduledTask) return;
         try {
           await bridge.scheduled.createScheduledTask({
@@ -914,6 +920,22 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             hasTimeAnchor: true,
           };
         }
+        if (fields.FREQ === 'CRON') {
+          // Issue #821: a CRON rule gets its own editor mode instead of the
+          // weekly fallback below, which silently rewrote the schedule to
+          // FREQ=WEEKLY on any unrelated save.
+          const expr = String(fields.EXPR || '').trim();
+          const fixedTime = fixedCronTime(expr);
+          return {
+            repeat: 'cron',
+            days: [],
+            day: 'MO',
+            interval: 1,
+            time: fixedTime ? `${fixedTime.hour}:${fixedTime.minute}` : '',
+            hasTimeAnchor: !!fixedTime,
+            cronExpr: expr,
+          };
+        }
         const days = normalizeScheduleDays(fields.BYDAY);
         const hasTimeAnchor = fields.BYHOUR != null || fields.BYMINUTE != null;
         let repeat = 'workdays';
@@ -932,26 +954,60 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         };
       }
 
+      // Issue #821: CRON edits stay inside the expression. Only an explicit
+      // repeat-mode switch converts away (handled by the caller); a time edit
+      // on a fixed-minute/hour expression rewrites exactly those two fields;
+      // everything else leaves the rule untouched (the weekly fallback in
+      // buildRrule used to silently destroy the schedule).
+      function buildCronRrule(fields, key, value, currentRrule) {
+        if (key === 'expr') {
+          fields.EXPR = String(value || '').replaceAll(/[;=]/g, ' ');
+          return serializeScheduleFields(fields);
+        }
+        if (key === 'time') {
+          fields.EXPR = cronExprWithTime(String(fields.EXPR || ''), value);
+          return serializeScheduleFields(fields);
+        }
+        return currentRrule;
+      }
+
+      // ONCE rules carry their own AT shape: rewrite AT instead of appending
+      // BYHOUR/BYMINUTE, which the ONCE parser rejects; bail out unchanged
+      // when AT cannot be resolved to a local date, e.g. a malformed RFC3339
+      // offset. Returns null when the edit is an explicit conversion to a
+      // recurring rule and must fall through to the builders below, which
+      // reuse the AT time.
+      function buildOnceRrule(fields, key, value, currentRrule) {
+        if (key === 'time') {
+          const once = onceScheduleParts(fields.AT);
+          if (!once) return currentRrule;
+          const [onceHour, onceMinute] = String(value || '').split(':');
+          fields.AT = `${once.date}T${String(Number(onceHour || 0)).padStart(2, '0')}:${String(Number(onceMinute || 0)).padStart(2, '0')}`;
+          return serializeScheduleFields(fields);
+        }
+        if (key === 'repeat' && value === 'once') return currentRrule;
+        return null;
+      }
+
       function buildRrule(currentRrule, key, value) {
         const fields = parseScheduleFields(currentRrule);
         if (fields.FREQ === 'ONCE') {
-          if (key === 'time') {
-            // Rewrite AT instead of appending BYHOUR/BYMINUTE, which the ONCE
-            // parser rejects; bail out unchanged when AT cannot be resolved
-            // to a local date, e.g. a malformed RFC3339 offset.
-            const once = onceScheduleParts(fields.AT);
-            if (!once) return currentRrule;
-            const [onceHour, onceMinute] = String(value || '').split(':');
-            fields.AT = `${once.date}T${String(Number(onceHour || 0)).padStart(2, '0')}:${String(Number(onceMinute || 0)).padStart(2, '0')}`;
-            return serializeScheduleFields(fields);
-          }
-          if (key === 'repeat' && value === 'once') return currentRrule;
+          const onceRrule = buildOnceRrule(fields, key, value, currentRrule);
+          if (onceRrule !== null) return onceRrule;
           // Any other key is an explicit conversion to a recurring rule and
           // falls through to the builders below, which reuse the AT time.
+        }
+        if (fields.FREQ === 'CRON' && key !== 'repeat') {
+          return buildCronRrule(fields, key, value, currentRrule);
         }
         const previousEditor = scheduleEditorValue(currentRrule);
         const editor = {...previousEditor, [key]: value,};
         const [hour, minute] = String(editor.time || '08:00').split(':');
+        if (key === 'repeat' && editor.repeat === 'cron') {
+          // Converting into CRON keeps the editor time and lands on a
+          // monthly-by-default expression the user can refine in place.
+          return `FREQ=CRON;EXPR=${Number(minute || 0)} ${Number(hour || 0)} 1 * *`;
+        }
         if (key === 'time') {
           fields.BYHOUR = String(Number(hour || 0));
           fields.BYMINUTE = String(Number(minute || 0));
@@ -998,7 +1054,16 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         // 连续勾选恰好组成“工作日”或“每天”时，仍保持每周编辑器可见。
         if (key === 'repeat') setScheduleRepeatIntent(value === 'weekly' ? 'weekly' : null);
         else if (key === 'days') setScheduleRepeatIntent('weekly');
-        editImmediateFields({ rrule: buildEditedRrule(key, value) });
+        const nextRrule = buildEditedRrule(key, value);
+        // An in-progress CRON expression is a local draft only: the detail
+        // editor persists every patch immediately, and a half-typed rule
+        // would bounce off the engine on each keystroke. The invalid draft
+        // never reaches persistDetailPatch, so the last valid rule survives.
+        if (key === 'expr' && cronExprInvalid(scheduleEditorValue(nextRrule).cronExpr)) {
+          setDetailForm(current => current ? {...current, rrule: nextRrule} : current);
+          return;
+        }
+        editImmediateFields({ rrule: nextRrule });
       }
 
       function editCreateSchedule(key, value) {
@@ -1033,6 +1098,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         { value: 'daily', label: scheduledCopy.repeatOptions.daily },
         { value: 'weekly', label: scheduledCopy.repeatOptions.weekly },
         { value: 'hourly', label: scheduledCopy.repeatOptions.hourly },
+        { value: 'cron', label: scheduledCopy.repeatOptions.cron },
       ];
       const selectedWeekdays = scheduleEditor && scheduleEditor.days.length
         ? scheduleEditor.days
@@ -1073,18 +1139,21 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       const FormScheduleRows = ({ editor, selectedDays, prefix, onEdit, onCloseWeekly }) => editor ? (
         <>
-          <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
-            <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
-              <div className="flex items-center gap-1.5">
-                <ScheduledSelect value={editor.repeat} options={editor.repeat === 'once'
-                  ? [{ value: 'once', label: scheduledCopy.repeatOptions.once }, ...repeatOptions]
-                  : repeatOptions}
-                  onChange={value => onEdit('repeat', value)}
-                  testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
+            <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
+              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
+                <div className="flex items-center gap-1.5">
+                  <ScheduledSelect value={editor.repeat} options={editor.repeat === 'once'
+                    ? [{ value: 'once', label: scheduledCopy.repeatOptions.once }, ...repeatOptions]
+                    : editor.repeat === 'cron'
+                      ? [{ value: 'cron', label: scheduledCopy.repeatOptions.cron },
+                         ...repeatOptions.filter(option => option.value !== 'cron')]
+                      : repeatOptions}
+                    onChange={value => onEdit('repeat', value)}
+                    testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
+                </div>
               </div>
             </div>
-          </div>
           {editor.repeat === 'hourly' && (
             <div data-testid={`${prefix}-interval-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
               <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
@@ -1108,16 +1177,38 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               </div>
             </div>
           )}
-          <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
-            <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
-              <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{editor.repeat === 'hourly' ? scheduledCopy.startTime : scheduledCopy.time}</span>
-              <ScheduledTimeWheel value={editor.time}
-                onChange={value => onEdit('time', value)}
-                theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? scheduledCopy.chooseStartTime : scheduledCopy.chooseRunTime}
-                hourAriaLabel={scheduledCopy.chooseHour} minuteAriaLabel={scheduledCopy.chooseMinute}
-                placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? scheduledCopy.setStart : ''} />
+          {editor.repeat === 'cron' && (() => {
+            const exprInvalid = cronExprInvalid(editor.cronExpr);
+            return (
+              <div data-testid={`${prefix}-cron-expr-row`} className={`border-b ${iosSeparator}`}>
+                <div className={`flex items-center pl-3.5 ${pressedRow}`}>
+                  <div className="flex flex-1 items-center justify-between gap-3 py-3.5 pr-3.5">
+                    <span className={`ml-1 shrink-0 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.cronExpr}</span>
+                    <input data-testid={`${prefix}-cron-expr`} value={editor.cronExpr}
+                      onChange={event => onEdit('expr', event.target.value)}
+                      aria-label={scheduledCopy.cronExprAria} aria-invalid={exprInvalid}
+                      placeholder="30 9 1 * *" spellCheck={false}
+                      className={`min-h-9 w-full max-w-[220px] rounded-xl px-3 py-1.5 text-center font-mono text-[14px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#FFFFFF] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#1C1C1E] dark:text-white dark:placeholder:text-[#98989D] ${exprInvalid ? 'ring-1 ring-[#FF3B30]/60' : ''}`} />
+                  </div>
+                </div>
+                <p className={`px-4 pb-3 text-[12px] leading-4 ${exprInvalid ? 'text-[#FF3B30] dark:text-[#FF453A]' : mutedValue}`}>
+                  {exprInvalid ? scheduledCopy.cronExprInvalid : scheduledCopy.cronExprHint}
+                </p>
+              </div>
+            );
+          })()}
+          {(editor.repeat !== 'cron' || editor.hasTimeAnchor) && (
+            <div data-testid={`${prefix}-time-row`} className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer`}>
+              <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
+                <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{editor.repeat === 'hourly' ? scheduledCopy.startTime : scheduledCopy.time}</span>
+                <ScheduledTimeWheel value={editor.time}
+                  onChange={value => onEdit('time', value)}
+                  theme={theme} testId={`${prefix}-time`} ariaLabel={editor.repeat === 'hourly' ? scheduledCopy.chooseStartTime : scheduledCopy.chooseRunTime}
+                  hourAriaLabel={scheduledCopy.chooseHour} minuteAriaLabel={scheduledCopy.chooseMinute}
+                  placeholder={editor.repeat === 'hourly' && !editor.hasTimeAnchor ? scheduledCopy.setStart : ''} />
+              </div>
             </div>
-          </div>
+          )}
         </>
       ) : null;
 
@@ -1142,7 +1233,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
             <div className={dialogBodyClass}>
               {/* Static regression anchors for shared create schedule rows:
-                testId="scheduled-create-repeat"
+                testId="scheduled-create-repeat" testId="scheduled-create-cron-expr" testId="scheduled-create-cron-expr-row"
               */}
               <label className="block">
                 <span className={dialogFieldLabelClass}>{scheduledCopy.taskName}</span>
@@ -1379,6 +1470,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 {/* Static regression anchors for shared detail schedule rows:
                   testId="scheduled-live-repeat" testId="scheduled-live-interval" testId="scheduled-live-day" testId="scheduled-live-time"
                   scheduleEditor.repeat === 'hourly' data-testid="scheduled-live-interval-row"
+                  data-testid="scheduled-live-cron-expr" data-testid="scheduled-live-cron-expr-row"
                   onChange={value => editSchedule('interval', value)}
                   onChange={values => editSchedule('days', values)} multiple minSelected={1}
                   onClose={() => setScheduleRepeatIntent(null)}

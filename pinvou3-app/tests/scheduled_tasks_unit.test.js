@@ -97,6 +97,12 @@ const scheduledViewSource = indexHtml.slice(
   indexHtml.indexOf('const ScheduledTasksView'),
   indexHtml.indexOf('export { ScheduledTasksView }')
 );
+const enScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'en.js'), 'utf8');
+const jaScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'ja.js'), 'utf8');
+// Issue #821: the CRON subset validator is a feature module so the
+// cross-surface contract (creation_requests.rs + server.py) is
+// behavior-tested here, not only source-pinned.
+const scheduleCronExpr = require('../src/features/scheduled/schedule-cron-expr.js');
 
 function mustContain(text) {
   assert.ok(
@@ -566,6 +572,44 @@ assert.ok(
   scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
     scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
   'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
+);
+// Issue #821: CRON rules get their own editor mode; the weekly fallback
+// that silently rewrote them on save must be unreachable for FREQ=CRON.
+assert.ok(
+  scheduledViewSource.includes("fields.FREQ === 'CRON'") &&
+    scheduledViewSource.includes("repeat: 'cron'") &&
+    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)[\s\S]{0,900}return currentRrule;/.test(scheduledViewSource),
+  'the schedule editor must give CRON rules their own mode instead of the weekly fallback that silently rewrote them on save (issue #821)'
+);
+assert.ok(
+  scheduledViewSource.includes('data-testid="scheduled-live-cron-expr"') &&
+    scheduledViewSource.includes('testId="scheduled-create-cron-expr"') &&
+    scheduledViewSource.includes("{ value: 'cron', label: scheduledCopy.repeatOptions.cron }"),
+  'both schedule forms must expose the CRON expression row for cron-mode tasks'
+);
+assert.ok(
+  /key === 'expr' && cronExprInvalid\(scheduleEditorValue\(nextRrule\)\.cronExpr\)/.test(scheduledViewSource) &&
+    /createEditorValue\.repeat === 'cron' && cronExprInvalid\(createEditorValue\.cronExpr\)/.test(scheduledViewSource),
+  'an in-progress invalid CRON expression must stay a local draft in the detail editor and block create submit'
+);
+assert.ok(
+  zhScheduledDict.includes("cron:'自定义计划'") &&
+    zhScheduledDict.includes('cronExprHint') &&
+    zhScheduledDict.includes('cronExprInvalid') &&
+    enScheduledDict.includes("cron:'Custom'") &&
+    enScheduledDict.includes('cronExprHint') &&
+    enScheduledDict.includes('cronExprInvalid') &&
+    jaScheduledDict.includes("cron:'カスタム'") &&
+    jaScheduledDict.includes('cronExprHint') &&
+    jaScheduledDict.includes('cronExprInvalid'),
+  'the CRON repeat option and expression hints must exist in the zh/en/ja dictionaries'
+);
+assert.ok(
+  scheduledTaskPromptRust.includes('每月 1 日 09:30：FREQ=CRON;EXPR=30 9 1 * *') &&
+    scheduledTaskPromptRust.includes('分钟字段必须是固定值') &&
+    scheduledTaskPromptRust.includes('rrule 只允许 FREQ 和 EXPR 两个字段') &&
+    scheduledTaskPromptRust.includes('每月指定日期和时间'),
+  'backend prompt must teach the monthly/CRON subset the gates accept (issue #821)'
 );
 assert.ok(
   scheduledViewSource.includes("function onceScheduleParts"),
@@ -9077,7 +9121,30 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
   );
 }
 
+// Issue #821: behavioral check of the shared CRON subset validator — the
+// same accept/reject boundary creation_requests.rs and server.py enforce.
+function scheduleCronExprBehavior() {
+  assert.strictEqual(scheduleCronExpr.parseCronExprFields(' 30  9 1 * * ').length, 5);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('30 9 1 * *'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('0 9-18 1,15 * MON-FRI'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('15 9 */2 * *'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('5 9 1 JAN *'), false);
+  for (const bad of [
+    '', '30 9 1 *', '30 9 1 * * *', '*/5 * * * *', '0,30 * * * *', '5-55/10 * * * *',
+    '60 9 1 * *', 'abc 9 1 * *', '30 9 1,3 * *;BYDAY=MO', '30 9 1,,3 * *', '30 9 1 * ?',
+  ]) {
+    assert.strictEqual(scheduleCronExpr.cronExprInvalid(bad), true, bad);
+  }
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('30 9 1 * *'), { minute: '30', hour: '09' });
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('05 8 31 * *'), { minute: '05', hour: '08' });
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('0 9-18 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('* 9 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('30 9 1 * *', '07:05'), '5 7 1 * *');
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('0 9-18 1 * *', '07:05'), '0 9-18 1 * *');
+}
+
 Promise.resolve()
+  .then(scheduleCronExprBehavior)
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)

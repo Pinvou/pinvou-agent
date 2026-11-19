@@ -43,11 +43,14 @@ rejected as targets in every layer.
 
 rrule scope (deliberately stricter than the domain layer): only the product
 subset FREQ=HOURLY (INTERVAL hours) / FREQ=WEEKLY (BYDAY+BYHOUR+BYMINUTE) /
-FREQ=ONCE (local AT) is accepted; CRON and everything minute-granular are
+FREQ=ONCE (local AT) / FREQ=CRON (EXPR with a fixed minute field; issue #821
+surfaced the 每月/custom shape) is accepted; everything minute-granular is
 rejected (same product constraint as SCHEDULED_TASK_CHAT_PROMPT in
 features/scheduled/tasks.rs). The domain parser (CodeWhale
-automation_manager::parse_rrule) additionally supports CRON — that is
-intentionally unreachable through this tool.
+automation_manager::parse_rrule) accepts the full engine cron vocabulary —
+bounds and impossible dates are still rejected there on dispatch, so this
+tool's structural CRON subset never persists a schedule the domain would
+refuse at run time.
 
 list semantics (list_scheduled_tasks, L0): reads only
 ~/.pinvou3/automations/automations/<id>.json (the AutomationManager store,
@@ -198,9 +201,11 @@ TOOL_DEFS = [
             "list_scheduled_tasks first to avoid duplicating an existing task. rrule must use "
             "the product subset only: FREQ=HOURLY;INTERVAL=N;BYHOUR=h;BYMINUTE=m (every N hours), "
             "FREQ=WEEKLY;BYDAY=MO,...;BYHOUR=h;BYMINUTE=m (weekly on given days; all seven days "
-            "for daily), or FREQ=ONCE;AT=YYYY-MM-DDTHH:MM (local time, future, no timezone "
-            "suffix, runs once then pauses). Minute-granular frequencies (every N minutes) and "
-            "CRON are NOT supported — offer the user every-N-hours/daily/weekly instead. "
+            "for daily), FREQ=ONCE;AT=YYYY-MM-DDTHH:MM (local time, future, no timezone "
+            "suffix, runs once then pauses), or FREQ=CRON;EXPR=<5-field cron> for monthly/custom "
+            "schedules (e.g. FREQ=CRON;EXPR=30 9 1 * * = monthly on the 1st at 09:30; the minute "
+            "field must be one fixed value 0-59 — minute-granular frequencies (every N minutes) "
+            "are NOT supported — and only FREQ/EXPR fields are allowed). "
             "Returns taskId/taskName once the app confirms creation, or delivery:'pending' "
             "when confirmation has not landed within a few seconds (the task is still queued)."
         ),
@@ -220,7 +225,9 @@ TOOL_DEFS = [
                     "description": (
                         "Recurrence, product subset only: 'FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30' "
                         "(every 6h from 08:30), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30' "
-                        "(daily 08:30), 'FREQ=ONCE;AT=2027-06-01T09:30' (one-shot, local time)."
+                        "(daily 08:30), 'FREQ=ONCE;AT=2027-06-01T09:30' (one-shot, local time), or "
+                        "'FREQ=CRON;EXPR=30 9 1 * *' (monthly on the 1st at 09:30; fixed minute, "
+                        "5-field cron, FREQ+EXPR only)."
                     ),
                 },
                 "model_id": {
@@ -320,7 +327,7 @@ TOOL_DEFS = [
                 },
                 "rrule": {
                     "type": "string",
-                    "description": "(optional) New recurrence, same product subset as create (HOURLY/WEEKLY/ONCE).",
+                    "description": "(optional) New recurrence, same product subset as create (HOURLY/WEEKLY/ONCE/CRON).",
                 },
                 "model_id": {
                     "type": "string",
@@ -649,6 +656,48 @@ def _parse_byday(value):
     return tokens, None
 
 
+def validate_cron_expr(expr):
+    """Structural validation of the product CRON EXPR subset; returns an
+    error string or None. Mirrors validate_cron_expr in
+    features/scheduled/creation_requests.rs (B9: the watcher must reject
+    exactly what this server rejects) — the engine's ParsedCronExpr stays
+    the semantic authority, so field bounds beyond the minute rule and
+    impossible day/month combinations are still rejected on dispatch by
+    the domain parser.
+
+    Product rules:
+    - exactly five whitespace-separated fields (minute hour day-of-month
+      month day-of-week);
+    - the minute field must be one fixed value 0-59 — minute-granular
+      schedules stay outside the product subset (the same constraint
+      SCHEDULED_TASK_CHAT_PROMPT states), so lists/ranges/steps are not
+      accepted there;
+    - the remaining fields keep the standard cron vocabulary the engine
+      parses (*, lists, a-b ranges, p/s steps, JAN-DEC/SUN-SAT names)
+      with no empty list items.
+    """
+    fields = expr.split()
+    if len(fields) != 5:
+        return ("invalid rrule: CRON EXPR must have exactly 5 fields: "
+                "minute hour day-of-month month day-of-week")
+    minute = fields[0]
+    if not (minute.isascii() and minute.isdigit()):
+        return ("invalid rrule: CRON EXPR minute field must be a fixed value, "
+                "got '%s'" % minute[:32])
+    if not 0 <= int(minute) <= 59:
+        return "invalid rrule: CRON EXPR minute must be between 0 and 59"
+    for field in fields[1:]:
+        if not field:
+            return "invalid rrule: CRON EXPR field must not be empty"
+        if not re.fullmatch(r"[0-9A-Za-z*,\-/]+", field):
+            return ("invalid rrule: CRON EXPR field '%s' is not valid cron syntax"
+                    % field[:32])
+        if any(not item for item in field.split(",")):
+            return ("invalid rrule: CRON EXPR field '%s' contains an empty list item"
+                    % field[:32])
+    return None
+
+
 def validate_rrule(rrule):
     """Validates one rrule against the product subset and returns the
     normalized (uppercase) form or an error string.
@@ -657,9 +706,11 @@ def validate_rrule(rrule):
     - FREQ=HOURLY  [INTERVAL>=1h] [BYDAY] [BYHOUR 0-23] [BYMINUTE 0-59]
     - FREQ=WEEKLY  BYDAY (required) BYHOUR (required) BYMINUTE (required)
     - FREQ=ONCE    AT=<local YYYY-MM-DDTHH:MM, strictly in the future>
-    Rejects CRON and every minute-granular frequency with guidance toward the
-    supported shapes (product constraint; the domain parser's CRON support is
-    intentionally unreachable here).
+    - FREQ=CRON    EXPR=<5-field cron with a fixed minute value; issue #821
+      surfaced the monthly/custom shape>
+    Rejects every minute-granular frequency with guidance toward the
+    supported shapes (product constraint; the domain parser's full cron
+    vocabulary is narrowed here to the fixed-minute subset).
     """
     normalized = normalize_rrule(rrule)
     if not normalized:
@@ -669,25 +720,34 @@ def validate_rrule(rrule):
         return None, error
     freq = parts.get("FREQ")
     if not freq:
-        return None, "invalid rrule: FREQ is required (HOURLY, WEEKLY, or ONCE)"
+        return None, "invalid rrule: FREQ is required (HOURLY, WEEKLY, ONCE, or CRON)"
     if freq == "MINUTELY" or freq == "SECONDLY" or freq == "DAILY":
         return None, (
             "invalid rrule: FREQ=%s is not supported. Supported: HOURLY (every N hours), "
-            "WEEKLY (specific weekdays = daily when all seven are listed), and ONCE "
-            "(one-shot). Offer the user every-N-hours, a daily/weekly time, or a one-shot "
+            "WEEKLY (specific weekdays = daily when all seven are listed), ONCE "
+            "(one-shot), and CRON (monthly/custom with a fixed minute). Offer the user "
+            "every-N-hours, a daily/weekly time, a monthly date, or a one-shot "
             "instead of minute-granular schedules" % freq
         )
-    if freq == "CRON":
+    if freq not in ("HOURLY", "WEEKLY", "ONCE", "CRON"):
         return None, (
-            "invalid rrule: CRON expressions are not supported by this tool. Express the "
-            "schedule as FREQ=HOURLY;INTERVAL=N;BYHOUR=h;BYMINUTE=m, "
-            "FREQ=WEEKLY;BYDAY=...;BYHOUR=h;BYMINUTE=m, or FREQ=ONCE;AT=YYYY-MM-DDTHH:MM"
-        )
-    if freq not in ("HOURLY", "WEEKLY", "ONCE"):
-        return None, (
-            "invalid rrule: unsupported FREQ '%s'. Supported: HOURLY, WEEKLY, ONCE"
+            "invalid rrule: unsupported FREQ '%s'. Supported: HOURLY, WEEKLY, ONCE, CRON"
             % freq[:32]
         )
+
+    if freq == "CRON":
+        allowed = {"FREQ", "EXPR"}
+        unknown = sorted(set(parts) - allowed)
+        if unknown:
+            return None, "invalid rrule: unsupported field(s) %s for FREQ=CRON. Allowed: %s" % (
+                ", ".join(unknown), ",".join(sorted(allowed)))
+        if "EXPR" not in parts:
+            return None, "invalid rrule: FREQ=CRON requires EXPR"
+        error = validate_cron_expr(parts["EXPR"])
+        if error:
+            return None, error
+        return normalized, None
+
 
     if freq == "HOURLY":
         allowed = {"FREQ", "INTERVAL", "BYDAY", "BYHOUR", "BYMINUTE"}

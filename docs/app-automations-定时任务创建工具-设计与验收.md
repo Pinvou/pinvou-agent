@@ -24,7 +24,7 @@
 | 归属 | **新开能力族**，新 MCP server `app-automations`（契约 §2/§8） | 调度是独立能力族，未来 run-now、记忆整理等自动化工具可归入；避免 session-reader 族膨胀 |
 | 交互确认 | 创建及名称/模型/暂停状态更新立即生效；prompt/rrule 覆盖返回 `confirmation_required`，由用户在现有面板检查并提交。~~删除同样返回 `confirmation_required`~~（round-36 修订：该半句是已被取代的 round-32 提案——无歧义目标的删除按 §5 例外直接执行，不返回 `confirmation_required`；见契约 §5/§9 与工具描述） | prompt/rrule 的面板评审由用户于 2026-10-21 明确选择；全自动模式下 typed Ask 规则不是授权机制 |
 | 返回语义 | **短等待同步**：server.py 落盘后轮询结果标记 ≤5s，命中返回任务 ID，超时回 pending | 模型能直接告知用户"已创建 XX"，前端可联动；纯异步会让模型无法确认结果 |
-| rrule 范围 | 工具层只接受产品子集（HOURLY/WEEKLY/ONCE），**拒绝 CRON 与一切分钟级频率** | 与 `SCHEDULED_TASK_CHAT_PROMPT` 的产品约束一致；比领域层（`parse_rrule` 另支持 CRON）更严格是有意为之 |
+| rrule 范围 | 工具层只接受产品子集（HOURLY/WEEKLY/ONCE，以及 issue #821 放开的 CRON 固定分钟子集），**拒绝一切分钟级频率** | 与 `SCHEDULED_TASK_CHAT_PROMPT` 的产品约束一致；比领域层（`parse_rrule` 支持完整 cron 词表）更严格是有意为之 |
 | 基座死工具 | 顺带把 `automation`、`send_later` 加入应用 disallow 列表 | 应用内未挂 manager、永远失败，留在目录里只会诱导模型试错；`tasks`/`github` 不动（超范围） |
 
 ## 3. 方案总览
@@ -73,7 +73,7 @@
 
 **步骤 1 — MCP 包**（详见 §3.1/§3.2）：
 - `server.py`：纯 stdlib NDJSON JSON-RPC over stdio，逐段镜像 session-reader 骨架（PROTOCOL_VERSION、错误脱敏不漏宿主路径、catch-all、`feature_disabled` 回退读 manifest `tool_features` + `builtin_features.json`）。
-- rrule 校验：仅 `FREQ=HOURLY`(INTERVAL≥1 小时 + BYHOUR/BYMINUTE)、`FREQ=WEEKLY`(BYDAY 必填 + BYHOUR 0–23 + BYMINUTE 0–59)、`FREQ=ONCE`(AT 本地 `YYYY-MM-DDTHH:MM`、拒绝时区后缀、必须未来)；拒绝 CRON、分钟级、未知键、越界值；trim + 大写。
+- rrule 校验：仅 `FREQ=HOURLY`(INTERVAL≥1 小时 + BYHOUR/BYMINUTE)、`FREQ=WEEKLY`(BYDAY 必填 + BYHOUR 0–23 + BYMINUTE 0–59)、`FREQ=ONCE`(AT 本地 `YYYY-MM-DDTHH:MM`、拒绝时区后缀、必须未来)、`FREQ=CRON`(EXPR 标准 5 字段、分钟字段固定值 0–59、仅 FREQ+EXPR 两字段；issue #821 放开每月/自定义形态)；拒绝分钟级、未知键、越界值；trim + 大写。
 - spool 记录：`{schema_version:1, id, kind, task_id?, name?, prompt?, rrule?, model_id?, paused?, from_session?, created_at, idempotency_key?}`（round-8 更正：早期草案列出的 `from_title?` 两侧实现均未写入），mkstemp + os.replace 原子写。
 
 **步骤 2 — Rust 注册**：`MCP_PACKAGES` 加项（include_str! 两文件）、`len()==12→13`；`DEFAULT_INSTALLED_MCP_TOOLS`（`marketplace/mod.rs::DEFAULT_INSTALLED_MCP_TOOLS`）加 id；`builtin.rs`/`types.rs` 镜像 session-reader 的清单与特性注册表测试。
@@ -114,8 +114,8 @@
 | # | 场景 | 输入 | 预期结果 | 验证方式 | 优先级 |
 |---|---|---|---|---|---|
 | B1 | rrule 合法形态 | 文档三种样例（HOURLY INTERVAL；WEEKLY BYDAY；ONCE AT） | 通过并落库 | ◇python 参数化用例 | P0 |
-| B2 | 分钟级拒绝 | "每 5 分钟"类表达（MINUTELY/CRON */5 等） | 拒绝，错误指引用户改每 N 小时/每天/每周 | ◇python | P0 |
-| B3 | CRON 拒绝 | `FREQ=CRON;...` | 拒绝（工具层比领域层严格，产品约束） | ◇python | P0 |
+| B2 | 分钟级拒绝 | "每 5 分钟"类表达（MINUTELY/CRON */5 等） | 拒绝，错误指引用户改每 N 小时/每天/每周/每月 | ◇python | P0 |
+| B3 | CRON 固定分钟子集（issue #821 修订） | `FREQ=CRON;EXPR=30 9 1 * *`（每月）通过；分钟级 CRON（`*/5`、`0,30` 等分钟字段非固定值）拒绝 | 通过并落库 / 拒绝并指引 | ◇python | P0 |
 | B4 | 过去/带时区 ONCE | `AT` 早于当前时刻；带 `Z`/`+08:00` 后缀 | 均拒绝，错误说明需未来本地时刻 | ◇python | P0 |
 | B5 | rrule 越界/未知键 | `BYHOUR=24`、缺 `BYDAY`、未知键 | 拒绝 | ◇python | P1 |
 | B6 | 长度上限 | name>200 / prompt>32768 / key>128；恰等于上限 | 超限拒绝；边界值通过 | ◇python 边界用例 | P1 |
@@ -214,7 +214,7 @@
 - **无人值守递归防护的真实边界（round-8 M1 修订）**：确定性防线是引擎侧 `unattended_disallowed_tools`（deny 名单）+ round-8 起仅对**无人值守运行引擎**关闭 subagents、交互续接以正常委派重建（round-33 M8 改真；`agent(inherit_disallowed_tools=false)` 无法再剥离 deny 名单——子运行时本会保留 MCP+自动批准，而 posture 名单不含本族三写工具）。剩余通道有三（round-27 M1 改真；round-30 REQUIRED-2 增补第三并封堵）。其一，**无需 shell**：定时任务钉死 Yolo（`tasks.rs`）→ trust mode 下 `write_file` 接受绝对路径，`~/.pinvou3` 不在默认拒绝子树内，而无人值守 deny 名单只含具名工具——故仅凭文件工具即可向 `~/.pinvou3/task-requests/` 写入合法 spool 记录（claimed-string 过滤器的既有让步）。其二，**messaging spool 是同类的第二通道，且可跨会话洗白**：`features/messaging/mod.rs` 自述该目录为"未经认证的本地侧门"（无 digest 绑定、`from_session` 可选）——无人值守运行的文件工具写入后，投递会把普通目录回合注入任意普通会话，而该会话目录含本族三写工具（即 round-9 M2 在工具层修掉的间接性的文件写孪生）。其三，**registry 启动器曾可扩充同回合工具面**：`registry_sync`/`start_registry_mcp_server` 随应用白名单对 sched- 引擎可见，自动批准放行，而宿主全访问 hold 名单只含 `start_mcp_server`——启动用户缓存的 registry 候选会让其 `mcp_<name>_*` 工具以本盾看不见的新身份加入同一回合。**本波已把两个启动器加入 `unattended_disallowed_tools`**（引擎侧具名 deny 名单，round-30 REQUIRED-2），该逃逸通道就此关闭；把启动器加入宿主 hold 名单是 CodeWhale 侧的彻底修法（按 fork 边界另行上游跟进）。
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
-- 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
+- 领域层 `parse_rrule` 支持完整 cron 词表；工具层自 issue #821 起放开 CRON 固定分钟子集（server.py + watcher 的镜像校验同步放开），EXPR 字段边界与不可能日期仍由领域层在派发时拒绝。
 - **存储读上限（round-31 M3 回填 EN 修订）**：单条读在被尺寸/类型策略拒绝时报告"不可读记录"，`list` 跳过策略拒绝/损坏的记录，权限/IO 失败按错误返回而不是谎称存储为空；超过 256 KiB 上限的任务在列表中仍不完整——模型的建前去重会因此重复创建（既知让步）。
 - **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
 - **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
@@ -255,7 +255,7 @@
 | I1 | 安全更新端到端 | name/model/paused 更新落盘并刷新；prompt/rrule 覆盖返回 confirmation_required 且不变更 | Rust + Python；实际 Linux 面板提交见下文 | P0 |
 | I2 | 准确目标删除与重放 | 明确且无歧义的请求按 ID 经监听器/领域删除；同键崩溃重放及不同键重复删除均成功。目标不明确时模型先向用户确认 | Rust + Python；真实模型歧义/删除验收见下文 | P0 |
 | I3 | 读详情 | read 返回含 prompt 的全量字段；未知 id 显式 not found | ◇python + 手工 | P0 |
-| I4 | update 校验 | 缺 task_id / 零字段 / CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
+| I4 | update 校验 | 缺 task_id / 零字段 / 分钟级 CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
 | I5 | delete 校验 | 缺 task_id、带多余字段均拒绝 | ◇python + ◇Rust `delete_request_validation_rejects_extra_fields` | P1 |
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
 | I7 | 排水加固（#680 波） | pending 超过 256 时排序尾部被隔离且不落库：尾部记录在移动前探测真实原因（损坏为 unparseable、超大/不可读为 unreadable or oversize），仅真正超限的记录保留 ceiling 标签；移动前快照重验把探测与改名之间的替换体留给其自己的新 pass（still_matches→rename 的残留窗口已收窄并如实披露）；移动前快照重验（divergence guard）将探测与改名之间落下的替换体留给其自己的新 pass，不按旧字节的标记作答；digest 绑定的 ok 回执抑制失败标记（回执照常应答），可解析尾部的处置留审计行。卡住 episode（Poison/重试耗尽臂与 park 门控）的审计行与失败标记每次 episode 只写一次（进程生命周期内），身份为 payload digest（尾部臂的一次性是结构性的：其审计与标记仅在成功移动内触发）：同字节重发体保持去重，更正后的重发体（服务端会解除旧 ok:false 标记）按身份变化重开新 episode；被解除的标记在保持审计去重的同时补写（ensure-presence，含 park 门控路径的 parked 状态说明）。停放记录的 un-park 由 payload 变化决定而非时钟：同字节 mtime bump 保持 parked 且零次重应用，更正体重绑并应用；各终态臂与 maintenance 在记录移动时清理 episode 身份。非 UTF-8 文件名在计数前先行隔离，不占用批槽位（枚举窗口截断在隔离之前，其占用的窗口槽位随积压消退释放） | ◇Rust `poison_park_corrected_respool_opens_a_fresh_episode` / `poison_park_same_bytes_bump_stays_parked_and_marker_is_restored` / `retry_park_same_bytes_bump_never_reapplies_corrected_payload_rebinds` / `poison_park_episode_clears_when_the_quarantine_finally_succeeds` / `poison_arm_clears_the_episode_entry_when_its_quarantine_succeeds` / `retry_arm_clears_the_episode_entry_when_its_quarantine_succeeds` / `corrupt_ceiling_tail_names_the_real_cause` / `oversize_ceiling_tail_names_the_real_cause` / `ceiling_tail_with_landed_receipt_writes_no_failure_marker` / `non_utf8_squatters_do_not_starve_legitimate_records` / `tail_snapshot_divergence_leaves_the_replacement_for_the_next_pass` / `vanished_ghost_skipped_and_dangling_link_answered_terminally` / `deduped_episode_repairs_a_marker_the_diverged_pass_skipped` | P1 |

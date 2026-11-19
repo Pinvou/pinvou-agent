@@ -399,13 +399,13 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         "MINUTELY" | "SECONDLY" | "DAILY" => {
             bail!("minute-granular or daily FREQ '{freq}' is not supported by the product subset")
         }
-        "CRON" => bail!("CRON rrule is not supported by the product subset"),
-        "HOURLY" | "WEEKLY" | "ONCE" => {}
+        "CRON" | "HOURLY" | "WEEKLY" | "ONCE" => {}
         other => bail!("unsupported FREQ '{other}'"),
     }
     let allowed: &[&str] = match freq {
         "HOURLY" => &["FREQ", "INTERVAL", "BYDAY", "BYHOUR", "BYMINUTE"],
         "WEEKLY" => &["FREQ", "BYDAY", "BYHOUR", "BYMINUTE"],
+        "CRON" => &["FREQ", "EXPR"],
         _ => &["FREQ", "AT"],
     };
     for (key, _) in &parts {
@@ -473,6 +473,12 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
             };
             parse_int("BYMINUTE", byminute, 0, 59)?;
         }
+        "CRON" => {
+            let Some(expr) = get("EXPR") else {
+                bail!("invalid rrule: FREQ=CRON requires EXPR");
+            };
+            validate_cron_expr(expr)?;
+        }
         _ => {
             // ONCE: exactly the local wall-clock form YYYY-MM-DDTHH:MM — no
             // seconds, no 'Z', no UTC offset — and strictly in the future
@@ -530,6 +536,55 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         }
     }
     Ok(normalized)
+}
+
+/// Validates the CRON EXPR subset the product surfaces accept — structural
+/// rules only, mirroring the MCP server's CRON arm (B9: the watcher must
+/// reject exactly what the server rejects). The engine's `ParsedCronExpr`
+/// stays the semantic authority on every path: field bounds, impossible
+/// day-of-month/month combinations, and unknown names are rejected there,
+/// and that engine error reaches the caller through the same failure path.
+///
+/// Product rules:
+/// - exactly five whitespace-separated fields (minute hour day-of-month
+///   month day-of-week);
+/// - the minute field must be one fixed value 0-59 — minute-granular
+///   schedules stay outside the product subset (the same constraint the
+///   scheduled-task wizard prompt states), so lists/ranges/steps are not
+///   accepted there;
+/// - the remaining fields keep the standard cron vocabulary the engine
+///   parses (`*`, lists, `a-b` ranges, `p/s` steps, JAN-DEC/SUN-SAT
+///   names) with no empty list items.
+fn validate_cron_expr(expr: &str) -> Result<()> {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() != 5 {
+        bail!("invalid rrule: CRON EXPR must have exactly 5 fields: minute hour day-of-month month day-of-week");
+    }
+    let minute = fields[0];
+    if !minute.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("invalid rrule: CRON EXPR minute field must be a fixed value, got '{minute}'");
+    }
+    let Ok(minute_value) = minute.parse::<u32>() else {
+        bail!("invalid rrule: CRON EXPR minute field must be a fixed value, got '{minute}'");
+    };
+    if minute_value > 59 {
+        bail!("invalid rrule: CRON EXPR minute must be between 0 and 59");
+    }
+    for field in &fields[1..] {
+        if field.is_empty() {
+            bail!("invalid rrule: CRON EXPR field must not be empty");
+        }
+        if !field
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b',' | b'-' | b'/'))
+        {
+            bail!("invalid rrule: CRON EXPR field '{field}' is not valid cron syntax");
+        }
+        if field.split(',').any(|item| item.is_empty()) {
+            bail!("invalid rrule: CRON EXPR field '{field}' contains an empty list item");
+        }
+    }
+    Ok(())
 }
 
 fn spool_root() -> PathBuf {
@@ -2917,6 +2972,13 @@ mod tests {
             " FREQ=ONCE;AT=2099-06-01T09:30 ",
             "FREQ=HOURLY",
             "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=0;BYMINUTE=59",
+            // Issue #821: CRON/每月 is a product surface. Fixed minute, the
+            // full engine cron vocabulary (ranges/steps/names) in the other
+            // fields; semantic bounds stay the engine's job.
+            "FREQ=CRON;EXPR=30 9 1 * *",
+            "freq=cron;expr=0 9-18 1,15 * MON-FRI",
+            "FREQ=CRON;EXPR=15 9 */2 * *",
+            "FREQ=CRON;EXPR=5 9 1 JAN *",
         ] {
             let normalized = validate_product_rrule(rrule)
                 .unwrap_or_else(|e| panic!("{rrule} should pass: {e}"));
@@ -2927,7 +2989,21 @@ mod tests {
     #[test]
     fn rrule_subset_rejects_cron_and_minute_granular() {
         for rrule in [
+            // Minute-granular CRON stays outside the product subset even
+            // though the domain parser would run it.
             "FREQ=CRON;EXPR=*/5 * * * *",
+            "FREQ=CRON;EXPR=0,30 * * * *",
+            "FREQ=CRON;EXPR=5-55/10 * * * *",
+            "FREQ=CRON;EXPR=* * * * *",
+            // Structural subset bounds.
+            "FREQ=CRON",
+            "FREQ=CRON;EXPR=30 9 1 *",
+            "FREQ=CRON;EXPR=30 9 1 * * *",
+            "FREQ=CRON;EXPR=60 9 1 * *",
+            "FREQ=CRON;EXPR=abc 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1,3 * *;BYDAY=MO",
+            "FREQ=CRON;EXPR=30 9 1,,3 * *",
+            "FREQ=CRON;EXPR=30 9 1 * ?",
             "FREQ=MINUTELY;INTERVAL=5",
             "FREQ=DAILY;BYHOUR=8;BYMINUTE=30",
             "FREQ=HOURLY;INTERVAL=0",
@@ -3787,8 +3863,12 @@ mod tests {
         // swallow the bump (the natural write raced the park clock on CI).
         let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         *retries.parked.get_mut("swap.json").expect("parked") = parked_at;
+        // Still poison after issue #821: the fixed-minute product subset
+        // accepts simple CRON schedules, so a valid-looking rule like
+        // "0 5 * * *" would now apply — the corrected payload must stay a
+        // REJECTED shape (minute-granular) for the re-park to be a poison.
         let corrected =
-            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=0 5 * * *"))]);
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=*/5 * * * *"))]);
         std::fs::write(spool.join("swap.json"), &corrected).unwrap();
         std::fs::File::options()
             .write(true)
