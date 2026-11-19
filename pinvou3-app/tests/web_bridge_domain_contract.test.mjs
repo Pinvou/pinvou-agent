@@ -44,6 +44,10 @@ const windowObject = {
   localStorage,
   crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000000' },
   performance: { now: () => 0 },
+  // btoa/atob on window itself: the chunked uploader base64-encodes chunk
+  // payloads through its `root` (window) reference, not the context scope.
+  btoa,
+  atob,
   addEventListener() {},
   setTimeout,
   clearTimeout,
@@ -60,6 +64,10 @@ const context = vm.createContext({
   clearTimeout,
   setInterval,
   clearInterval,
+  // btoa/atob: the chunked uploader base64-encodes chunk payloads; the real
+  // browser window always has them, so the VM harness must too.
+  btoa,
+  atob,
   structuredClone(value) {
     deepCloneCalls += 1;
     return nativeStructuredClone(value);
@@ -186,9 +194,59 @@ await api.attachments.addPasteImage('oversized.png', [1], () => {
 });
 const pasteLimitNotice = api.state.get('chat').chatItems.at(-1);
 assert.equal(pasteLimitNotice.type, 'system');
-assert.equal(pasteLimitNotice.text, '⚠️ oversized.png 超过附件 20 MB 上限');
+assert.equal(pasteLimitNotice.text, '⚠️ oversized.png 超过附件 50 MB 上限');
 assert.doesNotMatch(pasteLimitNotice.text, /attachment_file_too_large/);
 assert.equal(externalFormatterCalled, false, 'the Web bridge must reuse its own localized limit formatter');
+
+// ── Device-upload chips must store stable wire codes, never
+// language-dependent text. Every source pin for the mapping arms is
+// presence-only and stays green under a revert to {code: message}; this
+// behavioral leg through the real chunked uploader is the pin that actually
+// kills that regression. ──
+vm.runInContext(
+  fs.readFileSync(path.join(root, 'src', 'shared', 'chunked-file-upload.js'), 'utf8'),
+  context,
+  { filename: 'shared/chunked-file-upload.js' },
+);
+const makeUploadFile = (name, size) => ({
+  name,
+  size,
+  // crypto.subtle is absent in this VM → the uploader takes the disclosed
+  // unchecked-digest path and skips file.arrayBuffer; slices feed the chunk
+  // base64 payloads.
+  arrayBuffer: async () => new ArrayBuffer(size),
+  slice: (start, end) => ({
+    arrayBuffer: async () => new ArrayBuffer(Math.max(0, Math.min(end, size) - start)),
+  }),
+});
+const lastChip = () => api.state.get('chat').attachments.at(-1);
+const commitThrows = (code) => {
+  invokeResponse = async (command, payload) => {
+    if (command === 'web_access_upload_attachment_chunk' && payload && payload.commit) {
+      throw new Error(code);
+    }
+    return { handle: 'handle-1' };
+  };
+};
+
+commitThrows('web_attachment_digest_invalid');
+await api.attachments.uploadDeviceFiles([makeUploadFile('digest-failure.bin', 1024)]);
+assert.equal(lastChip().status, 'error');
+assert.equal(lastChip().error, 'web_attachment_digest_invalid',
+  'the digest-failure chip must store the stable wire code, not localized text');
+
+commitThrows('web_attachment_upload_cache_full');
+await api.attachments.uploadDeviceFiles([makeUploadFile('cache-full.bin', 1024)]);
+assert.equal(lastChip().error, 'web_attachment_upload_cache_full',
+  'the upload-buffer chip must store the stable wire code, not localized text');
+
+invokeResponse = async () => ({ handle: 'handle-1' });
+await api.attachments.uploadDeviceFiles([makeUploadFile('empty.bin', 0)]);
+assert.equal(lastChip().error, 'device_upload_empty',
+  'the empty-file chip must also store the stable wire code, not the localized sentence');
+const emptyNotice = api.state.get('chat').chatItems.at(-1);
+assert.match(emptyNotice.text, /是空文件，无法添加/,
+  'the system notice must still carry the localized empty-file copy');
 
 const flatReentrantFirst = [];
 const flatReentrantSecond = [];

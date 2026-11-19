@@ -3,7 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::headless_bridge::{ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy};
+use crate::headless_bridge::{
+    MAX_STAGED_ATTACHMENT_BYTES, ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy,
+};
 use agent_backend_api::{
     AgentRunObserver, AgentTaskInput, AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend,
     PrepareRequest, PrivateInputHandle, PrivateInputResolver, ResolvedAttachmentSource,
@@ -466,7 +468,10 @@ async fn attachment_prepare_rejects_oversized_files() {
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("large.bin");
     let file = std::fs::File::create(&source).unwrap();
-    file.set_len(25 * 1024 * 1024 + 1).unwrap();
+    // Derive from the cap (not a literal): the cap is raised with
+    // file_ingest::MAX_FILE_BYTES (issue #842), and a stale literal here
+    // would silently test an accepted size.
+    file.set_len(MAX_STAGED_ATTACHMENT_BYTES + 1).unwrap();
     let backend = ProductHeadlessBackend::from_runtime(Arc::new(RecordingRuntime::default()));
     let request = prepare_request("large", vec![AttachmentHandle::new("opaque")])
         .with_resolved_attachments(vec![ResolvedAttachmentSource::new(&source, "large.bin")]);

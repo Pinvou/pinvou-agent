@@ -163,6 +163,14 @@ struct MockState {
     /// redaction on the execution-error path: the error goes into the audit,
     /// the typed content must still never appear).
     type_error: Option<String>,
+    /// When set, type_text first records the packaged-target advisory in
+    /// `pending_warnings` — the real Windows backend pushes its advisory
+    /// BEFORE the fallible run, which is exactly the shape the error-path
+    /// drain must handle.
+    type_warns_packaged: bool,
+    /// Backend-accumulated warnings drained by the take_warnings override
+    /// (mirrors the real channel: the drain clears the vector).
+    pending_warnings: Vec<String>,
     /// The display target this mock reports (`Capabilities.target`): the
     /// default is Physical like every real physical backend; set Virtual to
     /// drive the target-marker/payload scenarios.
@@ -222,6 +230,8 @@ impl Default for MockState {
             drag_error: false,
             capture_error: false,
             type_error: None,
+            type_warns_packaged: false,
+            pending_warnings: Vec::new(),
             display_target: DisplayTarget::Physical,
             target_note: String::new(),
             fidelity_notes: "mock".to_string(),
@@ -355,11 +365,25 @@ impl ComputerUseBackend for MockBackend {
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         let mut state = self.state.lock();
+        if state.type_warns_packaged {
+            // The real Windows backend records its advisory BEFORE the
+            // fallible run — the exact shape a failed action leaves
+            // stranded unless the tool layer drains it on the error path.
+            state.pending_warnings.push(
+                "mock: the keyboard target is a packaged app; typed text may \
+                 not have landed"
+                    .to_string(),
+            );
+        }
         if let Some(error) = &state.type_error {
             return Err(ComputerUseError::unavailable(error.clone()));
         }
         state.typed.push(text.to_string());
         Ok(())
+    }
+
+    fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.state.lock().pending_warnings)
     }
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {
@@ -6593,5 +6617,64 @@ async fn open_audit_target_withholds_the_model_free_text() {
     assert!(
         !target.contains("xeyes") && !target.contains("-a"),
         "neither the program nor the args may ride the audit target line: {target}"
+    );
+}
+
+/// The backend warnings channel attributes advisories to exactly the action
+/// that produced them: a FAILED action's advisory is drained and discarded
+/// (it names that action's target, so letting it ride a later action's
+/// receipt would misattribute it), while a successful action's advisory
+/// renders on its own receipt.
+#[tokio::test]
+async fn failed_action_drains_backend_warnings_off_the_next_receipt() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+
+    // Action 1 FAILS after the backend recorded its advisory (the real
+    // Windows shape: the packaged-target push precedes the fallible run).
+    fixture.mock.lock().type_warns_packaged = true;
+    fixture.mock.lock().type_error = Some("mock: type failed".to_string());
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hi"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("mock: type failed"), "{text}");
+    assert!(
+        !text.contains("packaged app"),
+        "the failed action's advisory must not render on the error receipt: {text}"
+    );
+
+    // Action 2 SUCCEEDS: the stranded advisory was drained-and-discarded on
+    // the error path, so nothing rides this receipt.
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("cursor_position succeeds").content;
+    assert!(
+        !text.contains("packaged app"),
+        "a stale advisory must never ride a later action's receipt: {text}"
+    );
+
+    // Control: the same type SUCCEEDS and its OWN advisory renders.
+    fixture.mock.lock().type_error = None;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hi"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("type succeeds").content;
+    assert!(
+        text.contains("packaged app"),
+        "a successful action's advisory must render on its receipt: {text}"
     );
 }

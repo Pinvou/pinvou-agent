@@ -761,6 +761,129 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
     })
 }
 
+/// session 级聚合统计,供内部诊断入口使用。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionTimelineStats {
+    pub turn_count: usize,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_hit_tokens: u64,
+    pub total_cache_miss_tokens: u64,
+    pub total_cache_write_tokens: u64,
+    pub total_reasoning_tokens: u64,
+    /// 首个有 user_start 的 turn 的首个事件时间(产线上即该轮的
+    /// user_start 写入时刻)。
+    pub first_turn_ts: Option<String>,
+    /// 最后一个有 user_start 的 turn 的最后一个事件时间——已收口时是
+    /// 该轮 assistant_done(即结束时刻),不是该轮的开始时刻;两侧口径
+    /// 因此不对称(首=开始,末=结束)。末轮未收口(崩溃/截断/提交前取消,
+    /// 见 incomplete_turns)时,该值是这轮 user_start 的时刻。
+    pub last_turn_ts: Option<String>,
+    pub completed_turns: usize,
+    pub failed_turns: usize,
+    /// 用户主动 Ctrl-C / 超时中断的轮次(engine TurnOutcomeStatus::Interrupted、
+    /// ACP Cancelled 映射、调度取消兜底均落此桶)。
+    /// 官方树曾把该终态落进 `_ => {}` 静默丢弃(见 [F2] 测试注释);本仓曾在
+    /// #562(3612d08b7)按死代码移除聚合,现随官方同步恢复并补齐分桶。
+    pub interrupted_turns: usize,
+    /// ACP 会话因 MaxTokens / MaxTurnRequests 上限收口的轮次(codex_acp 落盘
+    /// "LimitReached"):既非失败也非中断,单独成桶避免落进 unknown。
+    pub limit_reached_turns: usize,
+    /// ACP 会话模型拒绝(StopReason::Refusal → "Refused")收口的轮次。
+    pub refused_turns: usize,
+    /// 有 user_start 但没有 assistant_done 的轮次:进程退出、文件尾部截断、
+    /// 提交前取消(start_turn 后走 unsubmitted-interrupt 通道,不落终态)、
+    /// 或 user_start 之后的写盘失败,都落在这里。
+    pub incomplete_turns: usize,
+    /// assistant_done 存在,但状态不是当前已知枚举(含缺失 status 的脏数据)。
+    /// 单独暴露,避免静默制造差值。
+    pub unknown_status_turns: usize,
+}
+
+/// 聚合 session timeline 为单个 stats 对象。
+///
+/// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
+/// 每个有 user_start 的 turn 算一个(未收口的轮计入 incomplete_turns,
+/// 不是只有配齐两半才计数)。token / 状态从 assistant_done 取(ACP 收口与
+/// send_error 兜底不写 usage,token 计 0;引擎正常链路的失败轮可能携带
+/// usage 并计入)。
+/// 孤儿 assistant_done(无 user_start,多来自 user_start
+/// 写盘失败)不配对:不计 turn_count、不入任何分桶或 token 总和。
+pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
+    let events = read_timeline(session_id)?;
+    let mut stats = SessionTimelineStats::default();
+    // 按 turn_id 索引;一个 turn 由 user_start + assistant_done 组成。
+    // 键借用 events,避免逐事件克隆 turn_id(克隆件在去重后即被丢弃)。
+    let mut by_turn: HashMap<&str, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
+        HashMap::new();
+    for e in &events {
+        // 只为两种配对事件建 entry:context_snapshot 等其余事件
+        // (context-snapshot-<ms> 独立 id)不会留下 (None, None) 空位。
+        if e.event == "assistant_done" {
+            by_turn.entry(e.turn_id.as_str()).or_default().1 = Some(e);
+        } else if e.event == "user_start" {
+            by_turn.entry(e.turn_id.as_str()).or_default().0 = Some(e);
+        }
+    }
+    stats.turn_count = by_turn
+        .values()
+        .filter(|(start, _)| start.is_some())
+        .count();
+    stats.first_turn_ts = events
+        .iter()
+        .find(|event| {
+            by_turn
+                .get(event.turn_id.as_str())
+                .is_some_and(|pair| pair.0.is_some())
+        })
+        .map(|event| event.ts.clone());
+    stats.last_turn_ts = events
+        .iter()
+        .rev()
+        .find(|event| {
+            by_turn
+                .get(event.turn_id.as_str())
+                .is_some_and(|pair| pair.0.is_some())
+        })
+        .map(|event| event.ts.clone());
+    for (start, done) in by_turn.values() {
+        if start.is_none() {
+            continue;
+        }
+        let Some(d) = done else {
+            stats.incomplete_turns += 1;
+            continue;
+        };
+        if let Some(u) = &d.usage {
+            stats.total_input_tokens = stats.total_input_tokens.saturating_add(u.input_tokens);
+            stats.total_output_tokens = stats.total_output_tokens.saturating_add(u.output_tokens);
+            stats.total_cache_hit_tokens = stats
+                .total_cache_hit_tokens
+                .saturating_add(u.cache_hit_tokens);
+            stats.total_cache_miss_tokens = stats
+                .total_cache_miss_tokens
+                .saturating_add(u.cache_miss_tokens);
+            stats.total_cache_write_tokens = stats
+                .total_cache_write_tokens
+                .saturating_add(u.cache_write_tokens);
+            stats.total_reasoning_tokens = stats
+                .total_reasoning_tokens
+                .saturating_add(u.reasoning_tokens);
+        }
+        match d.status.as_deref() {
+            Some(s) if s.eq_ignore_ascii_case("Completed") => stats.completed_turns += 1,
+            Some(s) if s.eq_ignore_ascii_case("Failed") || s.eq_ignore_ascii_case("send_error") => {
+                stats.failed_turns += 1;
+            }
+            Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
+            Some(s) if s.eq_ignore_ascii_case("LimitReached") => stats.limit_reached_turns += 1,
+            Some(s) if s.eq_ignore_ascii_case("Refused") => stats.refused_turns += 1,
+            _ => stats.unknown_status_turns += 1,
+        }
+    }
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,6 +1216,377 @@ mod tests {
         file.set_len(MAX_TIMING_FILE_BYTES + 1).unwrap();
         let error = read_timeline("session-too-large").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidData);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn compute_stats_aggregates_usage_and_status() {
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-stats-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-stats";
+        // 2 个 completed turn + 1 个 failed turn
+        for _ in 0..2 {
+            start_turn(sid);
+            finish_turn_with_usage(
+                sid,
+                "Completed",
+                None,
+                Some(TurnUsage {
+                    input_tokens: 1000,
+                    output_tokens: 200,
+                    cache_hit_tokens: 500,
+                    cache_miss_tokens: 500,
+                    cache_write_tokens: 300,
+                    reasoning_tokens: 50,
+                    ..Default::default()
+                }),
+            );
+        }
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Failed", Some("oops"), None);
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 3);
+        assert_eq!(stats.completed_turns, 2);
+        assert_eq!(stats.failed_turns, 1);
+        assert_eq!(stats.total_input_tokens, 2000);
+        assert_eq!(stats.total_output_tokens, 400);
+        assert_eq!(stats.total_cache_hit_tokens, 1000);
+        assert_eq!(stats.total_cache_miss_tokens, 1000);
+        assert_eq!(stats.total_cache_write_tokens, 600);
+        assert_eq!(stats.total_reasoning_tokens, 100);
+        assert!(stats.first_turn_ts.is_some());
+        assert!(stats.last_turn_ts.is_some());
+        // 两侧口径:首=首个 user_start,末=最后收口的 assistant_done,
+        // 同 offset RFC3339 字典序即时间序(同毫秒并发轮允许相等)。
+        assert!(stats.first_turn_ts.clone().unwrap() <= stats.last_turn_ts.clone().unwrap());
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// [F2] 官方树曾把 Interrupted 终态落进 `_ => {}` 静默丢弃,导致
+    /// completed+failed 与 turn_count 对不上;该叙事随官方同步带回归本仓
+    /// (#562/3612d08b7 曾把整个聚合按死代码移除,本 PR 恢复)。验证全部
+    /// 终态桶(含 Interrupted)都被分类,且大小写不敏感(产线写入
+    /// PascalCase,脏数据可能是 lowercase)。
+    #[test]
+    fn compute_stats_counts_interrupted_terminal_state() {
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-interrupted-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-interrupted";
+        // 1 completed + 1 failed + 2 interrupted(一个 PascalCase 一个 lowercase,
+        // 验证 eq_ignore_ascii_case 写法不再漏变体)
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Completed", None, None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Failed", Some("err"), None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "Interrupted", Some("ctrl-c"), None);
+        start_turn(sid);
+        finish_turn_with_usage(sid, "interrupted", None, None);
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 4);
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(stats.failed_turns, 1);
+        assert_eq!(stats.interrupted_turns, 2);
+        // 全部终态桶加 incomplete/unknown 必须等于 turn_count——产线还可能
+        // 写 LimitReached/Refused/send_error/脏状态,单看三个终态会对不上。
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 缺失 session(sidecar 不存在)返回全零 stats,而不是报错——
+    /// 2026-07 之前的老 session 没有侧车文件,诊断入口按零值展示。
+    /// (随 #562 移除的 compute_stats_on_missing_session_is_default 恢复。)
+    #[test]
+    fn compute_stats_on_missing_session_is_default() {
+        // locked_env restores the previous value on scope exit (panic
+        // paths included) while the lock is still held - the hand-rolled
+        // set_var leaked the non-existent root into later tests (review
+        // JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe {
+            std::env::set_var(
+                "PINVOU3_HOME",
+                std::env::temp_dir().join(format!("nope-{}", now_ms())),
+            )
+        };
+        let stats = compute_stats("does-not-exist").unwrap();
+        assert_eq!(stats.turn_count, 0);
+        assert_eq!(stats.total_input_tokens, 0);
+        assert_eq!(stats.completed_turns, 0);
+        assert!(stats.first_turn_ts.is_none());
+        assert!(stats.last_turn_ts.is_none());
+    }
+
+    /// 真实产线写出的边缘终态全部归位:send_error 归 failed、未知状态归
+    /// unknown、未收口 turn 归 incomplete、ACP 的 LimitReached/Refused 归
+    /// 各自的桶。(随 #562 移除的 compute_stats_classifies_real_terminal_edges
+    /// 恢复,并补上 ACP 两个状态——此前它们会静默落进 unknown。)
+    /// 每个终态都同时给一个非产线大小写的变体(completed/failed/
+    /// limitreached/refused),防止局部改回大小写敏感匹配的突变存活。
+    #[test]
+    fn compute_stats_classifies_real_terminal_edges() {
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-terminal-edges-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-terminal-edges";
+        start_turn(sid);
+        finish_turn(sid, "send_error", Some("engine unavailable"));
+        start_turn(sid);
+        finish_turn(sid, "FutureStatus", None);
+        start_turn(sid);
+        finish_turn(sid, "LimitReached", None);
+        start_turn(sid);
+        finish_turn(sid, "refused", None);
+        start_turn(sid);
+        finish_turn(sid, "Refused", None);
+        start_turn(sid);
+        finish_turn(sid, "limitreached", None);
+        start_turn(sid);
+        finish_turn(sid, "failed", None);
+        start_turn(sid);
+        finish_turn(sid, "completed", None);
+        start_turn(sid);
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 9);
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(stats.failed_turns, 2);
+        assert_eq!(stats.limit_reached_turns, 2);
+        assert_eq!(stats.refused_turns, 2);
+        assert_eq!(stats.incomplete_turns, 1);
+        assert_eq!(stats.unknown_status_turns, 1);
+        // 未知状态与未收口也计入分区——七桶之和必须等于 turn_count
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
+        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试
+        // (clear_session 只清内存队列,不写 sidecar 事件)。
+        clear_session(sid);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 孤儿 assistant_done(同 turn_id 无 user_start,多来自 user_start
+    /// 写盘失败或截断)不得计入 turn_count、任何终态分桶或 token 总和。
+    /// 此前套件没有这种夹具:turn_count 改成 by_turn.len()、去掉
+    /// start.is_none() 跳过的突变都是绿的。
+    #[test]
+    fn compute_stats_excludes_orphan_assistant_done() {
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-orphan-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-orphan-done";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 11,
+                ..Default::default()
+            }),
+        );
+        // 直接注入一条无 user_start 的 assistant_done(孤儿 done)。
+        let path = crate::platform::paths::session_timing_events(sid);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                f.write_all(
+                    br#"{"event":"assistant_done","turn_id":"orphan_done_probe","timestamp":1767225600000,"ts":"2026-01-01T00:00:00+00:00","status":"Completed","usage":{"input_tokens":999}}
+"#,
+                )
+            })
+            .unwrap();
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 1, "孤儿 done 不得计入 turn_count");
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(
+            stats.total_input_tokens, 11,
+            "孤儿 done 的 usage 不得计入总和"
+        );
+        assert_eq!(stats.incomplete_turns + stats.unknown_status_turns, 0);
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 首末时间戳口径按值钉死(round-3 M2 突变实证:去掉 .rev()、退化成
+    /// events.first()/events.last() 的突变此前全绿——既有测试只断言
+    /// is_some / first <= last,且孤儿夹具的 2026-01-01 时间戳排在真实事件
+    /// 之前,无法暴露泄漏)。用带头尾带外事件的裸 JSONL 夹具:头部孤儿
+    /// done、尾部 context_snapshot、尾部孤儿 done 都不是配对轮事件,
+    /// first 必须是首个真实轮的 user_start;last 在末轮已收口时是该轮
+    /// assistant_done,未收口时是该轮 user_start。
+    #[test]
+    fn compute_stats_first_last_ts_semantics() {
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-ts-semantics-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // 末轮已收口:头孤儿 done(T0)→ 轮A(T1,T2)→ 轮B(T3,T4)
+        // → 尾部 context_snapshot(T5)→ 尾孤儿 done(T6)。
+        let settled = "session-ts-settled";
+        let settled_lines = r#"{"event":"assistant_done","turn_id":"orphan_head","timestamp":1000,"ts":"2026-02-01T00:00:00+00:00","status":"Completed"}
+{"event":"user_start","turn_id":"turn_a","timestamp":2000,"ts":"2026-02-01T00:00:01+00:00"}
+{"event":"assistant_done","turn_id":"turn_a","timestamp":3000,"ts":"2026-02-01T00:00:02+00:00","status":"Completed"}
+{"event":"user_start","turn_id":"turn_b","timestamp":4000,"ts":"2026-02-01T00:00:03+00:00"}
+{"event":"assistant_done","turn_id":"turn_b","timestamp":5000,"ts":"2026-02-01T00:00:04+00:00","status":"Completed"}
+{"event":"context_snapshot","turn_id":"context-snapshot-42","timestamp":6000,"ts":"2026-02-01T00:00:05+00:00"}
+{"event":"assistant_done","turn_id":"orphan_tail","timestamp":7000,"ts":"2026-02-01T00:00:06+00:00","status":"Completed"}
+"#;
+        let settled_path = crate::platform::paths::session_timing_events(settled);
+        std::fs::create_dir_all(settled_path.parent().unwrap()).unwrap();
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&settled_path)
+            .and_then(|mut f| f.write_all(settled_lines.as_bytes()))
+            .unwrap();
+        let stats = compute_stats(settled).unwrap();
+        assert_eq!(stats.turn_count, 2);
+        assert_eq!(stats.completed_turns, 2);
+        assert_eq!(
+            stats.first_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:01+00:00"),
+            "first 必须是首个真实轮的 user_start,头孤儿/带外事件不得当选"
+        );
+        assert_eq!(
+            stats.last_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:04+00:00"),
+            "末轮已收口时 last 必须是该轮 assistant_done,尾部带外事件不得当选"
+        );
+
+        // 末轮未收口:同上,再加一轮只有 user_start(T7)→ 尾孤儿 done(T8)。
+        let unsettled = "session-ts-unsettled";
+        let unsettled_lines = format!(
+            "{settled_lines}{{\"event\":\"user_start\",\"turn_id\":\"turn_c\",\"timestamp\":8000,\"ts\":\"2026-02-01T00:00:07+00:00\"}}\n{{\"event\":\"assistant_done\",\"turn_id\":\"orphan_tail2\",\"timestamp\":9000,\"ts\":\"2026-02-01T00:00:08+00:00\",\"status\":\"Completed\"}}\n"
+        );
+        let unsettled_path = crate::platform::paths::session_timing_events(unsettled);
+        std::fs::create_dir_all(unsettled_path.parent().unwrap()).unwrap();
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&unsettled_path)
+            .and_then(|mut f| f.write_all(unsettled_lines.as_bytes()))
+            .unwrap();
+        let stats = compute_stats(unsettled).unwrap();
+        assert_eq!(stats.turn_count, 3);
+        assert_eq!(stats.completed_turns, 2);
+        assert_eq!(stats.incomplete_turns, 1);
+        assert_eq!(
+            stats.first_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:01+00:00")
+        );
+        assert_eq!(
+            stats.last_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:07+00:00"),
+            "末轮未收口时 last 必须是该轮 user_start,尾孤儿 done 不得当选"
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }

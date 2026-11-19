@@ -657,7 +657,16 @@ function enforceLazyChunks() {
 // B desktop and 126,578 B web on the local toolchain — inside the 492_000
 // desktop and 129_000 web ceilings main already set, so no raise of its
 // own. This cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 492_000;
+// PR #894 (2026-11-18 rebase onto main@9a5968933, measured per policy):
+// the upload-lane wire-code localization joins the shared startup graph
+// (ACP error mapping, shared limit formatter, i18n/BT copy), measuring
+// 492,582 B desktop — and main-only already measures 492,245 B after
+// #857's timeline panel landed without its own re-measure — so the
+// desktop ceiling takes the next thousand step. Web stays 126,770 B
+// under 129_000. The r4 re-rebase onto main@34bb36b7af (#867) touches no
+// frontend entry file, so those figures carry over; the build gates
+// re-verified both ceilings on the rebased head.
+export const MAIN_ENTRY_BUDGET_BYTES = 493_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {

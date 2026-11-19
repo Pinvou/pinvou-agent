@@ -213,7 +213,7 @@ Session 索引后再发送 `state_ready=true`，桌面才重放初始化窗口�
   endpoint，旧配置默认不授权。浏览器不能调用启用命令，未授权 endpoint 无法签发目录
   handle；授权后的 handle 仍保持端点绑定、限时且一次性消费；
 - 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_TRANSFER_CHUNK_BYTES`，base64
-  后仍在 1 MiB RPC 请求上限内），单文件 ≤ `file_ingest::MAX_FILE_BYTES`（20 MiB，超限
+  后仍在 1 MiB RPC 请求上限内），单文件 ≤ `file_ingest::MAX_FILE_BYTES`（50 MiB，超限
   在传输前拒绝），桌面内存缓冲最多 4 个、总量 64 MiB、闲置 10 分钟过期，取消命令幂等。
   Relay 只转发分块帧，不保存任何内容。最后一块提交时字节落入
   `~/.pinvou3/uploads/webup_<token>/` 暂存目录并复用共享 ingest 管线，返回与桌面文件

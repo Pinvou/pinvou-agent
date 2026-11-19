@@ -420,7 +420,10 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       sessionModelStale: id => `The model selected for this conversation is no longer available (missing saved model: ${id}). Please pick a model again in this conversation.`,
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
-      deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
+      deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 50 MB attachment limit`,
+      deviceUploadCacheFull: "⚠️ Upload buffer is full: a large attachment is still uploading. Wait for it to finish, then retry",
+      deviceParsedTooLarge: "⚠️ The parsed attachment exceeds the 32 MB remote-desktop cache limit and cannot be added",
+      deviceCacheFull: "⚠️ Too many attachments are cached on the remote desktop. Remove one, then retry",
       archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
       archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
       archiveUnsafeEntry: "the archive contains unsafe links or paths and cannot be attached",
@@ -550,7 +553,10 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
-      deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
+      deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 50 MB を超えています`,
+      deviceUploadCacheFull: "⚠️ アップロードバッファがいっぱいです：別の大きな添付ファイルをアップロード中です。完了してから再試行してください",
+      deviceParsedTooLarge: "⚠️ 解析後の添付ファイルがリモートデスクトップのキャッシュ上限 32 MB を超えているため追加できません",
+      deviceCacheFull: "⚠️ リモートデスクトップの添付キャッシュがいっぱいです。1つ削除してから再試行してください",
       archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
       archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
       archiveUnsafeEntry: "アーカイブに安全でないリンクまたはパスが含まれているため添付できません",
@@ -680,7 +686,10 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       sessionModelStale: id => `当前会话选择的模型配置已失效（缺失配置：${id}），请在对话中重新选择模型。`,
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
-      deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
+      deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 50 MB 上限`,
+      deviceUploadCacheFull: "⚠️ 上传缓存已满：另一批大附件还在上传，请等待其完成后再试",
+      deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB，无法添加",
+      deviceCacheFull: "⚠️ 远程桌面附件缓存已满，请移除一个附件后重试",
       archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
@@ -5655,7 +5664,13 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     try {
       const result = await invoke("web_access_ingest_file", { path });
       att.status = "ready"; att.result = result;
-    } catch (e) { att.status = "error"; att.error = String(e); }
+    } catch (e) {
+      // Limit failures (oversize, parsed-result cache overflow) arrive as
+      // stable wire codes; map them so the chip shows localized copy
+      // instead of raw single-language desktop text.
+      const limitError = attachmentLimitDisplayError(e, att.basename);
+      att.status = "error"; att.error = limitError ? limitError.code : String(e);
+    }
     notify();
   }
 
@@ -5663,6 +5678,12 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     const raw = String(error && error.message ? error.message : error);
     if ((error && error.code === "device_upload_too_large") || raw === "attachment_file_too_large") {
       return { code: "attachment_file_too_large", message: bt("deviceUploadTooLarge")(fileName) };
+    }
+    if (raw === "web_attachment_parsed_cache_too_large") {
+      return { code: raw, message: bt("deviceParsedTooLarge") };
+    }
+    if (raw === "web_attachment_cache_full") {
+      return { code: raw, message: bt("deviceCacheFull") };
     }
     if (raw === "attachment_archive_too_many_entries") {
       return { code: raw, message: bt("archiveTooManyEntries") };
@@ -5681,16 +5702,18 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     if (limitError) return limitError;
     const rawUploadError = String(error && error.message ? error.message : error);
     if (error && error.code === "device_upload_empty") {
-      const message = bt("deviceUploadEmpty")(fileName);
-      return { code: message, message };
+      // Store the stable wire code on the chip too — the localized sentence
+      // is rendered from bt() where needed, never frozen into the code field.
+      return { code: error.code, message: bt("deviceUploadEmpty")(fileName) };
     }
     if (rawUploadError === "web_attachment_digest_invalid") {
-      const message = bt("deviceUploadDigestInvalid");
-      return { code: message, message };
+      return { code: rawUploadError, message: bt("deviceUploadDigestInvalid") };
     }
     if (rawUploadError === "web_attachment_integrity_mismatch") {
-      const message = bt("deviceUploadIntegrityMismatch");
-      return { code: message, message };
+      return { code: rawUploadError, message: bt("deviceUploadIntegrityMismatch") };
+    }
+    if (rawUploadError === "web_attachment_upload_cache_full") {
+      return { code: rawUploadError, message: bt("deviceUploadCacheFull") };
     }
     return { code: rawUploadError, message: rawUploadError };
   }

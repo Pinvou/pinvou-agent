@@ -104,12 +104,18 @@ fn libreoffice_convert_text(
                 .and_then(|s| s.to_str())
                 .unwrap_or("converted");
             let out_path = tmpdir.join(format!("{stem}.{out_ext}"));
-            std::fs::read_to_string(&out_path)
-            // soffice's txt/csv exports carry a UTF-8 BOM; strip it so it does not pollute the start of the body.
-            .map(|s| s.trim_start_matches('\u{feff}').to_string())
-            .map_err(|e| format!("LibreOffice 转换后读取失败: {e}"))
+            read_libreoffice_text_product(&out_path)
         },
     )
+}
+
+/// soffice txt/csv 产物读回：与 pdftotext / pandoc / .eml 读回同标准，走
+/// [`super::ingest_deps::read_capped_text`] 的 32 MiB 上限 —— 产物体积只受
+/// soffice 在 180s kill-tree 窗口内的写入量约束，不能当作有界输入整读；
+/// 再剥掉 soffice 文字导出固定携带的 UTF-8 BOM。
+fn read_libreoffice_text_product(out_path: &Path) -> Result<String, String> {
+    super::ingest_deps::read_capped_text(out_path)
+        .map(|s| s.trim_start_matches('\u{feff}').to_owned())
 }
 
 /// 文字类文档（.doc/.rtf + WPS .wps）：pandoc 吃不下，用 LibreOffice 转纯文本。
@@ -466,5 +472,30 @@ mod tests {
         // 扇区 1 只有 64 字节（文件到此截断）：<128 字节尾块，旧版在此 panic
         let result = spreadsheet_text_from_bytes(&bytes, false);
         assert!(result.is_err(), "截断 CFB 应报错而非成功解析: {result:?}");
+    }
+
+    #[test]
+    fn libreoffice_text_product_readback_is_capped_and_strips_bom() {
+        // soffice txt/csv 产物读回必须走 32 MiB 上限（issue #842 把 20-50 MiB
+        // 输入带进本车道后，转换产物只受 180s kill-tree 写入量约束，不是有界
+        // 输入），并剥掉 soffice 文字导出固定携带的 UTF-8 BOM。
+        use super::super::ingest_deps::EXTRACTED_TEXT_READ_CAP;
+
+        let dir = tempfile::tempdir().unwrap();
+        let product = dir.path().join("product.txt");
+
+        std::fs::write(&product, "\u{feff}正文内容").unwrap();
+        assert_eq!(
+            read_libreoffice_text_product(&product).unwrap(),
+            "正文内容",
+            "soffice 的 UTF-8 BOM 必须剥掉"
+        );
+
+        std::fs::write(&product, vec![b'a'; (EXTRACTED_TEXT_READ_CAP + 1) as usize]).unwrap();
+        let error = read_libreoffice_text_product(&product).unwrap_err();
+        assert!(
+            error.contains("读回上限"),
+            "LibreOffice 产物读回超限必须报读回上限错误: {error}"
+        );
     }
 }
