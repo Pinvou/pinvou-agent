@@ -13,7 +13,7 @@
 // Exactly the Unicode White_Space set, what the Rust watcher's
 // split_whitespace splits; JS \s additionally matches U+FEFF, which neither
 // backend treats as whitespace.
-const CRON_WS_CLASS = '[\\t\\n\\v\\f\\r \u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]';
+const CRON_WS_CLASS = '[\\t\\n\\v\\f\\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]';
 const CRON_WS_TRIM = new RegExp(`^${CRON_WS_CLASS}+|${CRON_WS_CLASS}+$`, 'g');
 const CRON_WS_SPLIT = new RegExp(`${CRON_WS_CLASS}+`);
 
