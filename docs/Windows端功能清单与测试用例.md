@@ -28,7 +28,7 @@
 
 | 项目 | 当前实现 |
 |---|---|
-| 安装包 | NSIS + MSI（现行 `scripts/tauri/build.js` 在未显式指定时缺省返回 `["msi","nsis"]`——非 `tauri.conf.json` 字面量），`perMachine` 安装模式，简体中文/英文/日文安装界面，LZMA 压缩 |
+| 安装包 | NSIS + MSI（现行 `pinvou3-app/scripts/tauri/build.js` 在未显式指定时缺省返回 `["msi","nsis"]`——非 `tauri.conf.json` 字面量），`perMachine` 安装模式，简体中文/英文/日文安装界面，LZMA 压缩 |
 | 应用窗口 | Tauri 2 桌面窗口，默认最大化、无系统装饰栏、支持调整大小 |
 | 安装权限 | 机器级安装和运行时环境变量配置需要管理员权限 |
 | VC++ 运行库 | 安装前检查 Microsoft Visual C++ 2015-2022 x64；缺失或版本不足时先补齐 Windows Installer 必需的临时目录和权限，再静默安装 |
@@ -123,7 +123,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | SHELL-08 | Windows 进程树终止 | 可用 | 使用 Windows 进程树/Job Object 相关策略清理子进程，避免只结束父 Shell 后下载器继续运行 |
 | SHELL-09 | 后台子进程不弹黑窗 | 可用 | Windows 子进程统一使用无控制台窗口创建标志 |
 | SHELL-10 | 跨事件终端解析 | 可用 | 按工具调用和 stdout/stderr 分别保存解析状态，正确拼接跨事件的 CRLF、刷新式进度和 ANSI 控制序列 |
-| SHELL-11 | 输出背压与终态收敛 | 可用 | 宿主观察器按快照差量合并每个轮询周期内的全部未发送内容，不消费模型侧 wait 游标；后台终态再补齐去重后的输出尾部 |
+| SHELL-11 | 输出背压与终态收敛 | 可用 | 宿主观察器按快照差量合并每个轮询周期内的全部未发送内容，不消费模型侧 wait 游标（快照措辞——现行 App 会话无模型可见 wait 工具，见 SHELL-05 注）；后台终态再补齐去重后的输出尾部 |
 | SHELL-12 | 普通管道模式 | 设计约束 | 当前不自动启用 PTY；只保证应用收到程序写入 stdout/stderr 管道的内容 |
 
 ### 3.4 附件、文件解析与制品
@@ -629,7 +629,7 @@ npm run build:nsis
 8. **音视频附件尚未自动转写。** 聊天框麦克风输入已有离线 ASR，但添加 MP3/MP4 文件当前只登记元数据。
 9. **附件单文件上限为 20 MiB。** 压缩包另有 50 条目和解压后 100 MiB 总量限制。（⚠️ 快照口径：单附件上限现行已提至 50 MiB——2026-11-19 #894；压缩包两条限制未变）
 10. **模型高级参数当前不在设置页开放。** 上下文窗口和最大输出预算由保存的部署事实、探测结果与路由上限决定；普通用户不能直接在 UI 中修改这些字段（快照口径：现行设置页已开放「上下文窗口」「最大输出」输入字段，用户声明优先、后端再按路由与进程级输出预算钳制，见 §3.5 MODEL-10 注）。
-11. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在或凭据无效；只有权威“无账号/已撤销/鉴权失败”结果才能清理缓存、回滚安装或熔断重试。
+11. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在或凭据无效；只有权威“无账号/已撤销/鉴权失败”结果才能清理缓存、回滚安装或熔断重试。（⚠️ 快照口径：「清理缓存」「熔断重试」两语复述已作废的 MODEL-02（内置账号缓存）与 WF-09（鉴权熔断）语义，见文首失效清单；按失败类型区分处置与安装回滚本身对现行连接器/OAuth 流程仍成立）
 
 ## 8. Windows 发版验收清单
 
@@ -678,4 +678,4 @@ npm run build:nsis
 | 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |
 | 设置、依赖、反馈 | `features/settings/SettingsView.jsx` | `commands.rs`、`file_ingest.rs`、`windows_dependency.rs`、`windows_permission.rs` | 设置/文件解析模块测试 |
 | Windows OTA | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `updater.rs`、`os/windows/windows_update.rs` | `tests/update_notice_logic.test.js`、`tests/update_notice_ui_smoke.js`、OTA 脚本验证 |
-| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1`、`scripts/tauri/build.js` | `tests/windows_runtime_packaging_contract.test.js`、`tests/tauri_platform_layout.test.js`、NSIS 发版机人工/虚拟机验收 |
+| Windows 安装包 | 无 | `src-tauri/tauri.conf.json`、`packaging/windows/nsis/`、`src-tauri/packaging/windows/runtime/scripts/stage-runtime.ps1`、`pinvou3-app/scripts/tauri/build.js` | `tests/windows_runtime_packaging_contract.test.js`、`tests/tauri_platform_layout.test.js`、NSIS 发版机人工/虚拟机验收 |

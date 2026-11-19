@@ -629,7 +629,7 @@ codex-runtime://status
 - “重新下载/删除托管 Codex”只处理 `~/.pinvou3/runtimes/codex/`（⚠️ 快照口径：现行
   目录为 `~/.pinvou3/runtimes/codex-acp-1.1.5/`，见 §12.1 注）；Bridge 损坏通过
   修复或重新安装 Pinvou 处理。
-- 用户全局安装的 Codex CLI 不被升级、删除或覆盖。（⚠️ 快照口径：现行应用提供用户显式触发的全局 CLI 安装/升级动作——`install_acp_agent` 的 `brew_upgrade`（`brew upgrade --cask codex`）/`npm_upgrade`（`npm install -g @openai/codex@latest`）/`official_script`（`install.rs` 的 `install_action_for`），会升级或覆盖用户全局 CLI；现行 `uninstall_acp_agent` 亦提供用户显式触发的卸载动作（`providers/lifecycle.rs` 的 `uninstall_command` 按安装来源执行 `brew uninstall`/`npm uninstall -g` 或删除官方脚本路径）；「不被升级/删除/覆盖」仅指无后台静默升级、删除或覆盖。）
+- 用户全局安装的 Codex CLI 不被升级、删除或覆盖。（⚠️ 快照口径：现行应用提供用户显式触发的全局 CLI 安装/升级动作——`install_acp_agent` 的 `brew_upgrade`（`brew upgrade --cask codex`）/`npm_upgrade`（`npm install -g @openai/codex@latest`）/`official_script`（`install.rs` 的 `install_action_for`），会升级或覆盖用户全局 CLI；现行 `uninstall_acp_agent` 亦提供用户显式触发的卸载动作（`providers/lifecycle.rs` 的 `uninstall_command` 按安装来源执行 `brew uninstall`/`npm uninstall -g` 或删除官方脚本路径；opt-in `cleanup=true` 时额外删除该 Agent 的配置目录——Codex 即 `~/.codex` 整目录，前端复选框默认不勾选，故仍无后台静默删除）；「不被升级/删除/覆盖」仅指无后台静默升级、删除或覆盖。）
 - 开发覆盖变量只影响当前 Pinvou 进程。
 
 ### 12.3 会话兼容
@@ -638,6 +638,8 @@ codex-runtime://status
 版本改变而迁移。Runtime Release 是进程实现版本，不是 Pinvou 会话 schema 版本。
 
 ## 13. 发布与供应链
+
+> ⚠️ 快照口径：本节为设计稿留档。其中「托管 Codex 下载」供应链（§13.1 步骤 6-8 的托管产物构建/manifest/上传可信下载源、§13.2 的托管版本切换）未被采纳（见文首失效清单 §13）；staging 与 manifest 校验部分已随现行构建脚本落地。现行安装/升级/卸载链路按来源分流，见 §12.2 注。
 
 ### 13.1 构建流水线
 

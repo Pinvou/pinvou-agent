@@ -112,7 +112,7 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 ### D. L1 harness 默认模型同步
 
-`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445`（写作期行号，现树约 :538——2026-11-19 r22 订正：r20 估的 :520 偏了 18 行）默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
+`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445`（写作期行号，现树 :520——2026-11-20 r23 订正：r22 的「约 :538」系误改——:538 是 `fn set_var_if_unset` 定义行，r20 原锚 :520 精确）默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
 
 ### E. ops（用户做一次）
 

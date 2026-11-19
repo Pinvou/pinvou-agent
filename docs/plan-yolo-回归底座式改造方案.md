@@ -97,7 +97,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 - **改造** M3（`992-1008`）：`mode==Plan && !plan_used && text_len>阈值` → emit `plan_text_fallback`（收口兜底，D5；⚠️ 随后被 §7 阶段3 终决放弃，现行不存在）
 - `TurnPlanTracker` 删 `write_tool_used`/`assistant_text_len` 字段（仅 M2/M3 旧逻辑用），留 `plan_tool_used`+snapshots
 
-（⚠️ 2026-11-19 r22 注：上列前三条实落**阶段2** `1725aa6dc7`——其 commit message 自述「M2 自驱续跑删、plan_ready 去 phase 条件(plan_used && Plan 即弹卡)」、diff 同批删 `write_tool_used`/`assistant_text_len` 与 `plan_has_pending`；非阶段3 执行项，阶段3 仅余 `703dd3a51c` 清残骸。）
+（⚠️ 2026-11-19 r22 注、2026-11-20 r23 收窄：上列条 1/2/4（plan_ready 去 phase 条件、M2 整块删除、`TurnPlanTracker` 两字段删除）实落**阶段2** `1725aa6dc7`——其 commit message 自述「M2 自驱续跑删、plan_ready 去 phase 条件(plan_used && Plan 即弹卡)」、diff 同批删 `write_tool_used`/`assistant_text_len` 与 `plan_has_pending`；**条 3（M3 改造）从未落地**——`1725aa6dc7` message 自述「M3 文本兜底待阶段3 重做」，随 §7 阶段3 放弃；非阶段3 执行项，阶段3 仅余 `703dd3a51c` 清残骸。）
 
 **验证**：`cargo check` + `cargo test`；真机验证 plan_ready 仍弹卡、M3 兜底卡在「写了方案没调工具」时出现
 
@@ -134,7 +134,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 ### 前端联动（阶段1+4）
 - 新增：`index.html` ComposerModeChip 组件 + 挂载 + i18n
 - 清理：`tauri-bridge.js:1446-1450`(execution_stuck 监听)、`:1341`(wasExecuting 重定义)；`index.html:5469-5499`(ModeHeader 删)、`:3736-3737`(stuck 卡渲染按 D4)
-- 保留：plan_ready 监听/PlanCard/accept_plan 链（`tauri-bridge.js:1410-1426`、`index.html:5244-5269`）；plan_text_fallback（M3 改造后仍用——⚠️ 随后 §7 放弃，现行不存在）
+- 保留：plan_ready 监听/PlanCard/accept_plan 链（`tauri-bridge.js:1410-1426`、`index.html:5244-5269`）；plan_text_fallback（⚠️「M3 改造后仍用」系计划口径——M3 改造未及落地即随 §7 阶段3 放弃，现行不存在）
 
 ## 5. 风险与回归点
 

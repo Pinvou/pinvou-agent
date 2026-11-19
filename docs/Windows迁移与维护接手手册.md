@@ -41,7 +41,7 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 	branch = pinvou3-clean
 ```
 
-> 当前主干实际为：`[submodule "CodeWhale"]`（`path = CodeWhale`，无 `branch` 字段）+ `[submodule "private-runtimes/windows"]`（Windows 私有运行时，`update = none`；快照块 `branch` 字段指向内部仓分支，同样不随本仓库发布；快照块 `url` 字段亦已由内部 fork 地址改写为公开镜像，非快照原文）。
+> 当前主干实际为：`[submodule "CodeWhale"]`（`path = CodeWhale`，无 `branch` 字段）+ `[submodule "private-runtimes/windows"]`（Windows 私有运行时，`update = none`；快照块 `branch` 字段指向内部仓分支（2026-11-20 r23 订正：公开仓 `Pinvou/CodeWhale` 现有同名分支 `pinvou3-clean` 且恰钉现行 gitlink `687358f7efde`，公开可解——「不随本仓库发布」仅指父仓快照原文，勿误读为该分支不可解）；快照块 `url` 字段亦已由内部 fork 地址改写为公开镜像，非快照原文）。
 
 首次克隆或当前目录为空时先执行：
 
@@ -162,7 +162,7 @@ pinvou3 不直接使用 `~/.deepseek/` 作为主数据目录，而是隔离到 `
 | `~/.pinvou3/workflows/<run_id>/project/` | 工作流 run 的项目目录（快照条目：工作流子系统已在主干整体移除，此目录不再产生） |
 | `~/.pinvou3/updates/` | Linux `.deb` 更新包暂存目录 |
 
-Windows 风险：代码多处默认读 `HOME`，Windows 原生通常是 `USERPROFILE`。Rust 标准库和 Tauri 有跨平台目录 API，迁移时建议集中改 `paths.rs`，不要在各模块散落平台判断。
+Windows 风险：代码多处默认读 `HOME`，Windows 原生通常是 `USERPROFILE`。Rust 标准库和 Tauri 有跨平台目录 API，迁移时建议集中改 `paths.rs`，不要在各模块散落平台判断。（快照条目：该集中化改造已落地——现行用户目录解析统一经 `platform::os`（`windows_path.rs`），见 §12 「HOME 已落地」注）
 
 数据目录维护要点：
 

@@ -296,7 +296,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 `agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，后续各版本至现行 HEAD 也未将其注册为工具名——系被移除/替代的遗留，而非「后来才注册」）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
-### RLM（Recursive Language Model，递归语言模型）持久会话（2026-11-18 订正：原书「Read-Eval-Loop Model」系写档误展开，v0.8.37 源码全部作 Recursive Language Model——`src/rlm/mod.rs:1`、`commands/mod.rs:707`）
+### RLM（Recursive Language Model，递归语言模型）持久会话（2026-11-18 订正：原书「Read-Eval-Loop Model」系写档误展开，v0.8.37 源码全部作 Recursive Language Model——`crates/tui/src/rlm/mod.rs:1`、`crates/tui/src/commands/mod.rs:707`）
 
 `rlm_open / rlm_eval / rlm_configure / rlm_close` —— 起一个保留状态的 Python/REPL 子内核，多轮共享变量。Qwen3.6 撑不住这套编排，pinvou3 不引导。
 
@@ -323,7 +323,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### MCP（动态）
 
-任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；现行版本模型可见注册名仍为单下划线，双下划线 `mcp__<server>__<tool>` 形式出现在 hooks 条件匹配与 codewhale-mcp 管理面限定名（自由函数 `qualify_tool_name`，`crates/mcp/src/lib.rs`——CodeWhale 子模块代码，本仓无 `crates/` 目录，`McpManager` 内部调用）等非注册名场景，并非注册名改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。（v0.8.37 时点观察）
+任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`crates/tui/src/mcp.rs:1936`；现行版本模型可见注册名仍为单下划线，双下划线 `mcp__<server>__<tool>` 形式出现在 hooks 条件匹配与 codewhale-mcp 管理面限定名（自由函数 `qualify_tool_name`，`crates/mcp/src/lib.rs`——CodeWhale 子模块代码，本仓无 `crates/` 目录，`McpManager` 内部调用）等非注册名场景，并非注册名改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。（v0.8.37 时点观察）
 
 ---
 

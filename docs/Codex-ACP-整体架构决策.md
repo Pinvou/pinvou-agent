@@ -7,7 +7,7 @@
 > 归档说明：本文为回填的历史决策记录，未纳入 [`docs/adr/`](./adr/) 编号系列；该系列编号供新决策顺延使用，历史回填不占号
 > 对应分支：`feat/codex-acp`
 > 当前原型基线：`2b84908b`
-> AionUI 参考基线：`1b215f2f`，AionCore v0.1.50 时代（tag 指向 `4089fced`，参考提交取其后第 2 个 commit 的 `10cdd579`（4089fced→7603d442→10cdd579）；AionUI/AionCore 为公开开源项目 github.com/iOfficeAI，不在本仓库）
+> AionUI 参考基线：`1b215f2f`，AionCore v0.1.50 时代（tag 指向 `4089fced`，参考提交取其后第 2 个（first-parent 序）commit 的 `10cdd579`（4089fced→7603d442→10cdd579）；AionUI/AionCore 为公开开源项目 github.com/iOfficeAI，不在本仓库）
 
 ## 1. 一句话决策
 
