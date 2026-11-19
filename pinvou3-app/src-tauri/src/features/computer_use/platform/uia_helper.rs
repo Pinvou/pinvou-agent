@@ -43,15 +43,20 @@ use windows::Win32::Foundation::{
     CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, HWND, SetHandleInformation,
 };
 use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
+    SetProcessDpiAwareness, SetProcessDpiAwarenessContext,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
 };
 
 use super::super::types::{ComputerUseError, ElementInfo, UiTreeOptions};
+use super::helpers::tree_budget;
 use super::uia_helper_protocol::{Op, READY_LINE, Request, Response, WireElement};
 use super::virtual_display::windows_virtual::{
-    TREE_TOP_LEVEL_CAP, deepest_window_at, is_shell_window_class, launch_suspended_in_job,
-    walk_visible_toplevels, window_class_name,
+    TREE_TOP_LEVEL_CAP, append_tree_truncation_footers, deepest_window_at, desktop_target_path,
+    is_shell_window_class, launch_suspended_in_job, walk_visible_toplevels, window_class_name,
 };
 use super::windows::{
     TreeWriter, build_tree_cache, element_info_from_cache, map_uia_err, write_tree_node,
@@ -72,11 +77,33 @@ const HELPER_TREE_TIMEOUT_BASE_MS: u64 = 20_000;
 /// cross-process UIA fetch is 5-20 ms on a busy desktop).
 const HELPER_TREE_TIMEOUT_PER_NODE_MS: u64 = 20;
 const HELPER_ELEMENT_TIMEOUT_MS: u64 = 5_000;
-/// The helper's argv is built from `current_exe` only (no user input), and
-/// the session job (kill-on-close) bounds its lifetime.
+/// The between-node cancellation checkpoint of the tree walk, not wired over
+/// the pipe: the node budget bounds the helper's work and the parent's
+/// scaled timeout bounds the wait (see `helper_tree` below and the module
+/// doc's residual note).
 const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
 
 // ── helper-side loop (runs in the re-spawned process on the hidden desktop) ──
+
+/// Match the parent's DPI awareness (Per-Monitor-V2, set by tao at
+/// EventLoop creation — a step this process never reaches, since it
+/// dispatches before any app init). Without this the helper's coordinate
+/// space is DPI-virtualized while the parent's is physical: element_at_point
+/// points and tree rects would diverge from click coordinates on any
+/// display scaled ≠ 100% (the r4 review's coordinate-desync finding).
+/// PMv2 (Win10 1703+, the Tauri floor) with tao's PMv1 fallback via
+/// shcore; on a system old enough to fail both, the process stays unaware
+/// and the real-machine retest list covers scaled displays.
+fn become_dpi_aware_for_helper() {
+    // SAFETY: process-wide awareness setting before any coordinate query in
+    // this process; no handles or windows are involved.
+    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.is_ok()
+    {
+        return;
+    }
+    // SAFETY: see the fn contract (PMv1 is tao's documented fallback).
+    let _ = unsafe { SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) };
+}
 
 /// The helper's main: called from `run()` before any app initialization when
 /// argv carries [`uia_helper_protocol::HELPER_ARG`]. Reads request lines from
@@ -84,6 +111,8 @@ const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
 /// line per request. Process exits 0 on EOF; the session job is the backstop
 /// for anything harsher.
 pub(crate) fn run_helper_loop() {
+    // The coordinate contract must match the parent's BEFORE any query runs.
+    become_dpi_aware_for_helper();
     // COM + UIA client init happens on the helper's main thread, which the
     // OS placed on the hidden desktop via lpDesktop — every desktop-relative
     // query below resolves there. `new` (NOT `new_direct`) is required here:
@@ -181,35 +210,31 @@ fn helper_tree(
     };
     let mut out = String::new();
     for root in roots {
-        let element = uia
-            .element_from_handle(root.into())
-            .map_err(|e| map_uia_err("ui_tree root", e))?;
-        // SAFETY: cache owns the interface for the duration of the walk.
-        unsafe {
-            write_tree_node(
-                &element,
-                &cache,
-                0,
-                max_depth,
-                &mut writer,
-                &mut out,
-                HELPER_TREE_WALK_CANCEL,
-            )?
+        // A root that died between the Z-order enumeration and the handle
+        // bind is branch-end churn (the physical writer's rule): skip it
+        // instead of failing the whole query — the walk fans in over up to
+        // the whole top-level cap, so windows closing mid-enumeration would
+        // otherwise make ui_tree flaky at exactly the moments windows close
+        // (r4). A walk failure deeper in the tree still propagates.
+        let Ok(element) = uia.element_from_handle(root.into()) else {
+            continue;
         };
+        write_tree_node(
+            &element,
+            &cache,
+            0,
+            max_depth,
+            &mut writer,
+            &mut out,
+            HELPER_TREE_WALK_CANCEL,
+        )?;
     }
-    if writer.truncated {
-        let _ = writeln!(
-            out,
-            "... (truncated at {} nodes; pass a larger max_nodes to see more)",
-            writer.next_index
-        );
-    }
-    if writer.truncated_by_depth {
-        let _ = writeln!(
-            out,
-            "... (truncated by depth; pass a larger max_depth to see more)"
-        );
-    }
+    append_tree_truncation_footers(
+        writer.truncated,
+        writer.truncated_by_depth,
+        writer.next_index,
+        &mut out,
+    );
     Ok(out)
 }
 
@@ -362,28 +387,30 @@ impl UiaHelperClient {
             super::uia_helper_protocol::HELPER_ARG
         );
         let exe_wide = to_wide(&exe.display().to_string());
-        let desktop_wide = to_wide(&format!("WinSta0\\{desktop_name}"));
-        // SAFETY: pipe creation with default security; the inherit flags are
-        // set on exactly the child ends below.
+        let desktop_wide = to_wide(&desktop_target_path(desktop_name));
         // Pipe 1: the child reads its stdin end (inheritable); pipe 2: the
         // child writes its stdout end (inheritable). The parent keeps the
-        // opposite ends — converted to owned Files immediately so ANY
-        // failure path below drops them (a raw HANDLE in a local would
-        // leak; the child ends ride the guard).
+        // opposite ends — converted to owned Files IMMEDIATELY, and each
+        // child end is registered in the guard AS ITS PIPE IS CREATED, so
+        // ANY failure after the first pipe (including the second pipe's own
+        // creation failing) closes exactly the ends made so far — the r4
+        // leak window between the two pipe creations is gone (a raw HANDLE
+        // in a bare local would leak on that path).
+        let mut child_ends = ChildEndsGuard::default();
         let (child_stdin_read, parent_stdin_write) =
             unsafe { make_inheritable_pipe(true) }.map_err(HelperTransportError::Spawn)?;
+        let stdin = handle_to_file(parent_stdin_write);
+        child_ends.push(child_stdin_read);
         let (parent_stdout_read, child_stdout_write) =
             unsafe { make_inheritable_pipe(false) }.map_err(HelperTransportError::Spawn)?;
-        let stdin = handle_to_file(parent_stdin_write);
         let read_file = handle_to_file(parent_stdout_read);
+        child_ends.push(child_stdout_write);
         // The child ends stay open across the launch: the guard closes them
-        // when the launch FAILS (all four pipe ends would otherwise leak on
-        // exactly the paths the launcher anticipates — packaged/job-refused
-        // spawns, CreateProcessW failures), and is dropped explicitly after
-        // a successful launch so EOF reaches the helper when the client
-        // drops (the helper sees EOF only when every write-end duplicate is
-        // gone).
-        let child_ends = child_ends_guard(child_stdin_read, child_stdout_write);
+        // when the launch FAILS (all four pipe ends close on exactly the
+        // paths the launcher anticipates — packaged/job-refused spawns,
+        // CreateProcessW failures), and is dropped explicitly after a
+        // successful launch so EOF reaches the helper when the client drops
+        // (the helper sees EOF only when every write-end duplicate is gone).
         // SAFETY: contained suspended launch on the hidden desktop with the
         // std-handle triple (stderr is left null: a Rust panic message in
         // the helper would otherwise ride the NDJSON stream and corrupt the
@@ -584,8 +611,8 @@ impl Drop for UiaHelperClient {
         // Close the write end FIRST: stdin EOF is the helper's clean-exit
         // signal. The reader thread detaches (it exits on the broken pipe
         // the same way the capture thread does) — bounded cost, no join.
-        self.reader = None;
         drop(self.stdin.take());
+        self.reader = None;
     }
 }
 
@@ -602,23 +629,6 @@ fn wire_to_info(wire: WireElement) -> ElementInfo {
         secure: wire.secure,
     }
 }
-
-/// The shared budget rule (kept here so the parent translates options once;
-/// the helper trusts the values it receives).
-fn tree_budget(opts: &UiTreeOptions) -> (u32, u32) {
-    (
-        opts.max_depth
-            .unwrap_or(DEFAULT_TREE_MAX_DEPTH)
-            .min(MAX_TREE_DEPTH),
-        opts.max_nodes
-            .unwrap_or(DEFAULT_TREE_MAX_NODES)
-            .min(MAX_TREE_NODES),
-    )
-}
-
-use super::helpers::{
-    DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES, MAX_TREE_DEPTH, MAX_TREE_NODES,
-};
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -658,17 +668,51 @@ fn handle_to_file(handle: HANDLE) -> std::fs::File {
     unsafe { std::fs::File::from_raw_handle(handle.0 as _) }
 }
 
-/// Mark BOTH child ends inheritable and return a guard whose drop closes the
-/// parent's duplicates of them after CreateProcessW ran.
-fn child_ends_guard(child_stdin_read: HANDLE, child_stdout_write: HANDLE) -> impl Drop {
-    struct Ends([HANDLE; 2]);
-    impl Drop for Ends {
-        fn drop(&mut self) {
-            for handle in self.0 {
-                // SAFETY: close of our own pipe-end duplicates.
-                let _ = unsafe { CloseHandle(handle) };
-            }
+/// The parent's duplicates of the child pipe ends, closed on drop. Ends are
+/// pushed as each pipe is created (r4: closing the window where a second
+/// pipe's creation failure would leak the first pipe's ends), so any
+/// failure after the first pipe closes exactly the ends made so far. After
+/// a SUCCESSFUL launch the caller drops the guard deliberately: closing the
+/// parent's duplicates is what lets stdin EOF reach the helper when the
+/// client drops.
+#[derive(Default)]
+struct ChildEndsGuard(Vec<HANDLE>);
+
+impl ChildEndsGuard {
+    fn push(&mut self, handle: HANDLE) {
+        self.0.push(handle);
+    }
+}
+
+impl Drop for ChildEndsGuard {
+    fn drop(&mut self) {
+        for handle in self.0.drain(..) {
+            // SAFETY: close of our own pipe-end duplicates.
+            let _ = unsafe { CloseHandle(handle) };
         }
     }
-    Ends([child_stdin_read, child_stdout_write])
+}
+
+#[cfg(test)]
+mod tests {
+    /// The helper's coordinate contract rides on matching the parent's DPI
+    /// awareness BEFORE any query runs: a revert that drops the call makes
+    /// element_at_point points and tree rects DPI-virtualized (unaware
+    /// process) while the parent's click coordinates stay physical —
+    /// silently wrong answers on every display scaled ≠ 100% (r4 M2).
+    /// Source-counted: no CI seam can run a hidden desktop, and DPI state
+    /// has no observable test seam; the Windows CI leg type-checks the call
+    /// and the real-machine retest list covers scaled displays.
+    #[test]
+    fn helper_dpi_awareness_stays_wired() {
+        let src = include_str!("uia_helper.rs");
+        let production = src.split("mod tests {").next().unwrap_or("");
+        assert_eq!(
+            production.matches("become_dpi_aware_for_helper()").count(),
+            2,
+            "definition + the first call in the loop: deleting the call \
+             desyncs the helper's coordinate space from the parent's on \
+             scaled displays"
+        );
+    }
 }
