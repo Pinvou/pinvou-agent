@@ -22,33 +22,32 @@
 //! focus via `GetGUIThreadInfo` (desktop-relative) and maps that HWND.
 //!
 //! Lifecycle: the parent lazily spawns the helper on the first UIA query
-//! (with a respawn cooldown after any transport failure), degrades to the
+//! (with a respawn cooldown after any TRANSPORT failure), degrades to the
 //! phase-2 window-class walk whenever the helper is unavailable, and closes
 //! the write pipe on drop — the helper exits on stdin EOF, with the
 //! kill-on-close job as the backstop. The helper is session INFRASTRUCTURE
 //! (like the shell): it is not in the wind-down list, so Stop/revoke leaves
-//! it alive for a re-granted session.
+//! it alive for a re-granted session. A healthy helper's SOFT verdict (an
+//! honest "cannot answer" — e.g. nothing holds focus) is the helper
+//! answering normally: it surfaces as the query's error but NEVER tears the
+//! client down ([`UiaHelperOutcome`]).
 
-// The helper's tree footer serializes with `writeln!` into a `String` —
-// the trait import the physical stack's writer carries (this file compiles
-// only on Windows, where no Linux gate would catch the missing import).
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::io::FromRawHandle;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows::Win32::Foundation::{
     CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, HWND, SetHandleInformation,
 };
 use windows::Win32::System::Pipes::CreatePipe;
-use windows::Win32::System::Threading::STARTF_USESTDHANDLES;
 use windows::Win32::UI::WindowsAndMessaging::{
     GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
 };
 
-use super::super::super::types::{ComputerUseError, ElementInfo, UiTreeOptions};
+use super::super::types::{ComputerUseError, ElementInfo, UiTreeOptions};
 use super::uia_helper_protocol::{Op, READY_LINE, Request, Response, WireElement};
 use super::virtual_display::windows_virtual::{
     TREE_TOP_LEVEL_CAP, deepest_window_at, is_shell_window_class, launch_suspended_in_job,
@@ -60,18 +59,19 @@ use super::windows::{
 use uiautomation::UIAutomation;
 
 /// How long the parent waits for the helper's ready line (a fresh process
-/// plus `UIAutomation::new_direct` COM init — sub-second in practice, with
-/// a wide margin for a cold, busy machine).
+/// plus `UIAutomation::new` COM initialization — sub-second in practice,
+/// with a wide margin for a cold, busy machine).
 const HELPER_READY_TIMEOUT_MS: u64 = 10_000;
-/// Per-request budget. The tree request's real bound is the node budget
-/// (each node is a bounded COM fetch inside the helper); this timeout only
-/// catches a wedged helper. Point/focus are single-element reads.
-const HELPER_TREE_TIMEOUT_MS: u64 = 20_000;
+/// Per-request tree budget. The tree request's real bound is the node
+/// budget scaled by the per-node COM fetch cost (see the timeout
+/// composition in [`UiaHelperClient::tree`]); a flat timeout would strand
+/// escalated-budget queries in a timeout/cooldown loop where only the
+/// degraded answer ever lands. Point/focus are single-element reads.
+const HELPER_TREE_TIMEOUT_BASE_MS: u64 = 20_000;
+/// Per-node allowance on top of the base tree timeout (a bounded
+/// cross-process UIA fetch is 5-20 ms on a busy desktop).
+const HELPER_TREE_TIMEOUT_PER_NODE_MS: u64 = 20;
 const HELPER_ELEMENT_TIMEOUT_MS: u64 = 5_000;
-/// Minimum spacing between spawn ATTEMPTS after a failure: a broken
-/// environment (helper exe missing, pipe creation refused) must not turn
-/// every query into a fresh process storm.
-const HELPER_RESPAWN_COOLDOWN_MS: u64 = 5_000;
 /// The helper's argv is built from `current_exe` only (no user input), and
 /// the session job (kill-on-close) bounds its lifetime.
 const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
@@ -86,8 +86,12 @@ const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
 pub(crate) fn run_helper_loop() {
     // COM + UIA client init happens on the helper's main thread, which the
     // OS placed on the hidden desktop via lpDesktop — every desktop-relative
-    // query below resolves there.
-    let uia = match UIAutomation::new_direct() {
+    // query below resolves there. `new` (NOT `new_direct`) is required here:
+    // this fresh process has never initialized COM, and `new_direct` only
+    // CoCreateInstance's — it would fail CO_E_NOTINITIALIZED (the crate
+    // documents `new` as the initializing entry; the in-process physical
+    // stack relies on the same contract).
+    let uia = match UIAutomation::new() {
         Ok(uia) => uia,
         Err(error) => {
             // The parent's ready wait fails and it degrades; still emit a
@@ -309,14 +313,27 @@ fn emit_line_to(stdout: &mut impl Write, line: &str) -> std::io::Result<()> {
 // ── parent-side client (runs on the backend's attached worker) ──────────────
 
 /// Transport-shaped failure: the helper could not be talked to at all. The
-/// caller drops the client and degrades; a SOFT error (`ok: false`) is NOT
-/// this — that is the helper answering normally.
+/// caller drops the client and degrades; a SOFT verdict (`ok: false`) is
+/// NOT this — that is the helper answering normally, carried as
+/// [`UiaHelperOutcome::Soft`] so the type system keeps the two apart.
 #[derive(Debug)]
 pub(crate) enum HelperTransportError {
     Spawn(ComputerUseError),
     Timeout,
     BrokenPipe,
     Unparsable(String),
+}
+
+/// One op's outcome from a HEALTHY helper. `Ok` carries the answer; `Soft`
+/// carries the helper's honest "cannot answer" verdict (e.g. nothing on the
+/// hidden desktop holds focus — the DEFAULT state of a fresh desktop, not a
+/// fault). Only [`HelperTransportError`] kills the client: a soft verdict
+/// that dropped the helper would respawn a perfectly good process on every
+/// cooldown lapse (and the focus verdict rides the keystroke path).
+#[derive(Debug)]
+pub(crate) enum UiaHelperOutcome<T> {
+    Ok(T),
+    Soft(String),
 }
 
 pub(crate) struct UiaHelperClient {
@@ -352,30 +369,45 @@ impl UiaHelperClient {
         // set on exactly the child ends below.
         // Pipe 1: the child reads its stdin end (inheritable); pipe 2: the
         // child writes its stdout end (inheritable). The parent keeps the
-        // opposite ends.
+        // opposite ends — converted to owned Files immediately so ANY
+        // failure path below drops them (a raw HANDLE in a local would
+        // leak; the child ends ride the guard).
         let (child_stdin_read, parent_stdin_write) =
             unsafe { make_inheritable_pipe(true) }.map_err(HelperTransportError::Spawn)?;
         let (parent_stdout_read, child_stdout_write) =
             unsafe { make_inheritable_pipe(false) }.map_err(HelperTransportError::Spawn)?;
+        let stdin = handle_to_file(parent_stdin_write);
+        let read_file = handle_to_file(parent_stdout_read);
+        // The child ends stay open across the launch: the guard closes them
+        // when the launch FAILS (all four pipe ends would otherwise leak on
+        // exactly the paths the launcher anticipates — packaged/job-refused
+        // spawns, CreateProcessW failures), and is dropped explicitly after
+        // a successful launch so EOF reaches the helper when the client
+        // drops (the helper sees EOF only when every write-end duplicate is
+        // gone).
+        let child_ends = child_ends_guard(child_stdin_read, child_stdout_write);
         // SAFETY: contained suspended launch on the hidden desktop with the
-        // std-handle triple; the launcher closes/frees nothing of ours.
-        let (_pid, _process) = unsafe {
+        // std-handle triple (stderr is left null: a Rust panic message in
+        // the helper would otherwise ride the NDJSON stream and corrupt the
+        // framing — losing the panic text is the better trade, and the
+        // parent logs the degrade reason it does see).
+        let (_pid, process) = unsafe {
             launch_suspended_in_job(
                 desktop_wide,
                 Some(&exe_wide),
                 &command_line,
                 job,
-                Some([child_stdin_read, child_stdout_write, child_stdout_write]),
+                Some([child_stdin_read, child_stdout_write, HANDLE::default()]),
             )
         }
-        .map_err(|e| HelperTransportError::Spawn(e))?;
-        // Our copies of the CHILD's ends must close now: the helper sees EOF
-        // only when every write-end duplicate is gone. From here the parent
-        // holds `parent_stdin_write` (write) and `parent_stdout_read` (read).
-        drop(child_ends_guard(child_stdin_read, child_stdout_write));
+        .map_err(HelperTransportError::Spawn)?;
+        // The helper's lifecycle is governed by its pipes (EOF exit) and the
+        // session's kill-on-close job; this spawn handle is bookkeeping we
+        // never consult — close it instead of leaking one HANDLE per spawn.
+        // SAFETY: close of the launcher's returned process handle.
+        let _ = unsafe { CloseHandle(process) };
+        drop(child_ends);
 
-        let stdin = handle_to_file(parent_stdin_write);
-        let read_file = handle_to_file(parent_stdout_read);
         let (tx, rx) = channel::<String>();
         let reader_thread = std::thread::Builder::new()
             .name("cu-uia-helper-reader".to_string())
@@ -409,24 +441,16 @@ impl UiaHelperClient {
     }
 
     /// Bounded wait for the ready line (a stray early response line would
-    /// be protocol corruption — treated as failure).
+    /// be protocol corruption — treated as failure). Both arms terminate:
+    /// the ready line ends the wait, anything else is untrustworthy
+    /// framing — there is no third case to loop on.
     fn wait_ready(&mut self) -> Result<(), HelperTransportError> {
-        let deadline = Instant::now() + Duration::from_millis(HELPER_READY_TIMEOUT_MS);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(HelperTransportError::Timeout);
-            }
-            match self.take_line(remaining)? {
-                line if line == READY_LINE => return Ok(()),
-                // Anything else before ready is corruption: the helper we
-                // cannot trust framing from is a helper we cannot query.
-                other => {
-                    return Err(HelperTransportError::Unparsable(format!(
-                        "expected the ready line, got: {other}"
-                    )));
-                }
-            }
+        let remaining = Duration::from_millis(HELPER_READY_TIMEOUT_MS);
+        match self.take_line(remaining)? {
+            line if line == READY_LINE => Ok(()),
+            other => Err(HelperTransportError::Unparsable(format!(
+                "expected the ready line, got: {other}"
+            ))),
         }
     }
 
@@ -475,40 +499,41 @@ impl UiaHelperClient {
         Ok(response)
     }
 
-    pub(crate) fn tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+    /// The helper's UIA tree. The wait budget scales with the node budget
+    /// (each node is a bounded cross-process COM fetch — 5-20 ms on a busy
+    /// desktop — so a max-budget walk can legitimately run tens of
+    /// seconds; the base only has to cover spawn-adjacent latency).
+    pub(crate) fn tree(
+        &mut self,
+        opts: &UiTreeOptions,
+    ) -> Result<UiaHelperOutcome<String>, HelperTransportError> {
         let (max_depth, max_nodes) = tree_budget(opts);
+        let timeout = Duration::from_millis(
+            HELPER_TREE_TIMEOUT_BASE_MS + u64::from(max_nodes) * HELPER_TREE_TIMEOUT_PER_NODE_MS,
+        );
         match self.exchange(
             Op::Tree {
                 max_depth,
                 max_nodes,
             },
-            Duration::from_millis(HELPER_TREE_TIMEOUT_MS),
+            timeout,
         ) {
             Ok(Response {
                 ok: true,
                 tree: Some(tree),
                 ..
-            }) => Ok(tree),
+            }) => Ok(UiaHelperOutcome::Ok(tree)),
             Ok(Response {
                 ok: false,
                 error: Some(error),
                 ..
-            }) => Err(ComputerUseError::unavailable(format!(
-                "the UIA helper could not serve the tree: {error}"
-            ))),
-            Ok(_) => Err(ComputerUseError::failed(
-                "the UIA helper answered the tree request with a malformed response",
+            }) => Ok(UiaHelperOutcome::Soft(error)),
+            // A malformed frame is TRANSPORT corruption: the helper we
+            // cannot trust framing from is a helper we cannot query.
+            Ok(_) => Err(HelperTransportError::Unparsable(
+                "the tree response carried no tree and no error".to_string(),
             )),
-            Err(HelperTransportError::Spawn(error)) => Err(error),
-            Err(HelperTransportError::Timeout) => Err(ComputerUseError::unavailable(
-                "the UIA helper did not answer the tree request in time",
-            )),
-            Err(HelperTransportError::BrokenPipe) => Err(ComputerUseError::unavailable(
-                "the UIA helper's pipe closed before the tree request was served",
-            )),
-            Err(HelperTransportError::Unparsable(detail)) => Err(ComputerUseError::failed(
-                format!("the UIA helper's answer could not be trusted: {detail}"),
-            )),
+            Err(error) => Err(error),
         }
     }
 
@@ -516,60 +541,42 @@ impl UiaHelperClient {
         &mut self,
         x: i32,
         y: i32,
-    ) -> Result<Option<ElementInfo>, ComputerUseError> {
+    ) -> Result<UiaHelperOutcome<Option<ElementInfo>>, HelperTransportError> {
         match self.exchange(
             Op::AtPoint { x, y },
             Duration::from_millis(HELPER_ELEMENT_TIMEOUT_MS),
         ) {
             Ok(Response {
                 ok: true, element, ..
-            }) => Ok(element.map(wire_to_info)),
+            }) => Ok(UiaHelperOutcome::Ok(element.map(wire_to_info))),
             Ok(Response {
                 ok: false,
                 error: Some(error),
                 ..
-            }) => Err(ComputerUseError::unavailable(format!(
-                "the UIA helper could not serve element_at_point: {error}"
-            ))),
-            Ok(_) => Err(ComputerUseError::failed(
-                "the UIA helper answered the point request with a malformed response",
+            }) => Ok(UiaHelperOutcome::Soft(error)),
+            Ok(_) => Err(HelperTransportError::Unparsable(
+                "the point response carried no element and no error".to_string(),
             )),
-            Err(HelperTransportError::Spawn(error)) => Err(error),
-            Err(HelperTransportError::Timeout) => Err(ComputerUseError::unavailable(
-                "the UIA helper did not answer the point request in time",
-            )),
-            Err(HelperTransportError::BrokenPipe) => Err(ComputerUseError::unavailable(
-                "the UIA helper's pipe closed before the point request was served",
-            )),
-            Err(HelperTransportError::Unparsable(detail)) => Err(ComputerUseError::failed(
-                format!("the UIA helper's answer could not be trusted: {detail}"),
-            )),
+            Err(error) => Err(error),
         }
     }
 
-    pub(crate) fn focus(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+    pub(crate) fn focus(
+        &mut self,
+    ) -> Result<UiaHelperOutcome<Option<ElementInfo>>, HelperTransportError> {
         match self.exchange(Op::Focus, Duration::from_millis(HELPER_ELEMENT_TIMEOUT_MS)) {
             Ok(Response {
                 ok: true, element, ..
-            }) => Ok(element.map(wire_to_info)),
+            }) => Ok(UiaHelperOutcome::Ok(element.map(wire_to_info))),
             Ok(Response {
                 ok: false,
                 error: Some(error),
                 ..
-            }) => Err(ComputerUseError::unavailable(error)),
-            Ok(_) => Err(ComputerUseError::failed(
-                "the UIA helper answered the focus request with a malformed response",
+            }) => Ok(UiaHelperOutcome::Soft(error)),
+            Ok(_) => Err(HelperTransportError::Unparsable(
+                "the focus response carried no element and no error".to_string(),
             )),
-            Err(HelperTransportError::Spawn(error)) => Err(error),
-            Err(HelperTransportError::Timeout) => Err(ComputerUseError::unavailable(
-                "the UIA helper did not answer the focus request in time",
-            )),
-            Err(HelperTransportError::BrokenPipe) => Err(ComputerUseError::unavailable(
-                "the UIA helper's pipe closed before the focus request was served",
-            )),
-            Err(HelperTransportError::Unparsable(detail)) => Err(ComputerUseError::failed(
-                format!("the UIA helper's answer could not be trusted: {detail}"),
-            )),
+            Err(error) => Err(error),
         }
     }
 }
