@@ -1836,16 +1836,21 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // the timeout for no safety gain. Unknown target ⇒ lock, the
         // conservative direction.
         //
-        // The skip's safety rests on a coupling that must stay true: a
-        // pending confirmation can only be minted from a Blocked screening
-        // verdict, and every virtual stack answers the accessibility
-        // queries (`element_at_point` / `focused_element`) with an explicit
-        // unsupported — a virtual session can never mint a pending, so
-        // nothing mints outside the lock (grant dialogs stay serialized via
-        // `mark_grant_requested_serialized` regardless of target). If a
-        // virtual stack ever grows a real accessibility tree, restore the
-        // lock for at least the mint path — the dialog-under-injection
-        // window the physical lock exists to close would otherwise reopen.
+        // The skip's original safety rested on "a virtual stack can never
+        // mint": its accessibility queries answered explicit unsupported, so
+        // no Blocked screening verdict — and therefore no pending
+        // confirmation — could come from a virtual session. The
+        // hidden-desktop stack now answers those queries with a REAL tree
+        // (the UIA helper / window-class walk), so its Input actions CAN
+        // reach the mint. The injection itself still skips the lock
+        // (serializing independent isolated displays would cap process-wide
+        // input throughput and stall a second session up to the timeout for
+        // no safety gain — unknown target ⇒ lock, the conservative
+        // direction), and the mint path takes the lock itself (see the
+        // mint site below): the dialog-under-injection window the physical
+        // lock exists to close stays shut on every stack. Grant dialogs
+        // stay serialized via `mark_grant_requested_serialized` regardless
+        // of target.
         let target_is_virtual = parts.state.lock().display_target == Some(DisplayTarget::Virtual);
         let _input_guard = (action.class() == ActionClass::Input && !target_is_virtual)
             .then(|| parts.shared.lock_physical_input())
@@ -1997,6 +2002,27 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                             return Err(rejection.message());
                         }
+                        // The physical-input lock guards the
+                        // dialog-under-injection window: a pending consent
+                        // must not mint while a physical session is
+                        // mid-injection. A non-virtual Input action already
+                        // holds the dispatch guard (the lock is NOT
+                        // reentrant — never take it twice), and a virtual
+                        // target skipped it at dispatch, so the mint takes
+                        // it here: "restore the lock for the mint path", as
+                        // the dispatch-skip coupling doc prescribes now
+                        // that this stack mints pendings via its real
+                        // accessibility tree.
+                        let _mint_lock_guard = if target_is_virtual {
+                            Some(
+                                parts
+                                    .shared
+                                    .lock_physical_input()
+                                    .map_err(|rejection| rejection.message())?,
+                            )
+                        } else {
+                            None
+                        };
                         let mut blocked = request_confirmation(
                             &parts,
                             &action,

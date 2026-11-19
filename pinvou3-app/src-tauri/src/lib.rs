@@ -906,10 +906,10 @@ pub fn run() {
     // helper argv on a hidden desktop; the check must run before ANY app
     // initialization (window, tray, runtime) — the helper process is a pipe
     // server for one session and never builds the app. Windows-only: the
-    // hidden-desktop stack (and therefore the helper) exists there alone.
-    #[cfg(target_os = "windows")]
-    if features::computer_use::platform::uia_helper::is_helper_invocation() {
-        features::computer_use::platform::uia_helper::run_helper_loop();
+    // hidden-desktop stack (and therefore the helper) exists there alone,
+    // and the OS cfg lives inside the platform adapter (this call answers
+    // false, and the app boots, everywhere else).
+    if features::computer_use::run_as_uia_helper_if_invoked() {
         return;
     }
     // WebKitGTK reads its RemoteInspector endpoint while constructing the first

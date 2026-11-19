@@ -388,7 +388,7 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
 /// `TreeScope_Element | TreeScope_Children` as the raw UIA flag value. UIA's
 /// `TreeScope` is a bitmask; the `uiautomation` crate models it as a plain
 /// enum, so the combination the per-node descent needs has no variant.
-pub(crate) const TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3;
+const TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3;
 
 /// The tree range a cache request covers.
 ///
@@ -745,6 +745,17 @@ pub(super) struct WindowsComputerUseBackend {
     // for once-per-turn calls).
 }
 
+/// Free wrapper for the helper process (crate-internal): the identical cache
+/// request the physical backend builds, addressable without a backend value.
+/// A free function at module level — the UIA helper imports it by path
+/// (`platform::windows::build_tree_cache`), which an associated function
+/// could never satisfy.
+pub(crate) fn build_tree_cache(
+    uia: &UIAutomation,
+) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
+    WindowsComputerUseBackend::property_cache(uia, CacheScope::ElementAndChildren)
+}
+
 impl WindowsComputerUseBackend {
     fn new() -> Result<Self, ComputerUseError> {
         let enigo = Enigo::new(&Settings::default()).map_err(|err| {
@@ -782,7 +793,7 @@ impl WindowsComputerUseBackend {
     /// per-node descent needs the element **and** its children; single-element reads need
     /// the element); scopes beyond `Element` apply the control-view filter, consistent with
     /// the UIA standard view.
-    pub(crate) fn property_cache(
+    fn property_cache(
         uia: &UIAutomation,
         scope: CacheScope,
     ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
@@ -873,14 +884,6 @@ impl WindowsComputerUseBackend {
             }
         }
         Ok(current)
-    }
-
-    /// Free wrapper for the helper process (crate-internal): the identical cache
-    /// request the physical backend builds, addressable without a backend value.
-    pub(crate) fn build_tree_cache(
-        uia: &UIAutomation,
-    ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
-        WindowsComputerUseBackend::property_cache(uia, CacheScope::ElementAndChildren)
     }
 
     /// Press all keys (rolling back those already pressed on error), pause, then release in reverse.

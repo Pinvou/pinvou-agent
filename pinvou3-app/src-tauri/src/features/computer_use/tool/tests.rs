@@ -6678,3 +6678,24 @@ async fn failed_action_drains_backend_warnings_off_the_next_receipt() {
         "a successful action's advisory must render on its receipt: {text}"
     );
 }
+
+/// The physical-input lock's dispatch skip (virtual targets) is safe only
+/// with the mint path re-locking — the coupling doc in `run` prescribes
+/// exactly that now the hidden-desktop stack answers the accessibility
+/// queries with a real tree (its Input actions CAN mint a pending). The
+/// mint path has no runtime seam on the CI legs (no virtual stack, no
+/// physical co-session), so the wiring is pinned at source level.
+#[test]
+fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/features/computer_use/tool.rs"
+    ))
+    .expect("tool.rs readable");
+    assert!(
+        src.contains("let _mint_lock_guard = if target_is_virtual {"),
+        "the mint site must take the physical-input lock for virtual targets \
+         — the dialog-under-injection window the lock exists to close reopens \
+         if a virtual session can mint outside it"
+    );
+}

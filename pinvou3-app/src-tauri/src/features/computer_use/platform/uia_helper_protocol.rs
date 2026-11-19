@@ -63,10 +63,13 @@ pub enum Op {
     Focus,
 }
 
-/// One response line. `ok: false` is a SOFT verdict (the helper ran and
-/// answers why): the parent treats transport failures (timeout, broken
-/// pipe, bad framing) and this verdict identically — drop the helper and
-/// degrade.
+/// One response line. `ok: false` is a SOFT verdict (the helper ran, and
+/// `error` answers why — e.g. "nothing holds focus", the default state of a
+/// fresh hidden desktop): the parent surfaces it as that query's honest
+/// error and KEEPS the helper, because the helper is answering normally.
+/// Only TRANSPORT failures (timeout, broken pipe, bad framing) mean the
+/// helper is presumed dead — those drop the client, arm the respawn
+/// cooldown, and degrade to the window-class walk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Response {
     pub id: u64,

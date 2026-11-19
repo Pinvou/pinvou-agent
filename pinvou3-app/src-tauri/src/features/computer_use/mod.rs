@@ -71,6 +71,10 @@ pub(crate) use self::platform::VirtualAvailabilitySnapshot;
 pub(crate) use self::platform::{
     backend_supported, permission_status, request_permissions, set_main_thread_app_handle,
 };
+// The UIA helper dispatch: `run` re-spawns this executable AS the helper
+// BEFORE any app initialization; the platform adapter answers false where
+// no hidden-desktop stack exists (the OS cfg stays inside the adapter).
+pub(crate) use self::platform::run_as_uia_helper_if_invoked;
 // Crash-orphan sweep for the virtual display stacks (lib.rs calls it at
 // setup AND in the exit/restart harvest — idempotent; a no-op on platforms
 // without a persistent-runtime target).
