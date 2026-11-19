@@ -106,18 +106,22 @@ pub(crate) async fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), Stri
 /// arbitrary window as the recording window and hijack the global Alt gesture.
 /// The returned bool tells whether the claim/release landed; a failed claim
 /// fails the recording start before any microphone is opened.
+///
+/// The handle is injected as a `Webview`, not a `WebviewWindow`: the main
+/// window hosts browser-tab child WebViews (agent-browser-*), and Tauri's
+/// single-WebView `WebviewWindow` injection fails once any tab exists.
 #[tauri::command]
 pub(crate) fn set_voice_shortcut_recording(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
     label: Option<String>,
     token: String,
 ) -> Result<bool, String> {
     if let Some(label) = &label {
-        if label != window.label() {
+        if label != webview.label() {
             return Err("voice shortcut recording label must match the calling window".to_string());
         }
     }
-    crate::features::voice_shortcut::set_recording_owner(window.label(), &token, label.is_some())
+    crate::features::voice_shortcut::set_recording_owner(webview.label(), &token, label.is_some())
 }
 
 impl VoiceCommandError {
@@ -1042,9 +1046,12 @@ use voice_asr_domain::*;
 
 /// 麦克风权限重置命令：feature 侧为裸 fn（原 microphone_permission 转发壳已扁平化），
 /// 不适用 domain 模块的 passthrough 宏，直接薄转发。
+/// The handle is injected as a `Webview`, not a `WebviewWindow`: the main
+/// window hosts browser-tab child WebViews (agent-browser-*), and Tauri's
+/// single-WebView `WebviewWindow` injection fails once any tab exists.
 #[tauri::command]
-pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
-    crate::features::voice::reset_microphone_permission(window).await
+pub async fn reset_microphone_permission(webview: tauri::Webview) -> Result<bool, String> {
+    crate::features::voice::reset_microphone_permission(webview).await
 }
 async_command_passthrough!(voice_asr_domain, voice_asr_status() -> VoiceAsrStatus);
 async_command_passthrough!(

@@ -72,6 +72,6 @@ pub fn native_recognition_source() -> &'static str {
     "unsupported"
 }
 
-pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {
+pub async fn reset_microphone_permission(_webview: tauri::Webview) -> Result<bool, String> {
     Ok(false)
 }
