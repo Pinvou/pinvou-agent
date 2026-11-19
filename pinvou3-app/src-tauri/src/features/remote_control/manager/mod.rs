@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter};
 use super::platform;
 use super::protocol::{
     PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessRevocationDisposition,
-    WebAccessStopOutcome, WebAccessStatus, WebAccessStatusKind,
+    WebAccessStatus, WebAccessStatusKind, WebAccessStopOutcome,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use crate::platform::paths;
@@ -1224,8 +1224,7 @@ impl RemoteControlManager {
             match queue_pending_revocation(previous) {
                 Ok(()) => {
                     self.sync_pending_revocation_backlog(previous);
-                    revocation_disposition =
-                        Some(WebAccessRevocationDisposition::Queued);
+                    revocation_disposition = Some(WebAccessRevocationDisposition::Queued);
                 }
                 // Round-15 review: a full queue no longer wedges rotation — rotation is a
                 // recovery path, and from the 33th relay-less rotation onward the queue is
@@ -1279,9 +1278,12 @@ impl RemoteControlManager {
         }
         self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
-        let mut info = pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
-            "Web access endpoint failed to rotate".to_string()
-        })?);
+        let mut info = pairing_info(
+            inner
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| "Web access endpoint failed to rotate".to_string())?,
+        );
         info.revocation_disposition = revocation_disposition;
         Ok(info)
     }
@@ -1306,33 +1308,20 @@ impl RemoteControlManager {
         // persist the config. If web-access.json corrupts while the endpoint is alive, a
         // strict-read failure must not wedge the revocation (same rationale as
         // stop_current's tolerant read: stop/revocation are themselves recovery means),
-        // or one-shot grants would stay redeemable for the rest of their TTL. On a
-        // read/validation failure the durable side never changed and start/enable are
-        // fail-closed on a corrupt file, so there is no resurrection surface and the
-        // error is presented on the revoked side; persist failure is a different matter —
-        // the disk still latches authorization, and if memory rested on the revoked side,
-        // the next start/enable would rebuild authorization from disk with no consent
-        // gesture (Round-15 review MA1). A persist failure must therefore re-latch the
-        // in-memory flag to the disk side before returning: both state sides consistent,
-        // the UI showing the real authorization state, and the error saying plainly that
-        // the revocation did not take effect and should be retried.
-        // P2 (retryable durable revocation, refining the read-failure side of the
-        // paragraph above): a load failure does not prove the durable authorization was
-        // cleared — publishing a cleared flag here would let the settings page drop the
-        // Revoke action while a later start/restart could restore authorization from a
-        // recovered file, losing the revocation intent. Capture the durable mirror of the
-        // flag before invalidating (while memory and disk still agree) so a failed load
-        // can re-latch memory to it; the immediate invalidation of already-issued grants
-        // is kept either way.
-        let durable_flag = {
+        // or one-shot grants would stay redeemable for the rest of their TTL.
+        // P2 (immediate invalidation of old authorization): no failure path below (load,
+        // validation, persist) rolls the in-memory revocation back — the flag is the
+        // user's consent, and re-latching it to true would let the live process accept
+        // fresh grant minting immediately, so the old authorization would never have
+        // been invalidated. (This reverses the Round-15 review MA1 persist-failure
+        // re-latch: the durable authorization file may survive until a retry succeeds —
+        // a later start/enable could resurrect it — and that survivorship is disclosed
+        // in each arm's error text instead of papered over with a silent consent
+        // re-latch.)
+        {
             let mut inner = self.inner.lock();
-            let durable_flag = inner
-                .endpoint
-                .as_ref()
-                .map(|endpoint| endpoint.config.allow_host_workspace);
             revoke_host_workspace_state(&mut inner);
-            durable_flag
-        };
+        }
         // Round-12 review P3: revoking something never configured (before enable) is an
         // idempotent no-op — with no config, neither the flag nor grants can exist, and
         // the invalidation above was already a no-op. Returning Err previously let the
@@ -1351,26 +1340,17 @@ impl RemoteControlManager {
         let mut config = match load_config() {
             Ok(Some(config)) => config,
             Err(error) => {
-                // P2: the load failed, so the durable side is unknown — re-latch the
-                // in-memory flag to the pre-invalidation durable mirror BEFORE propagating
-                // the error, keeping the Revoke action available and revocation retryable
-                // (the immediate invalidation of issued grants is kept); a transiently
-                // unreadable config that recovers later is revoked again by the retry. The
-                // guard is taken and dropped inside this standalone block, so no inner lock
-                // spans emit_status below (the exact lock-span pin stays satisfied).
-                if durable_flag == Some(true) {
-                    let mut inner = self.inner.lock();
-                    if let Some(endpoint) = inner.endpoint.as_mut() {
-                        endpoint.config.allow_host_workspace = true;
-                    }
-                }
+                // P2: a load failure does not roll back the in-memory revocation either —
+                // the flag stays cleared and the error propagates; a transiently
+                // unreadable config that recovers later is revoked again by the retry.
                 // Round-20 review MINOR: the invalidation above really did clear the grants
-                // (a real state change even with the flag re-latched) — same rationale as
-                // the config-absent arm's Round-19 NIT below, so emit one status refresh
-                // before returning the error, keeping the UI from staying stuck until the
-                // next unrelated status push. The UI shows the re-latched (authorized)
-                // memory state, and the error says plainly that the revocation did not
-                // take effect and should be retried.
+                // (a real state change) — same rationale as the config-absent arm's
+                // Round-19 NIT below, so emit one status refresh before returning the
+                // error, keeping the UI from staying stuck until the next unrelated
+                // status push. The UI shows the authoritative (revoked) memory state, and
+                // the error says plainly that the revocation did not take effect and
+                // should be retried. No inner guard is held here (the invalidation block
+                // above is closed), so the exact lock-span pin is not triggered.
                 self.emit_status();
                 return Err(error);
             }
@@ -1398,23 +1378,15 @@ impl RemoteControlManager {
         validate_config(&config).map_err(|error| {
             // Round-22 review MINOR: the validation-failure arm follows the same
             // discipline as the persist-failure arm — the durable side is untouched while
-            // memory has already had its flag cleared by the invalidation block above; if
-            // memory rested on the revoked side, a later benign start/enable would rebuild
-            // authorization from disk with no consent gesture (the same resurrection
-            // surface as Round-15 review MA1). When the disk still latches authorization,
-            // re-latch the flag, refresh status, and say plainly the revocation did not
-            // take effect; when the disk was already unauthorized the revocation
-            // substantively succeeded — just refresh status and report the corrupt config.
-            // No inner guard is held here, so the exact lock-span pin is not triggered.
+            // memory has already had its flag cleared by the invalidation block above.
+            // P2 (immediate invalidation): no re-latch here either — the flag is the
+            // user's consent and re-latching it would let the live process mint fresh
+            // grants immediately; the surviving durable authorization (when the disk
+            // latch is still enabled) is disclosed in the error text instead, and the
+            // authoritative (revoked) memory state is published unconditionally so the
+            // UI never holds a stale authorized row. No inner guard is held here, so
+            // the exact lock-span pin is not triggered.
             let remains_enabled = config.allow_host_workspace;
-            if remains_enabled {
-                {
-                    let mut inner = self.inner.lock();
-                    if let Some(endpoint) = inner.endpoint.as_mut() {
-                        endpoint.config.allow_host_workspace = true;
-                    }
-                }
-            }
             self.emit_status();
             // The copy deliberately does not reuse the persist-failure arm's error
             // phrase — that phrase is the terminator needle of the existing behavioral
@@ -1449,36 +1421,23 @@ impl RemoteControlManager {
             // comments.
             if config_path().exists() {
                 if let Err(error) = persist_config(&config) {
-                    // P2 (reconciliation of the durable outcome on a persist failure):
-                    // persist failure = the original file was not replaced, so the disk
-                    // still latches whatever it latched before — while the in-memory flag
-                    // was already cleared above. Propagating without handling would leave
-                    // memory "unauthorized" against a durable "authorized" side: later
-                    // status would hide the Revoke action, and a later start/resume would
-                    // resurrect the surviving durable authorization. Re-latch memory to
-                    // the pre-invalidation durable mirror (same handling as the read
-                    // failure arm; gated on the mirror so an idempotent re-revocation of
-                    // an already-revoked config does not fabricate consent), publish the
-                    // authoritative status, and propagate with an error that says plainly
-                    // the durable revocation did not take effect.
+                    // P2 (immediate invalidation on a persist failure): persist failure =
+                    // the original file was not replaced, so the disk still latches
+                    // authorization while the in-memory flag was already cleared above.
+                    // Do NOT roll back the in-memory revocation: re-latching to true
+                    // would let the live process accept fresh grant minting immediately
+                    // (the flag is the user's consent), so the old authorization would
+                    // never have been invalidated. Publish the authoritative (revoked)
+                    // state and propagate a contextual error; the durable authorization
+                    // file may survive until a retry succeeds (a restart/reopen would
+                    // resurrect it) — the error text says plainly to retry the revocation
+                    // once the storage error clears.
                     eprintln!(
                         "[web-access] host-workspace revocation failed to persist, durable state left unchanged: {error}"
                     );
-                    if durable_flag == Some(true) {
-                        {
-                            let mut inner = self.inner.lock();
-                            if let Some(endpoint) = inner.endpoint.as_mut() {
-                                endpoint.config.allow_host_workspace = true;
-                            }
-                        }
-                        self.emit_status();
-                        return Err(format!(
-                            "host-workspace revocation could not be persisted; folder access remains enabled: {error}"
-                        ));
-                    }
                     self.emit_status();
                     return Err(format!(
-                        "host-workspace revocation could not be persisted; the durable side was already revoked: {error}"
+                        "durable revocation did not take effect (workspace authorization kept on disk; retry revoke once the storage error clears): {error}"
                     ));
                 }
             }
@@ -5746,8 +5705,7 @@ mod tests {
             .expect("filling the queue exactly to capacity must succeed");
         }
         let overflow = test_pending_revocation("ep_restart_deferred");
-        let refused =
-            queue_pending_revocation_at(&path, overflow.clone()).is_err();
+        let refused = queue_pending_revocation_at(&path, overflow.clone()).is_err();
         assert!(refused, "the deferred endpoint must be refused at capacity");
         // Restart: reload the ledger from disk the way replay does (strict
         // read — the filled ledger is valid on disk).
@@ -7132,14 +7090,14 @@ mod tests {
     /// revocation to the pre-fix behavior "memory-only change; minted grants stay redeemable
     /// for their 30-minute TTL" while the whole suite stays green (mutant executed: all 20
     /// revoke-matching tests green).
-    /// Wiring pin (P2, retryable durable revocation): a load failure must not publish a
-    /// cleared flag — the durable mirror is captured before invalidation and a failed load
-    /// re-latches memory to it BEFORE the error propagates, otherwise the settings page
-    /// drops the Revoke action while a later start/restart restores the durable
-    /// authorization and the revocation intent is lost. Deleting either step or reordering
-    /// them turns the suite red.
+    /// Wiring pin (P2, immediate invalidation of old authorization): no failure path may
+    /// re-latch the consent flag to true — the flag is the user's consent, and re-latching
+    /// it lets the live process accept fresh grant minting immediately, so the old
+    /// authorization was never invalidated. Invalidation-first (grants cleared), the
+    /// persist-failure arm publishing the authoritative (revoked) state, and the contextual
+    /// error must all be present; any failure path showing an `= true` rollback turns red.
     #[test]
-    fn revoke_host_workspace_wires_grant_invalidation_and_latches_the_flag() {
+    fn revoke_host_workspace_keeps_revocation_in_force_on_persistence_failures() {
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace(")
@@ -7148,53 +7106,30 @@ mod tests {
         let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
         let body = comment_filtered(body);
         assert!(
-            body.contains("let durable_flag = {")
-                && body.find("let durable_flag = {").unwrap()
-                    < body
-                        .find("revoke_host_workspace_state(&mut inner);")
-                        .unwrap(),
-            "the durable-mirroring flag must be captured before the live invalidation"
+            body.contains("revoke_host_workspace_state(&mut inner);")
+                && body
+                    .find("revoke_host_workspace_state(&mut inner);")
+                    .unwrap()
+                    < body.find("let mut config = match load_config() {").unwrap(),
+            "revoke must invalidate already-minted workspace grants on the live state \
+             BEFORE any durable read/write"
         );
         assert!(
-            body.contains("if durable_flag == Some(true) {")
-                && body
-                    .find("if durable_flag == Some(true) {")
-                    .unwrap()
-                    < body.find("return Err(error);").unwrap(),
-            "a load failure must re-latch the durable flag BEFORE propagating the error"
+            !body.contains("allow_host_workspace = true"),
+            "no failure path may re-latch the consent flag: the flag is the user's \
+             authorization and re-latching it lets the live process mint fresh grants \
+             immediately, violating immediate revocation"
         );
-        // Round-32 review (regression sensitivity): the ordering checks above only pin
-        // the branch's existence and position — deleting the real re-latch assignment
-        // inside the branch keeps them all green. Oracle: the branch body between the
-        // re-latch gate and the error propagation must contain the real assignment to
-        // endpoint.config.allow_host_workspace (the match arms carry the gate and the
-        // propagation in source order: the Err arm re-latches, then returns).
-        {
-            let relatch_at = body.find("if durable_flag == Some(true) {").unwrap();
-            let branch = &body[relatch_at..body.find("return Err(error);").unwrap()];
-            assert!(
-                branch.contains("endpoint.config.allow_host_workspace = true"),
-                "the load-failure branch must actually restore the durable latch, \
-                 not just exist before the error propagation"
-            );
-        }
         assert!(
             body.contains("persist_config(&config)"),
             "revoke must latch the consent flag into the persisted config"
         );
         assert!(
-            body.contains("revoke_host_workspace_state(&mut inner);"),
-            "revoke must invalidate already-minted workspace grants on the live state"
-        );
-        assert!(
             body.contains("self.emit_status();"),
             "revoke must push the refreshed status so the modal reflects the revoked row"
         );
-        // Round-32 review (persist-failure reconciliation, translated): a persist failure
-        // must not propagate through a bare `?` — it must re-latch the durable truth,
-        // publish the authoritative status, and return a contextual error. The oracle
-        // below binds three things: the in-branch assignment, the emit, and the error
-        // copy.
+        // 复审 P2(落盘失败对账):persist 失败不得裸 `?` 直接传播——必须
+        // 发布权威状态、带语境错误返回(内存撤权保持生效,不回滚)。
         {
             let persist_at = body
                 .find("if let Err(error) = persist_config(&config)")
@@ -7204,33 +7139,28 @@ mod tests {
                 .find("}\n            }")
                 .unwrap_or(persist_branch.len())];
             assert!(
-                persist_branch.contains("endpoint.config.allow_host_workspace = true"),
-                "a persist failure must re-latch the durable truth: memory cleared \
-                 while the disk file survived would hide Revoke and let start/resume \
-                 revive the surviving authorization"
-            );
-            assert!(
                 persist_branch.contains("self.emit_status();"),
-                "a persist failure must publish the authoritative (still-authorized) \
+                "a persist failure must publish the authoritative (revoked) \
                  state before propagating"
             );
             assert!(
-                persist_branch.contains("host-workspace revocation could not be persisted"),
-                "the persist-failure error must say the revocation could not be \
-                 persisted instead of a bare propagation"
+                persist_branch.contains("durable revocation did not take effect"),
+                "the persist-failure error must say that durable revocation did not \
+                 take effect instead of a bare propagation"
             );
         }
     }
 
-    /// Wiring pin (Round-15 review MA1): a persist failure must re-latch the in-memory flag
-    /// to the disk side before returning. Reverting to `persist_config(&config)?`'s `?`
-    /// propagation (or deleting the re-latch assignment in the error arm) would leave the
-    /// revocation in the forked state "memory revoked / disk still authorized" — the next
-    /// start/enable rebuilds the authorization flag from disk with no consent gesture, while
-    /// the whole suite stays green (mutant executed: restoring the `?` propagation turned this
-    /// pin red with every other revoke pin green).
+    /// Wiring pin (P2, immediate invalidation — reverses the Round-15 review MA1 re-latch
+    /// contract): a persist failure must NOT re-latch the in-memory consent flag — the flag
+    /// is the user's consent, and re-latching it to the disk side would let the live process
+    /// accept fresh grant minting immediately, so the old authorization was never
+    /// invalidated. The arm must publish the authoritative (revoked) state, return a
+    /// contextual Err (no bare `?`), and say plainly that the durable revocation did not
+    /// take effect and that the revocation should be retried once the storage error clears
+    /// (the surviving durable file is a disclosed residual, not a rollback signal).
     #[test]
-    fn revoke_persist_failure_re_latches_memory_to_the_disk_side() {
+    fn revoke_persist_failure_keeps_memory_revoked_and_reports_the_durable_survivor() {
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace(")
@@ -7240,71 +7170,59 @@ mod tests {
         let body = comment_filtered(body);
         assert!(
             !body.contains("persist_config(&config)?"),
-            "revoke must not propagate a persist failure with `?` while the \
-             in-memory flag is already revoked: memory would stay revoked while \
-             the disk latch stays authorized, so the next benign start/enable \
-             resurrects folder consent without a gesture"
+            "revoke must not propagate a persist failure with `?`: a bare \
+             propagation would skip the authoritative status re-emit and the \
+             contextual error copy"
         );
         assert!(
             body.contains("if let Err(error) = persist_config(&config)"),
             "the persist failure must be handled inside revoke, not propagated"
         );
         assert!(
-            body.contains("folder access remains enabled"),
-            "the error must tell the user the revocation did not take effect"
+            !body.contains("folder access remains enabled"),
+            "the re-latch-era copy must stay gone: the arm no longer re-latches \
+             memory to the disk side, so the old rollback framing must not \
+             resurface as the failure copy"
         );
-        // Round-16 review (M1c): the failure arm's status re-emit had no pin — deleting just
-        // this emit_status kept the whole suite green (the B1 pin only requires some emit in
-        // the function, and the function tail already has one). Assert that the emit falls
-        // inside the failure-arm window (between the persist if-let and the error copy);
-        // deleting the in-arm emit turns red.
+        // Round-16 review (M1c) caliber: the failure arm's status re-emit must fall inside
+        // the failure-arm window (between the persist if-let and the error copy); deleting
+        // the in-arm emit turns red (the function tail already has an emit, so a
+        // function-level contains would stay green).
         let failure_arm_start = body
             .find("if let Err(error) = persist_config(&config)")
             .expect("the persist failure arm must exist");
         let failure_arm_end = body
-            .find("folder access remains enabled")
-            .expect("the actionable failure message must exist");
+            .find("durable revocation did not take effect")
+            .expect("the durable-survivor error copy must exist");
         let failure_arm = &body[failure_arm_start..failure_arm_end];
-        // Round-24 review MAJOR (mutant confirmed): the re-latch assertion was previously a
-        // function-level contains — round-22 added a byte-identical re-latch line inside the
-        // validate_config failure arm (inside the `Err(error) => {` window, outside this one),
-        // and that line satisfied the function-level assertion: deleting this arm's re-latch
-        // block (still compiling) kept this pin green (mutation executed this round, 1 passed /
-        // 0 failed). Now an arm-bounded window assertion — deleting this arm's re-latch alone
-        // turns red, and the validate arm's identical line can no longer backstop it.
+        // P2 reversal (Round-24 MAJOR caliber): the re-latch line inside THIS arm's window
+        // is exactly the contract violation the final review blocked on — an arm-bounded
+        // window assertion so the validate arm (or any future arm) cannot backstop it.
         assert!(
-            failure_arm.contains("endpoint.config.allow_host_workspace = true;"),
-            "the persist-failure arm itself must re-latch the in-memory flag \
-             to match the still-authorized disk state; the validate arm's \
-             identical re-latch line must not satisfy this window (a \
-             function-wide contains went blind when round-22 added it)"
+            !failure_arm.contains("allow_host_workspace = true"),
+            "the persist-failure arm must keep the in-memory revocation in force: \
+             re-latching the consent flag inside the arm would let the live \
+             process mint fresh grants immediately, violating immediate \
+             invalidation of the old authorization"
         );
         assert!(
             failure_arm.contains("self.emit_status();"),
-            "the failure arm must re-emit status so the UI shows the truthful \
-             still-authorized consent state instead of the optimistic revoked row"
+            "the failure arm must re-emit status so the UI shows the authoritative \
+             revoked row instead of a stale authorized one"
         );
-        // Round-20 review (S04): the copy assertion only proves the text exists, not that it
-        // is the returned Err — the "print the copy then allow success" mutant (misreporting a
-        // failed persist as success) kept all five assertions green. Pin that `return Err(`
-        // falls inside the failure-arm window (between the if-let and the copy; no
-        // statement-level return↔copy pairing — the error copy itself contains a semicolon,
-        // "persisted; folder", so a plain-text semicolon scan would false-red).
+        // Round-20 review (S04) caliber: the copy assertion only proves the text exists,
+        // not that it is the returned Err — pin that `return Err(` falls inside the
+        // failure-arm window (a log-and-continue mutation would misreport a failed
+        // persist as success).
         assert!(
             failure_arm.contains("return Err("),
-            "the actionable failure message must be returned as an Err from \
+            "the durable-survivor error message must be returned as an Err from \
              inside the persist-failure arm; a log-and-continue mutation \
              would misreport a failed persist as success"
         );
-        // Round-28 review MINOR-8a: the ordering had no pin — swapping the re-latch block and
-        // emit_status wholesale compiles and keeps every member assertion above green (mutant
-        // executed and confirmed), but the emitted status payload would carry the revoked flag
-        // while memory/disk are already re-latched, flashing a false unauthorized row in the
-        // UI. Pin the re-latch → emit → return order (the same caliber as the validate arm's
-        // relatch<emit ordering).
-        let relatch_at = failure_arm
-            .find("endpoint.config.allow_host_workspace = true;")
-            .expect("the re-latch line must exist");
+        // Round-28 review MINOR-8a caliber: pin the emit -> return order — the re-latch
+        // step of the old ordering is gone; emitting before returning keeps the published
+        // payload the authoritative revoked state.
         let emit_at = failure_arm
             .find("self.emit_status();")
             .expect("the failure-arm status re-emit must exist");
@@ -7312,11 +7230,9 @@ mod tests {
             .find("return Err(")
             .expect("the returned Err must exist");
         assert!(
-            relatch_at < emit_at && emit_at < return_at,
-            "order must be re-latch -> status re-emit -> returned Err: \
-             emitting before the re-latch publishes a still-revoked flag \
-             while memory and disk are already re-paired (order-swap \
-             mutation executed green before this tooth)"
+            emit_at < return_at,
+            "order must be status re-emit -> returned Err: the authoritative \
+             revoked state must be published before the error propagates"
         );
     }
 
@@ -7370,16 +7286,16 @@ mod tests {
         );
     }
 
-    /// Round-22 review MINOR source pin: the validate_config failure arm follows the same
-    /// discipline as the persist-failure arm — previously a bare `?` pass-through with no
-    /// status refresh, no in-memory re-latch, and error text never mentioning folder consent;
-    /// the UI stayed on the authorized row (the same family as the strict-load/missing-config
-    /// arms). Pin the arm opener (a bare `?` revert turns red), the re-latch needle (deletion
-    /// turns red), and the emit-before-constructing-the-error order (block deletion/order swap
-    /// turn red). Round-23 review adds the emit's unconditional position: the mutant moving it
-    /// inside the conditional re-latch block previously stayed green.
+    /// Round-22 review MINOR source pin (P2 reversal applied): the validate_config failure
+    /// arm must NOT re-latch the consent flag — the flag is the user's consent and
+    /// re-latching it would let the live process mint fresh grants immediately (the same
+    /// immediate-invalidation contract as the persist-failure arm). The arm must keep its
+    /// bare-`?`-rejection (handled at the arm), an unconditional status refresh, and error
+    /// copy that discloses the surviving durable consent when the disk latch is still
+    /// authorized. A bare `?` revert, deleting the emit, a conditional emit, or an `= true`
+    /// rollback all turn red.
     #[test]
-    fn revoke_validation_failure_re_latches_and_emits() {
+    fn revoke_validation_failure_emits_and_discloses_the_durable_survivor() {
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace(")
@@ -7393,55 +7309,32 @@ mod tests {
         let arm = &body[arm_start..];
         let arm_end = arm.find("})?;").expect("the map_err arm must close");
         let arm_body = &arm[..arm_end];
-        let relatch_pos = arm_body
-            .find("endpoint.config.allow_host_workspace = true;")
-            .expect("the validation failure arm must re-latch the in-memory                      consent flag to the disk side when the disk latch is                      still authorized (same resurrection face as the                      persist-failure arm)");
+        // P2 reversal (Round-24 MAJOR caliber): an `= true` rollback inside this arm's
+        // window is exactly the contract violation the final review blocked on.
+        assert!(
+            !arm_body.contains("allow_host_workspace = true"),
+            "the validation-failure arm must keep the in-memory revocation in \
+             force: re-latching the consent flag inside the arm would let the \
+             live process mint fresh grants immediately, violating immediate \
+             invalidation of the old authorization"
+        );
         let emit_pos = arm_body.find("self.emit_status();").expect(
             "the validation failure arm must refresh status before                      returning",
         );
-        assert!(
-            relatch_pos < emit_pos,
-            "the re-latch must precede the status refresh so the emitted              payload shows the truthful still-authorized state"
-        );
-        // Round-27 review m1: the re-latch's "inside the conditional" position had no pin —
-        // the mutant hoisting the re-latch out of the `if remains_enabled {` block (making it
-        // unconditional) compiled green and flipped the corrupt-config-but-disk-unauthorized
-        // shape into fail-open (memory re-latched to authorized while the disk flag is false,
-        // keeping in-memory host-folder listing alive until restart — the exact resurrection
-        // surface this pin family guards). Pin method: the re-latch must sit after the
-        // conditional opener, and the braces between opener and re-latch must be unbalanced
-        // (the conditional block still open) — hoisting/postponing mutants both mismatch here
-        // and turn red.
-        let if_pos = arm_body
-            .find("if remains_enabled {")
-            .expect("the conditional re-latch block must exist");
-        let before_relatch = &arm_body[if_pos..relatch_pos];
-        assert!(
-            relatch_pos > if_pos
-                && before_relatch.matches('{').count() > before_relatch.matches('}').count(),
-            "the re-latch must sit INSIDE the conditional remains_enabled \
-             block: it must only fire when the disk latch is still \
-             authorized; hoisting it out (unconditional re-latch) flips the \
-             invalid-config flag-false shape fail-open"
-        );
-        // Round-23 review MINOR: the emit's unconditional position had no pin — the mutant
-        // moving the emit inside the `if remains_enabled {` block stayed green, and the
-        // corrupt-config-but-disk-unauthorized shape would silently lose its status refresh
-        // (the persist-failure arm's existing same-shaped gap). The emit must sit outside the
-        // conditional re-latch block: the braces from the block opener to the emit must be
-        // balanced, and moving it into the block mismatches and turns red. (The slice is pure
-        // code today; the brace-counting caliber matches the exact lock-span pin — braces
-        // inside strings/comments are a drift-fragile surface, a disclosed residual.)
-        let if_pos = arm_body
-            .find("if remains_enabled {")
-            .expect("the conditional re-latch block must exist");
-        let between = &arm_body[if_pos..emit_pos];
+        // Round-23 review MINOR caliber: the emit's unconditional position — the braces
+        // between the arm opener's `{` and the emit must be balanced, so a mutant moving
+        // the emit inside any conditional block mismatches and turns red. Both shapes (disk
+        // still authorized / config invalid) must refresh the emitted state. (The slice is
+        // pure code today; the brace-counting caliber matches the exact lock-span pin —
+        // braces inside strings/comments are a drift-fragile surface, a disclosed
+        // residual.)
+        let between = &arm_body["validate_config(&config).map_err(|error| {".len()..emit_pos];
         assert_eq!(
             between.matches('{').count(),
             between.matches('}').count(),
-            "the status refresh must sit outside the conditional re-latch \
-             block: both shapes (disk still authorized / config invalid) \
-             must refresh the emitted state"
+            "the status refresh must be unconditional: both shapes (disk \
+             still authorized / config invalid) must refresh the emitted \
+             state"
         );
         assert_eq!(
             arm_body.matches("self.emit_status();").count(),
@@ -7450,7 +7343,11 @@ mod tests {
         );
         assert!(
             arm_body.contains("did not take effect; folder consent stays enabled on disk"),
-            "the error must say the revocation did not take effect when the              disk latch is still authorized"
+            "the error must say the revocation did not take effect when the              disk latch is still authorized (the durable survivor is              disclosed, not rolled back)"
+        );
+        assert!(
+            arm_body.contains("found an invalid persisted config"),
+            "the already-unauthorized shape must report the corrupt config: the              revocation substantively succeeded there"
         );
     }
 
@@ -8243,7 +8140,10 @@ mod tests {
             .find("\n    pub fn ")
             .or_else(|| refresh_body.find("\n    fn "))
             .expect("refresh body must be terminated by the next fn")];
-        let normalized = refresh_body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = refresh_body
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             normalized.contains(
                 "revocation_disposition = Some(WebAccessRevocationDisposition::DeferredFullQueue);",
@@ -8254,12 +8154,9 @@ mod tests {
             refresh_body.contains("info.revocation_disposition = revocation_disposition;"),
             "refresh must travel the disposition on the returned info"
         );
-        let command_source = include_str!(
-            "../../../app/commands/remote_control.rs"
-        );
+        let command_source = include_str!("../../../app/commands/remote_control.rs");
         assert!(
-            command_source
-                .contains("Result<WebAccessStopOutcome, String>"),
+            command_source.contains("Result<WebAccessStopOutcome, String>"),
             "the disable command must hand the explicit outcome to the frontend"
         );
     }

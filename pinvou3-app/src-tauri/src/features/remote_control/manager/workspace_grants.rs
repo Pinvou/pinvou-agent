@@ -23,8 +23,9 @@ struct WebWorkspaceGrant {
 /// back only for the same endpoint and without extending its original TTL.
 /// `generation` stamps the store's revocation generation at reserve time: a
 /// revoke that ran while creation was in flight advances the generation, and
-/// the stale reservation must not be restored across it (复审 P3:失败撤销
-/// 重闩锁旗标后,撤销前的 in-flight reservation 不得借 restore 复活).
+/// the stale reservation must not be restored across it (复审 P3:撤销后
+/// 重新授权时旗标回到 true,撤销前的 in-flight reservation 不得借 restore
+/// 复活).
 #[derive(Debug)]
 pub(crate) struct WebWorkspaceGrantReservation {
     handle: String,
@@ -108,8 +109,8 @@ pub(super) struct WebWorkspaceGrantStore {
     order: VecDeque<String>,
     /// Bumped by every `clear()` (each revoke, even an idempotent one).
     /// Reservations stamped by `reserve` are only restorable while the
-    /// generation is unchanged, so a failed revocation that re-latches the
-    /// authorization flag cannot revive pre-revocation reservations.
+    /// generation is unchanged, so re-authorization after a revocation
+    /// cannot revive pre-revocation reservations.
     revocation_generation: u64,
 }
 
@@ -185,10 +186,10 @@ impl WebWorkspaceGrantStore {
         // reserve → revoke → 会话创建失败 → restore 会把 grant 放回已
         // 撤销授权的映射里(不变量只靠 bind-time 复查兜底)。撤销后拒绝
         // 复活,与「已发出的 grant 也随之立刻作废」的文档契约一致。
-        // 复审 P3(世代围栏):旗标可因失败撤销被重闩锁为 true,仅靠旗标
-        // 无法区分「撤销后重新授权」与「撤销失败回滚」——按世代拒绝:
-        // reserve 之后发生过任何 clear()(即撤销)的 in-flight reservation
-        // 一律不得复活,重新授权后需重新铸发句柄。
+        // 复审 P3(世代围栏):撤销后重新授权会把旗标置回 true,仅靠旗标
+        // 无法区分「重新授权后的新铸造」与「撤销前的 in-flight 预订」——
+        // 按世代拒绝:reserve 之后发生过任何 clear()(即撤销)的 in-flight
+        // reservation 一律不得复活,重新授权后需重新铸发句柄。
         if !allow_host_workspace
             || reservation.generation != self.revocation_generation
             || reservation.endpoint_id != endpoint_id
@@ -227,8 +228,8 @@ impl WebWorkspaceGrantStore {
         self.entries.clear();
         self.order.clear();
         // Every revoke advances the generation, so reservations stamped
-        // before it are refused on restore even when the authorization flag
-        // is later re-latched by a failed-revocation retry (复审 P3).
+        // before it are refused on restore even after a later
+        // re-authorization flips the flag back to true (复审 P3).
         self.revocation_generation += 1;
     }
 }
@@ -341,7 +342,7 @@ mod tests {
         assert!(!store.contains(&handle));
 
         // 复审 P3(世代围栏):reserve 之后发生过 clear()(撤销)的
-        // in-flight reservation,即使旗标重闩锁回 true(失败撤销重试态)
+        // in-flight reservation,即使此后重新授权(旗标回到 true)
         // 也不得复活——restore 按世代拒绝;重新授权后需重新铸发句柄。
         store.issue(
             handle.clone(),
@@ -362,7 +363,7 @@ mod tests {
                 now + Duration::from_secs(4),
                 true
             ),
-            "a reservation stamped before a revocation must stay dead even              when the flag is re-latched to true by a failed-revocation retry"
+            "a reservation stamped before a revocation must stay dead even              after a later re-authorization flips the flag back to true"
         );
         assert!(!store.contains(&handle));
 
