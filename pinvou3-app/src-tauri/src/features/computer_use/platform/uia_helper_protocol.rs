@@ -5,8 +5,9 @@
 //! hidden desktop (inside the session's kill-on-close job), talking NDJSON
 //! over inherited stdin/stdout. Parent and child share these types so the
 //! framing cannot drift: requests are [`Request`] lines, responses are
-//! [`Response`] lines, and the very first line the helper writes is
-//! [`READY_LINE`].
+//! [`Response`] lines, and the helper signals readiness with [`READY_LINE`]
+//! (or a structured `{"ready":false,...}` line when COM initialization
+//! fails, which the parent's ready wait treats as a spawn failure).
 //!
 //! The `ElementInfo`-shaped payload ([`WireElement`]) deliberately carries
 //! the two fields the real `ElementInfo` serializes with `#[serde(skip)]`
@@ -53,12 +54,7 @@ pub enum Op {
         max_nodes: u32,
     },
     /// The element at a virtual-screen-global screen point.
-    AtPoint {
-        #[serde(rename = "x")]
-        x: i32,
-        #[serde(rename = "y")]
-        y: i32,
-    },
+    AtPoint { x: i32, y: i32 },
     /// The focused control of the hidden desktop's foreground window.
     Focus,
 }
@@ -134,7 +130,10 @@ pub struct WireElement {
 /// Whether this process was started AS a helper (checked before any app
 /// initialization in `run`).
 pub fn is_helper_invocation() -> bool {
-    std::env::args().any(|arg| arg == HELPER_ARG)
+    // `args_os`: invalid-Unicode argv must not panic the pre-init check —
+    // this runs as the very first action of every app start on every
+    // platform (r4).
+    std::env::args_os().any(|arg| arg == HELPER_ARG)
 }
 
 #[cfg(test)]

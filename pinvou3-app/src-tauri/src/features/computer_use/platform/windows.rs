@@ -746,10 +746,10 @@ pub(super) struct WindowsComputerUseBackend {
 }
 
 /// Free wrapper for the helper process (crate-internal): the identical cache
-/// request the physical backend builds, addressable without a backend value.
-/// A free function at module level — the UIA helper imports it by path
-/// (`platform::windows::build_tree_cache`), which an associated function
-/// could never satisfy.
+/// request the physical backend builds, addressable without a backend value
+/// and with a name that reads like the physical stack's cache entry point
+/// (a widened associated function would serve the same purpose — this
+/// wrapper is the named alias the helper imports by path).
 pub(crate) fn build_tree_cache(
     uia: &UIAutomation,
 ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {

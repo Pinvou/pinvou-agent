@@ -5,7 +5,7 @@
 //! stays unit-testable on every target.
 
 use super::super::guard::{self, for_each_folded_window};
-use super::super::types::{ComputerUseError, Key, ScrollDirection};
+use super::super::types::{ComputerUseError, Key, ScrollDirection, UiTreeOptions};
 use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -61,6 +61,25 @@ pub(crate) const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
 pub(crate) const DEFAULT_TREE_MAX_NODES: u32 = 400;
 pub(crate) const MAX_TREE_DEPTH: u32 = 24;
 pub(crate) const MAX_TREE_NODES: u32 = 2000;
+
+/// The effective `ui_tree` budgets: the caller's options bounded by the
+/// caps above (`DEFAULT_TREE_*` when omitted, hard `MAX_TREE_*` ceilings).
+/// The ONE clamp the physical stack, the UIA helper's wait budget, and the
+/// hidden-desktop fallback must all apply identically — drift here desyncs
+/// the helper's timeout basis from the walk's actual budget, so the rule
+/// lives next to its constants (r4: the two new copies are consolidated on
+/// it). Identical numbers so a model switching between stacks sees one
+/// budget contract. Pure; pinned.
+pub(crate) fn tree_budget(opts: &UiTreeOptions) -> (u32, u32) {
+    (
+        opts.max_depth
+            .unwrap_or(DEFAULT_TREE_MAX_DEPTH)
+            .min(MAX_TREE_DEPTH),
+        opts.max_nodes
+            .unwrap_or(DEFAULT_TREE_MAX_NODES)
+            .min(MAX_TREE_NODES),
+    )
+}
 
 /// Shared `xcap` error mapping (screenshot/monitor probes on macOS and
 /// Windows): plain `{context}: {err}` wrapping.
