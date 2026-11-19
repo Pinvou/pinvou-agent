@@ -82,7 +82,7 @@ pub fn native_recognition_source() -> &'static str {
     "system_speech"
 }
 
-pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
+pub async fn reset_microphone_permission(webview: tauri::Webview) -> Result<bool, String> {
     use std::time::Duration;
 
     use tauri::Manager;
@@ -95,7 +95,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     // `tauri dev` 的裸二进制不在 bundle 内，TCC 记录不挂该 identifier 名下——
     // 若同机装有同 id 的 release 版，reset 会误清 release 版的记录而 dev 的
     // 拒绝记录原样保留；无已注册 bundle 时则以 exit 64 走 Err 分支。
-    let identifier = window.app_handle().config().identifier.clone();
+    let identifier = webview.app_handle().config().identifier.clone();
     if identifier.trim().is_empty() {
         return Err("无法确定应用标识符，重置麦克风权限失败".to_string());
     }

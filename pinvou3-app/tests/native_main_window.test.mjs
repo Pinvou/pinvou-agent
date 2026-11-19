@@ -39,3 +39,58 @@ test('native presentation retains restore order and platform activation policies
 test('webview-specific setup retains its webview handle', () => {
   assert.match(rust('lib.rs'), /get_webview_window\("main"\)[\s\S]*?with_webview\(/);
 });
+
+test('voice and web-bridge commands stay callable while browser tabs attach child webviews', () => {
+  // Issue 840: with an agent-browser child WebView attached to the main
+  // window, Tauri's single-WebView `WebviewWindow` injection fails and
+  // `webview_windows()` drops main entirely — which broke Alt-tap dictation,
+  // the recording claim, microphone permission reset, and the Web access
+  // bridge while a tab was open. The injected handles must stay `Webview`
+  // and the voice router HWND cache must resolve main natively.
+  for (const path of ['app/commands/voice.rs', 'app/commands/remote_control.rs']) {
+    const source = rust(path);
+    assert.doesNotMatch(source, /window: (?:tauri::)?WebviewWindow/, path);
+  }
+  assert.match(
+    rust('app/commands/voice.rs'),
+    /set_voice_shortcut_recording\(\s*webview: tauri::Webview,/,
+  );
+  assert.match(
+    rust('app/commands/voice.rs'),
+    /reset_microphone_permission\(webview: tauri::Webview\)/,
+  );
+  for (const [platform, param] of [
+    ['windows', 'webview'],
+    ['macos', 'webview'],
+    ['linux', '_webview'],
+    ['unsupported', '_webview'],
+  ]) {
+    assert.match(
+      rust(`features/voice/platform/${platform}.rs`),
+      new RegExp(`reset_microphone_permission\\(${param}: tauri::Webview\\)`),
+      platform,
+    );
+  }
+  for (const fn of [
+    'web_access_enable',
+    'web_access_disable',
+    'web_access_status',
+    'web_access_rotate',
+    'web_access_revoke_host_workspace',
+    'web_access_bridge_ready',
+    'web_access_rpc_begin',
+    'web_access_rpc_respond',
+    'web_access_publish_event',
+    'web_access_list_host_files',
+  ]) {
+    assert.match(
+      rust('app/commands/remote_control.rs'),
+      new RegExp(`pub fn ${fn}\\([^)]*?webview: Webview,`),
+      fn,
+    );
+  }
+  assert.match(
+    rust('features/voice_shortcut/platform/mod.rs'),
+    /refresh_router_window_hwnds[\s\S]*?app\.get_window\("main"\)/,
+  );
+});
