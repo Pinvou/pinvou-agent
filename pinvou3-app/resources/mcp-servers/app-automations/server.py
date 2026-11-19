@@ -695,8 +695,8 @@ def validate_cron_expr(expr):
     if not 0 <= int(minute) <= 59:
         return "invalid rrule: CRON EXPR minute must be between 0 and 59"
     for field in fields[1:]:
-        if not field:
-            return "invalid rrule: CRON EXPR field must not be empty"
+        # str.split() never yields empty items (same as the watcher's
+        # split_whitespace), so an explicit empty-field check is dead here.
         if not re.fullmatch(r"[0-9A-Za-z*,\-/]+", field):
             return ("invalid rrule: CRON EXPR field '%s' is not valid cron syntax"
                     % field[:32])
@@ -1263,7 +1263,14 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         return None, "invalid request kind: %s" % kind[:32]
     name = str(name).strip() if name is not None else None
     prompt = str(prompt).strip() if prompt is not None else None
-    rrule = str(rrule).strip() if rrule is not None else None
+    # B9: translate before stripping. Python's strip() removes U+001C-U+001F
+    # padding (isspace() is True) but the watcher's White_Space trim keeps
+    # them, so the raw strip silently accepted shapes validate_rrule itself
+    # rejects. Mapping the four separators to DEL first makes this strip
+    # agree with the watcher's on every byte; normalize_rrule's translate is
+    # idempotent, so the mid-string story is unchanged.
+    rrule = (str(rrule).translate(_ISPACE_ONLY_SEPARATORS).strip()
+             if rrule is not None else None)
     model_id = str(model_id or "").strip() or None
     from_session = str(from_session or "").strip() or None
     idempotency_key = str(idempotency_key or "").strip() or None

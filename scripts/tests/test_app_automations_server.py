@@ -169,6 +169,24 @@ class RruleValidationTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(normalized, "FREQ=CRON;EXPR=30\u30009 1 * *")
 
+    def test_control_separator_padding_rejected_at_the_funnel(self):
+        # Round-3 review M1: schedule_task_request strips the raw tool
+        # argument before validate_rrule sees it, and that strip used to eat
+        # U+001C-U+001F padding the watcher keeps — the funnel accepted the
+        # exact bytes the gate rejects. The translate must run first, so pin
+        # the behavior at the entry funnel, not just at validate_rrule.
+        for rrule in (
+            "FREQ=CRON;EXPR=30 9 1 * *\u001c",
+            "\u001cFREQ=CRON;EXPR=30 9 1 * *",
+            "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30\u001f",
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                payload, error = server.schedule_task_request(
+                    tmp, "create", name="n", prompt="p", rrule=rrule)
+                self.assertIsNone(payload, rrule)
+                self.assertIsNotNone(error, rrule)
+                self.assertFalse(Path(tmp, "spool").exists(), rrule)
+
     def test_once_at_past_and_timezone_suffix_rejected(self):
         for rrule in [
             "FREQ=ONCE;AT=2020-01-01T09:30",
