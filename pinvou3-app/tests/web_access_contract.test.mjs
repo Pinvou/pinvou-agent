@@ -1456,27 +1456,27 @@ assert.match(desktopRemoteControlBridge,
 assert.equal(
   (desktopRemoteControlBridge.match(/\{ last_error: String\(error\), last_error_code: null \}/g) || []).length, 2,
   'the status-refresh failure merge and the revoke failure merge must both clear the stale code');
-assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'only the main desktop WebView may revoke folder consent');
-assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'only the main desktop WebView may enable a persistent remote endpoint');
 assert.match(
   remoteControlCommands,
-  /web_access_status\([\s\S]{0,260}require_main_webview\(&window\)\?/,
+  /web_access_status\([\s\S]{0,260}require_main_webview\(&webview\)\?/,
   'web_access_status carries the token-bearing pairing URL and must stay main-WebView only',
 );
 assert.match(
   remoteControlCommands,
-  /web_access_rotate\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  /web_access_rotate\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'rotation rewrites link credentials and must stay main-WebView only',
 );
 // Round-8 复审:disable / relay_settings / list_host_files 的主 WebView gate
 // 此前没有 source-shape pin,删除任一 gate 行仍然全绿;补齐与上方四条同款。
-assert.match(remoteControlCommands, /web_access_disable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+assert.match(remoteControlCommands, /web_access_disable\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'only the main desktop WebView may stop a persistent remote endpoint');
 assert.match(
   remoteControlCommands,
-  /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&window\)\?/,
+  /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&webview\)\?/,
   'host filesystem browsing must stay main-WebView only',
 );
 // Round-11 复审 M4:publish_event 拿到了 Round-10 的策略反钉,但其主
@@ -1484,7 +1484,7 @@ assert.match(
 // ——门是桌面 aux WebView 侧的唯一防线(策略反钉护的是另一侧调用者)。
 assert.match(
   remoteControlCommands,
-  /web_access_publish_event\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  /web_access_publish_event\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'the management event-publish channel must stay main-WebView only',
 );
 // Round-12 复审 P3:RPC 代理三兄弟(bridge_ready / rpc_begin / rpc_respond)
@@ -1495,17 +1495,17 @@ assert.match(
 // (~837),删行即红。
 assert.match(
   remoteControlCommands,
-  /web_access_bridge_ready\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  /web_access_bridge_ready\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'the bridge readiness handshake must stay main-WebView only',
 );
 assert.match(
   remoteControlCommands,
-  /web_access_rpc_begin\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  /web_access_rpc_begin\([\s\S]{0,240}require_main_webview\(&webview\)\?/,
   'the RPC dispatch ACK must stay main-WebView only',
 );
 assert.match(
   remoteControlCommands,
-  /web_access_rpc_respond\([\s\S]{0,400}require_main_webview\(&window\)\?/,
+  /web_access_rpc_respond\([\s\S]{0,400}require_main_webview\(&webview\)\?/,
   'the RPC completion handoff must stay main-WebView only',
 );
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
