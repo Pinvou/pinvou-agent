@@ -1088,10 +1088,10 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// persist, silently resetting the sidecar entries and resolving their
 /// kinds to plain chat tasks. Three refusal cases, each repairable:
 /// malformed-on-read (quarantined this invocation), absent-after-quarantine
-/// (a `.invalid-*` sibling copy exists — the app's persist heals the path,
-/// or removing the stale copies opts back into a fresh bootstrap), and
-/// unreadable-at-rest (chmod/EIO). A healthy read and a genuinely fresh
-/// bootstrap (no file, no quarantine copies) still write.
+/// (an `.invalid-*`/`.corrupt-*` sibling copy exists — the app's persist
+/// heals the path, or removing the stale copies opts back into a fresh
+/// bootstrap), and unreadable-at-rest (chmod/EIO). A healthy read and a
+/// genuinely fresh bootstrap (no file, no quarantine copies) still write.
 /// Round-40 review: the foreign-write guard the app's
 /// `VersionedJsonStore::persist` carries and this CLI's read-modify-write
 /// lane lacked. Each surface previously closed only the opposite half of
@@ -1171,16 +1171,25 @@ fn write_json_atomic_checked(
 }
 
 fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Value, CliError> {
+    // #817 B4: the desktop app's stores quarantine through the platform
+    // primitive (`<name>.corrupt-<ts>.<nanos>`), while this CLI (and app
+    // builds before that switch) write `<name>.invalid-<stamp>`. Detection is
+    // a cross-process contract — either prefix means "a quarantine happened;
+    // the healthy registry may live only in the other surface's memory".
+    // Directory errors degrade to "no siblings", exactly as before.
     let quarantine_copies_exist = |path: &Path| -> bool {
         let Some(file_name) = path.file_name() else {
             return false;
         };
-        let prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        let invalid_prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        let corrupt_prefix = format!("{}.corrupt-", file_name.to_string_lossy());
         std::fs::read_dir(path.parent().unwrap_or(Path::new(".")))
             .map(|entries| {
-                entries
-                    .flatten()
-                    .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                entries.flatten().any(|entry| {
+                    let entry_file_name = entry.file_name();
+                    let name = entry_file_name.to_string_lossy();
+                    name.starts_with(&invalid_prefix) || name.starts_with(&corrupt_prefix)
+                })
             })
             .unwrap_or(false)
     };
@@ -1188,7 +1197,7 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
         CliError::failed(format!(
             "scheduled_store_unreadable: registry {} {why}; a default-based rewrite would \
              destroy the other surface's entries — repair the registry (or remove the \
-             .invalid-* quarantine copies to start fresh) and retry",
+             .invalid-*/.corrupt-* quarantine copies to start fresh) and retry",
             path.display()
         ))
     };

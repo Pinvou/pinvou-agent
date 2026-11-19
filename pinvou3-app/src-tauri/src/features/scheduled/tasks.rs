@@ -2732,7 +2732,13 @@ mod tests {
             std::fs::read_dir(&dir)
                 .expect("read archive directory")
                 .filter_map(|entry| entry.ok())
-                .all(|entry| !entry.file_name().to_string_lossy().contains(".invalid-")),
+                .all(|entry| {
+                    // Both naming generations: the app's platform quarantine
+                    // (.corrupt-, #817 B4) and the CLI's .invalid-.
+                    let entry_file_name = entry.file_name();
+                    let name = entry_file_name.to_string_lossy();
+                    !name.contains(".invalid-") && !name.contains(".corrupt-")
+                }),
             "partial item damage must not quarantine valid history"
         );
 
@@ -5405,15 +5411,19 @@ mod tests {
                 .expect("invalid read state must not block startup");
             assert!(store.registry.read().viewed_runs.is_empty());
             assert!(!path.exists(), "invalid state should be quarantined");
-            let quarantine_prefix = format!("{name}.invalid-");
+            // Both naming generations: this app's platform quarantine writes
+            // `.corrupt-<ts>.<nanos>` (#817 B4); the CLI's own quarantine
+            // writes `.invalid-<stamp>`.
+            let invalid_prefix = format!("{name}.invalid-");
+            let corrupt_prefix = format!("{name}.corrupt-");
             let quarantined = std::fs::read_dir(&dir)
                 .expect("read quarantine dir")
                 .filter_map(Result::ok)
                 .find(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with(&quarantine_prefix)
+                    let entry_file_name = entry.file_name();
+                    let entry_name = entry_file_name.to_string_lossy();
+                    entry_name.starts_with(&invalid_prefix)
+                        || entry_name.starts_with(&corrupt_prefix)
                 })
                 .expect("quarantined read-state file");
             assert_eq!(

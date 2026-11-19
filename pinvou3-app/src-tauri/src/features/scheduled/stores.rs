@@ -236,8 +236,43 @@ impl Default for ScheduledHistoryArchiveRegistry {
 enum QuarantineStrategy {
     /// Emit a `warn!` and leave the offending file in place (UI metadata store).
     LogInPlace,
-    /// Rename the file to `<name>.invalid-<ts>` and log (model-binding / read-state).
+    /// Rename the file aside via the platform quarantine primitive
+    /// (`<name>.corrupt-<ts>.<nanos>` — #817 B4, the last inline holdout) and
+    /// log (model-binding / read-state). The headless CLI keeps writing its
+    /// own `<name>.invalid-<stamp>` copies, so every sibling scan on either
+    /// surface must detect BOTH prefixes; see `quarantine_sibling_exists`.
     Rename,
+}
+
+/// True when a quarantine copy of `path` produced by either surface sits in
+/// the same directory: this store's platform-named `.corrupt-` copies, the
+/// CLI's `.invalid-<stamp>` copies, and the pre-#817 app `.invalid-<nanos>`
+/// copies still on disk from older builds. Detection is a cross-process
+/// contract: a canonical file absent right after a quarantine means the only
+/// healthy registry may live in the other surface's memory, so mutation
+/// readers refuse instead of rebuilding from defaults. Directory errors
+/// propagate (the caller owns the context); a missing directory is just
+/// "no siblings".
+fn quarantine_sibling_exists(path: &Path) -> std::io::Result<bool> {
+    let Some(file_name) = path.file_name() else {
+        return Ok(false);
+    };
+    let file_name = file_name.to_string_lossy();
+    let invalid_prefix = format!("{file_name}.invalid-");
+    let corrupt_prefix = format!("{file_name}.corrupt-");
+    let entries = match std::fs::read_dir(path.parent().unwrap_or(Path::new("."))) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry_file_name = entry?.file_name();
+        let name = entry_file_name.to_string_lossy();
+        if name.starts_with(&invalid_prefix) || name.starts_with(&corrupt_prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Per-store behaviour carried by the registry type itself.
@@ -868,20 +903,13 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 false
             }
             QuarantineStrategy::Rename => {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    // Every store path is built with a file component; the
-                    // literal only covers a degenerate custom path.
-                    .unwrap_or("registry.json");
-                let quarantine_path =
-                    path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
-                match std::fs::rename(path, &quarantine_path) {
-                    Ok(()) => {
+                // Same-directory rename-aside through the platform primitive
+                // (memory / sessions / code_checkpoints share it): plain
+                // rename, no copy fallback — identical semantics to the
+                // inline arm this replaces (#817 B4), with the shared
+                // timestamped naming instead of a scheduled-local one.
+                match crate::platform::filesystem::quarantine_corrupt_file(path) {
+                    Ok(quarantine_path) => {
                         log::warn!(
                             "Quarantined {} {} to {} ({reason}){}",
                             T::LABEL,
@@ -1373,27 +1401,10 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
     ) -> Result<ScheduledTaskKindLookup> {
         if let Err(error) = std::fs::metadata(self.path.as_ref()) {
             if error.kind() == std::io::ErrorKind::NotFound {
-                if let Some(parent) = self.path.parent() {
-                    match std::fs::read_dir(parent) {
-                        Ok(entries) => {
-                            for entry in entries {
-                                let entry = entry.context("read scheduled task kind directory")?;
-                                if entry
-                                    .file_name()
-                                    .to_string_lossy()
-                                    .starts_with("task-kinds.json.invalid-")
-                                {
-                                    bail!(
-                                        "scheduled task kind metadata unavailable after quarantine"
-                                    );
-                                }
-                            }
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => {
-                            return Err(error).context("read scheduled task kind directory");
-                        }
-                    }
+                if quarantine_sibling_exists(self.path.as_ref())
+                    .context("read scheduled task kind directory")?
+                {
+                    bail!("scheduled task kind metadata unavailable after quarantine");
                 }
             } else {
                 return Err(error).context("read scheduled task kind metadata");
@@ -2134,6 +2145,54 @@ mod foreign_writer_tests {
 
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_file(&invalid);
+    }
+
+    /// The absent-file refusal in `checked_kind_lookup_for` must detect
+    /// quarantine siblings under BOTH naming generations: the CLI's
+    /// `.invalid-<stamp>` copies (still produced by every CLI command) and
+    /// this app's platform-named `.corrupt-<ts>.<nanos>` copies (#817 B4).
+    /// Either prefix means a quarantine just happened and the only healthy
+    /// registry may live in another handle's memory — proceeding would let a
+    /// fresh bootstrap race that memory. With no sibling at all, an absent
+    /// canonical file stays the genuine fresh bootstrap.
+    #[test]
+    fn checked_lookup_refuses_quarantine_siblings_under_both_namings() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // No file, no sibling: fresh bootstrap must still answer (Chat).
+        let store = kind_store(&path);
+        assert_eq!(
+            store.checked_kind_lookup_for("t1").unwrap(),
+            ScheduledTaskKindLookup::Chat,
+            "an absent file with no quarantine sibling is a fresh bootstrap"
+        );
+
+        // The CLI's `.invalid-<stamp>` sibling (canonical still absent).
+        let invalid = path.with_file_name("task-kinds.json.invalid-20261119T000000");
+        std::fs::write(&invalid, b"{not json").unwrap();
+        assert!(
+            store.checked_kind_lookup_for("t1").is_err(),
+            "a legacy .invalid- sibling must refuse the strict lookup"
+        );
+        let _ = std::fs::remove_file(&invalid);
+
+        // The app's platform-named `.corrupt-` sibling.
+        let corrupt = path.with_file_name("task-kinds.json.corrupt-20261119T000000.123456789");
+        std::fs::write(&corrupt, b"{not json").unwrap();
+        assert!(
+            store.checked_kind_lookup_for("t1").is_err(),
+            "a platform-named .corrupt- sibling must refuse the strict lookup"
+        );
+        let _ = std::fs::remove_file(&corrupt);
+
+        assert_eq!(
+            store.checked_kind_lookup_for("t1").unwrap(),
+            ScheduledTaskKindLookup::Chat,
+            "removing the sibling copies opts back into the fresh bootstrap"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// (a) Two store instances share one file: a resident handle's writes
