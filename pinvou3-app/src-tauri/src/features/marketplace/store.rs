@@ -691,36 +691,64 @@ pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> Stri
     }
 }
 
-/// Inner read: separated from the lock-taking wrapper so already-locked
-/// import/upsert callers invoke it directly, avoiding mutex re-entry. The
-/// read goes through the hardened primitive: this function
-/// runs inside the bundles.json file lock and — via the scope's DenyAll
-/// expansion — inside the disabled_bundles.lock critical section, so a FIFO
-/// or symlink planted at the path must be refused rather than left hanging
-/// the lock holder — the same hardening discipline as disabled_bundles.json's
-/// identical reads. NotFound semantics unchanged (the kind passes through).
-fn load_locked(path: &Path) -> Result<BundlesFile, String> {
+/// Shared inner read for the marketplace's versioned JSON stores (bundles.json
+/// and recycle-bin.json — the twins merged per reuse audit #817 B4; both run
+/// inside their file's cross-process lock, so the read goes through the
+/// hardened primitive: a FIFO or symlink planted at the path must be refused
+/// rather than left hanging the lock holder). `corrupt_note` is the
+/// store-specific tail of the fail-loud parse error (each store keeps its own
+/// wording, pinned by its tests). NotFound stays the fresh-install Ok(default).
+pub(super) fn load_private_json_locked<T: serde::de::DeserializeOwned + Default>(
+    path: &Path,
+    corrupt_note: &str,
+) -> Result<T, String> {
     match read_private_data_file(path) {
-        Ok(content) => {
-            let file: BundlesFile = serde_json::from_str(&content).map_err(|e| {
-                format!(
-                    "解析 {} 失败: {e}（bundles.json 是唯一真相源，损坏时 fail loud，不静默重建）",
-                    path.display()
-                )
-            })?;
-            let flagged = unrecognized_asset_record_ids(&file);
-            if !flagged.is_empty() {
-                log::warn!(
-                    "[marketplace] {}: unreadable assets entries kept verbatim in {}",
-                    path.display(),
-                    flagged.join(", ")
-                );
-            }
-            Ok(file)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BundlesFile::default()),
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("解析 {} 失败: {e}（{corrupt_note}）", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
     }
+}
+
+/// Shared inner write for the same two stores: tmp + rename atomic replace
+/// (foundation `write_atomic`, with the Windows replace retry), so concurrent
+/// readers never observe a half-written file. `serialize_label` names the file
+/// in the serialization-failure message the way each store's existing text does.
+pub(super) fn save_private_json_locked<T: serde::Serialize>(
+    path: &Path,
+    file: &T,
+    serialize_label: &str,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(file)
+        .map_err(|e| format!("序列化 {serialize_label} 失败: {e}"))?;
+    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+/// Inner read: separated from the lock-taking wrapper so already-locked
+/// import/upsert callers invoke it directly, avoiding mutex re-entry. This
+/// function runs inside the bundles.json file lock and — via the scope's
+/// DenyAll expansion — inside the disabled_bundles.lock critical section, so
+/// a planted FIFO/symlink must be refused (the shared hardened loader keeps
+/// that discipline). NotFound semantics unchanged (the kind passes through).
+fn load_locked(path: &Path) -> Result<BundlesFile, String> {
+    let file: BundlesFile = load_private_json_locked(
+        path,
+        "bundles.json 是唯一真相源，损坏时 fail loud，不静默重建",
+    )?;
+    let flagged = unrecognized_asset_record_ids(&file);
+    if !flagged.is_empty() {
+        log::warn!(
+            "[marketplace] {}: unreadable assets entries kept verbatim in {}",
+            path.display(),
+            flagged.join(", ")
+        );
+    }
+    Ok(file)
 }
 
 /// Record ids carrying at least one entry this binary cannot read; the
@@ -745,16 +773,10 @@ fn unrecognized_asset_record_ids(file: &BundlesFile) -> Vec<String> {
 }
 
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试），
-/// 并发读者不会看到半写文件。
+/// 并发读者不会看到半写文件。机制在 [`save_private_json_locked`]，本包装只补
+/// bundles.json 的文案标签。
 fn save_locked(path: &Path, file: &BundlesFile) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
-    }
-    let json =
-        serde_json::to_string_pretty(file).map_err(|e| format!("序列化 bundles.json 失败: {e}"))?;
-    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    save_private_json_locked(path, file, "bundles.json")
 }
 
 // ---------------------------------------------------------------------------
