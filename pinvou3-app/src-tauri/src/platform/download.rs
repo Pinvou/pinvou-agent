@@ -1,9 +1,8 @@
 //! 流式下载校验 helper:下载到 `.part` → 逐块取消/进度 → sha256 校验 → 原子 rename。
 //!
-//! 收敛 voice/knowledge 等异步下载路径共享的「下载 → 校验 → 提升」骨架。三调用方
-//! 取消机制不同(voice 的 AtomicBool、native_installer 无取消、knowledge 的
-//! AtomicBool + 进度事件),因此取消谓词与进度回调一律由调用方以闭包注入,
-//! helper 不假定统一取消源。
+//! 收敛 voice/knowledge 两路异步下载共享的「下载 → 校验 → 提升」骨架。两路
+//! 取消机制不同(voice 的 AtomicBool、knowledge 的 AtomicBool + 进度事件),
+//! 因此取消谓词与进度回调一律由调用方以闭包注入,helper 不假定统一取消源。
 //!
 //! **设计取舍**:本函数为 `async fn`(reqwest 异步流式)。连接器归档 / Python
 //! wheel 的下载跑在 `reqwest::blocking` 上,且常在 `tokio::task::spawn_blocking`

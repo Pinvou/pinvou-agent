@@ -1031,8 +1031,10 @@ fn read_registry_capped(path: &Path) -> std::io::Result<String> {
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
 /// default. An unreadable or wrong-shaped payload is quarantined next to the
-/// original (`<name>.invalid-<timestamp>`, the GUI `VersionedJsonStore`
-/// convention) before degrading to the default for this process — otherwise
+/// original (`<name>.invalid-<timestamp>`; this reader likewise refuses a
+/// missing canonical whose sibling is the desktop's `.corrupt-<timestamp>.<nanos>`
+/// copy or `.invalid-desktop` sentinel) before degrading to the default for
+/// this process — otherwise
 /// the next write through this process would silently destroy the only copy
 /// of the other tasks' data. Newer-schema files stay untouched: they take
 /// the refusal path (`ensure_supported_schema`), not quarantine.
