@@ -5603,11 +5603,13 @@ mod tests {
         );
         assert_eq!(
             src.matches("drop_point").count(),
-            5,
-            "the drag's clamped drop wiring — the binding, the waypoint \
-             endpoint, the pointer's final write, and the delivered \
-             button-up's two coordinates: reverting the drop or its up to a \
-             raw endpoint drops the count and fails here"
+            7,
+            "the drag's clamped drop wiring — the binding, the encodability \
+             guard's two coordinates (r6: the guard fires BEFORE the press, \
+             refusing past-drop rather than stranding a pressed button), \
+             the waypoint endpoint, the pointer's final write, and the \
+             delivered button-up's two coordinates: reverting the drop or \
+             its up to a raw endpoint drops the count and fails here"
         );
         assert_eq!(
             src.matches("pointer_center_of_rect(").count(),
