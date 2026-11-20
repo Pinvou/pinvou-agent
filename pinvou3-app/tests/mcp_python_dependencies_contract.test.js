@@ -210,7 +210,11 @@ assert.match(
   'Python ABI/import probes need bounded capture and process-tree termination',
 );
 assert.match(pythonDependencies, /Duration::from_secs\(30\)/, 'Python probes need a 30s timeout');
-assert.match(pythonDependencies, /PartialFileCleanup/, 'partial wheel writes need RAII cleanup');
+assert.match(
+  pythonDependencies,
+  /persist_verified_download_with_sync/,
+  'partial wheel writes must delegate to the shared skeleton whose PartGuard RAII-cleans staging on failure',
+);
 assert.match(
   pythonDependencies,
   /cleanup_stale_install_artifacts/,

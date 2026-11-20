@@ -9,7 +9,7 @@
 //! 收敛 scheduled run read / model binding / UI metadata 三个同构 store。
 //! 从 tasks.rs 抽离,通过 `use super::*` 复用 facade 的导入。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use parking_lot::RwLock;
@@ -236,8 +236,57 @@ impl Default for ScheduledHistoryArchiveRegistry {
 enum QuarantineStrategy {
     /// Emit a `warn!` and leave the offending file in place (UI metadata store).
     LogInPlace,
-    /// Rename the file to `<name>.invalid-<ts>` and log (model-binding / read-state).
+    /// Rename the file aside via the platform quarantine primitive
+    /// (`<name>.corrupt-<ts>.<nanos>` — #817 B4, the last inline holdout) and
+    /// log (model-binding / read-state). The headless CLI keeps writing its
+    /// own `<name>.invalid-<stamp>` copies, so every sibling scan on either
+    /// surface must detect BOTH prefixes; see `quarantine_sibling_exists`.
+    /// The rename ALSO drops a [`legacy_quarantine_sentry_path`] sentinel so
+    /// an already-installed pre-#899 CLI (whose sibling scan checks only
+    /// `.invalid-`) refuses mutations during the quarantine window.
     Rename,
+}
+
+/// Legacy-visible sentinel name for a quarantined `path`. An
+/// already-installed pre-#899 CLI recognizes quarantine only through the
+/// `.invalid-` prefix, so this sentinel carries that prefix while remaining
+/// desktop-owned: the CLI's own evidence copies are `.invalid-<utc-stamp>`,
+/// this is the bare `.invalid-desktop`, and only this exact name is removed
+/// on the next successful persist — CLI evidence is never touched.
+fn legacy_quarantine_sentry_path(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_name()?.to_str()?;
+    Some(path.with_file_name(format!("{stem}.invalid-desktop")))
+}
+
+/// True when a quarantine copy of `path` produced by either surface sits in
+/// the same directory: this store's platform-named `.corrupt-` copies, the
+/// CLI's `.invalid-<stamp>` copies, and the pre-#817 app `.invalid-<nanos>`
+/// copies still on disk from older builds. Detection is a cross-process
+/// contract: a canonical file absent right after a quarantine means the only
+/// healthy registry may live in the other surface's memory, so mutation
+/// readers refuse instead of rebuilding from defaults. Directory errors
+/// propagate (the caller owns the context); a missing directory is just
+/// "no siblings".
+fn quarantine_sibling_exists(path: &Path) -> std::io::Result<bool> {
+    let Some(file_name) = path.file_name() else {
+        return Ok(false);
+    };
+    let file_name = file_name.to_string_lossy();
+    let invalid_prefix = format!("{file_name}.invalid-");
+    let corrupt_prefix = format!("{file_name}.corrupt-");
+    let entries = match std::fs::read_dir(path.parent().unwrap_or(Path::new("."))) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry_file_name = entry?.file_name();
+        let name = entry_file_name.to_string_lossy();
+        if name.starts_with(&invalid_prefix) || name.starts_with(&corrupt_prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Per-store behaviour carried by the registry type itself.
@@ -848,6 +897,23 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // anything else stays "unknown" and forces the next check to
         // re-read, which merges the foreign payload in — never drops it.
         *self.seen.write() = stamp_of_our_write(self.path.as_ref(), &payload);
+        // Legacy sentinel cleanup (#899 review P2): the sentinel dropped at
+        // quarantine time exists to make an already-installed pre-#899 CLI
+        // refuse mutations while the canonical table is absent. Now that a
+        // healthy canonical file exists, remove it — desktop-owned name
+        // only; the CLI's own `.invalid-<stamp>` evidence copies stay.
+        if let Some(sentry) = legacy_quarantine_sentry_path(self.path.as_ref()) {
+            if sentry.exists() {
+                if let Err(error) = std::fs::remove_file(&sentry) {
+                    log::warn!(
+                        "Could not remove the legacy quarantine sentinel {} ({error}); \
+                         an older CLI keeps refusing mutations until it is removed{}",
+                        sentry.display(),
+                        T::WARN_SUFFIX
+                    );
+                }
+            }
+        }
         self.quarantined
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
@@ -868,20 +934,52 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 false
             }
             QuarantineStrategy::Rename => {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    // Every store path is built with a file component; the
-                    // literal only covers a degenerate custom path.
-                    .unwrap_or("registry.json");
-                let quarantine_path =
-                    path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
-                match std::fs::rename(path, &quarantine_path) {
-                    Ok(()) => {
+                // Same-directory rename-aside through the platform primitive
+                // (memory / sessions / code_checkpoints share it): plain
+                // rename, no copy fallback — identical semantics to the
+                // inline arm this replaces (#817 B4), with the shared
+                // timestamped naming instead of a scheduled-local one.
+                // Mixed-version cross-process contract (#899 review P2 and
+                // its fix-delta follow-up): the `.corrupt-*` quarantine name
+                // is invisible to an already-installed pre-#899 CLI — its
+                // sibling scan checks only `.invalid-`, and its stamp check
+                // re-examines only the canonical file. The legacy-visible
+                // sentinel is therefore established BEFORE the canonical
+                // file is removed: a marker written after the rename would
+                // leave a window in which the old CLI has already captured
+                // an absent-canonical stamp and found no `.invalid-*`
+                // sibling, letting its default-based rewrite through. If
+                // the marker cannot be established, the canonical data
+                // STAYS IN PLACE (LogInPlace semantics: the malformed
+                // payload is re-detected and re-attempted on every read)
+                // rather than opening a marker-less absence window. The
+                // sentinel is removed on the next successful persist.
+                let Some(sentry) = legacy_quarantine_sentry_path(path) else {
+                    log::warn!(
+                        "Invalid {} {} ({reason}) keeps its canonical file in place: \
+                         no file name to derive the legacy quarantine sentinel \
+                         from{}",
+                        T::LABEL,
+                        path.display(),
+                        T::WARN_SUFFIX
+                    );
+                    return false;
+                };
+                if let Err(error) = std::fs::write(&sentry, b"") {
+                    log::warn!(
+                        "Invalid {} {} ({reason}) keeps its canonical file in place: \
+                         the legacy quarantine sentinel {} could not be written \
+                         ({error}); quarantining would expose an absence window an \
+                         older CLI would rebuild from defaults{}",
+                        T::LABEL,
+                        path.display(),
+                        sentry.display(),
+                        T::WARN_SUFFIX
+                    );
+                    return false;
+                }
+                match crate::platform::filesystem::quarantine_corrupt_file(path) {
+                    Ok(quarantine_path) => {
                         log::warn!(
                             "Quarantined {} {} to {} ({reason}){}",
                             T::LABEL,
@@ -892,6 +990,12 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                         true
                     }
                     Err(error) => {
+                        // The rename failed, so the canonical file is still
+                        // in place; the sentinel already on disk is harmless
+                        // while the canonical exists (both surfaces read it,
+                        // and a healthy persist clears the sentinel) and
+                        // keeps protecting the window if a later attempt
+                        // succeeds.
                         log::warn!(
                             "Invalid {} {} ({reason}) could not be quarantined: {error}{}",
                             T::LABEL,
@@ -1373,27 +1477,10 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
     ) -> Result<ScheduledTaskKindLookup> {
         if let Err(error) = std::fs::metadata(self.path.as_ref()) {
             if error.kind() == std::io::ErrorKind::NotFound {
-                if let Some(parent) = self.path.parent() {
-                    match std::fs::read_dir(parent) {
-                        Ok(entries) => {
-                            for entry in entries {
-                                let entry = entry.context("read scheduled task kind directory")?;
-                                if entry
-                                    .file_name()
-                                    .to_string_lossy()
-                                    .starts_with("task-kinds.json.invalid-")
-                                {
-                                    bail!(
-                                        "scheduled task kind metadata unavailable after quarantine"
-                                    );
-                                }
-                            }
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => {
-                            return Err(error).context("read scheduled task kind directory");
-                        }
-                    }
+                if quarantine_sibling_exists(self.path.as_ref())
+                    .context("read scheduled task kind directory")?
+                {
+                    bail!("scheduled task kind metadata unavailable after quarantine");
                 }
             } else {
                 return Err(error).context("read scheduled task kind metadata");
@@ -2134,6 +2221,189 @@ mod foreign_writer_tests {
 
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_file(&invalid);
+    }
+
+    /// The absent-file refusal in `checked_kind_lookup_for` must detect
+    /// quarantine siblings under BOTH naming generations: the CLI's
+    /// `.invalid-<stamp>` copies (still produced by every CLI command) and
+    /// this app's platform-named `.corrupt-<ts>.<nanos>` copies (#817 B4).
+    /// Either prefix means a quarantine just happened and the only healthy
+    /// registry may live in another handle's memory — proceeding would let a
+    /// fresh bootstrap race that memory. With no sibling at all, an absent
+    /// canonical file stays the genuine fresh bootstrap.
+    #[test]
+    fn checked_lookup_refuses_quarantine_siblings_under_both_namings() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // No file, no sibling: fresh bootstrap must still answer (Chat).
+        let store = kind_store(&path);
+        assert_eq!(
+            store.checked_kind_lookup_for("t1").unwrap(),
+            ScheduledTaskKindLookup::Chat,
+            "an absent file with no quarantine sibling is a fresh bootstrap"
+        );
+
+        // The CLI's `.invalid-<stamp>` sibling (canonical still absent).
+        let invalid = path.with_file_name("task-kinds.json.invalid-20261119T000000");
+        std::fs::write(&invalid, b"{not json").unwrap();
+        assert!(
+            store.checked_kind_lookup_for("t1").is_err(),
+            "a legacy .invalid- sibling must refuse the strict lookup"
+        );
+        let _ = std::fs::remove_file(&invalid);
+
+        // The app's platform-named `.corrupt-` sibling.
+        let corrupt = path.with_file_name("task-kinds.json.corrupt-20261119T000000.123456789");
+        std::fs::write(&corrupt, b"{not json").unwrap();
+        assert!(
+            store.checked_kind_lookup_for("t1").is_err(),
+            "a platform-named .corrupt- sibling must refuse the strict lookup"
+        );
+        let _ = std::fs::remove_file(&corrupt);
+
+        assert_eq!(
+            store.checked_kind_lookup_for("t1").unwrap(),
+            ScheduledTaskKindLookup::Chat,
+            "removing the sibling copies opts back into the fresh bootstrap"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Mixed-version contract (#899 review P2): when THIS desktop quarantines
+    /// a damaged table (`.corrupt-<ts>.<nanos>`), an already-installed
+    /// pre-#899 CLI — whose sibling scan recognizes only `.invalid-` — must
+    /// still refuse mutations during the window before the desktop
+    /// re-persists the canonical table, or an old CLI's fresh-from-null
+    /// rebuild would overwrite the other surface's recoverable entries.
+    /// The quarantine therefore drops a desktop-owned sentinel carrying the
+    /// legacy `.invalid-` prefix, and the next successful persist removes it
+    /// (evidence `.corrupt-` copy and any CLI `.invalid-<stamp>` copies are
+    /// never touched).
+    #[test]
+    fn quarantine_drops_a_legacy_visible_sentry_and_persist_clears_it() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        std::fs::write(&path, b"{not json").unwrap();
+        let store = kind_store(&path);
+
+        // A strict read over the malformed file quarantines it aside.
+        store.reload();
+        assert!(!path.exists(), "the quarantine renamed the canonical away");
+        let mut corrupt_seen = false;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("task-kinds.json.corrupt-") {
+                corrupt_seen = true;
+            }
+        }
+        assert!(corrupt_seen, "the platform-named quarantine copy exists");
+
+        // The sentinel: legacy-prefix visible (what the pre-#899 CLI scan
+        // matches), desktop-owned exact name.
+        let sentry = path.with_file_name("task-kinds.json.invalid-desktop");
+        assert!(sentry.exists(), "the legacy-visible sentinel was dropped");
+        assert!(
+            sentry
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("task-kinds.json.invalid-")),
+            "the sentinel must carry the prefix an already-installed pre-#899 \
+             CLI's sibling scan matches"
+        );
+
+        // During the window (canonical absent, sentinel present) the strict
+        // lookup refuses — same refusal an old CLI's scan produces.
+        assert!(
+            store.checked_kind_lookup_for("t1").is_err(),
+            "the sentinel window must refuse the strict lookup"
+        );
+
+        // A CLI-owned evidence copy planted beside the sentinel (the shape
+        // the CLI writes when IT quarantines a registry). Persist must clear
+        // ONLY the exact desktop sentinel name — this copy is what keeps an
+        // installed pre-#899 CLI refusing mutations while the canonical is
+        // gone, so a cleanup that broadens to every `.invalid-*` sibling
+        // would reopen the mixed-version default-rewrite window.
+        let cli_evidence = path.with_file_name("task-kinds.json.invalid-20261119T000000Z");
+        std::fs::write(&cli_evidence, b"").unwrap();
+
+        // The next successful persist removes the sentinel (the old CLI can
+        // operate again) but keeps the quarantine evidence copy — desktop's
+        // own `.corrupt-` copy AND the CLI's planted `.invalid-` copy alike.
+        store
+            .set_kind("t1", Some(memory_organize()))
+            .expect("persist after quarantine");
+        assert!(
+            !sentry.exists(),
+            "a successful persist must remove the legacy sentinel"
+        );
+        assert!(path.exists(), "the canonical table is healthy again");
+        let mut corrupt_kept = false;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("task-kinds.json.corrupt-") {
+                corrupt_kept = true;
+            }
+        }
+        assert!(
+            corrupt_kept,
+            "the quarantine evidence copy survives persist"
+        );
+        assert!(
+            cli_evidence.exists(),
+            "persist must not touch CLI-owned `.invalid-<stamp>` evidence copies"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The marker-before-rename contract (fix-delta follow-up P2): if the
+    /// legacy-visible sentinel cannot be established, the quarantine must
+    /// NOT remove the canonical file. A rename-then-mark order leaves an
+    /// absence window an installed pre-#899 CLI rebuilds from defaults —
+    /// its stamp check re-examines only the canonical file, so a marker
+    /// that arrives after the rename cannot stop a write whose stamp was
+    /// captured inside the window. A directory parked at the sentinel path
+    /// forces the marker write to fail; this doubles as the rename/marker
+    /// ordering proof (canonical survives ⟺ marker established first).
+    #[test]
+    fn marker_failure_keeps_the_canonical_in_place() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        std::fs::write(&path, b"{not json").unwrap();
+        let sentry = path.with_file_name("task-kinds.json.invalid-desktop");
+        std::fs::create_dir(&sentry).expect("park a directory at the sentinel path");
+        let store = kind_store(&path);
+
+        store.reload();
+
+        assert!(
+            path.exists(),
+            "the canonical file must stay in place when the marker cannot be established"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{not json",
+            "the canonical bytes are untouched by the refused quarantine"
+        );
+        let mut corrupt_seen = false;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("task-kinds.json.corrupt-")
+            {
+                corrupt_seen = true;
+            }
+        }
+        assert!(
+            !corrupt_seen,
+            "no quarantine copy may appear without the legacy-visible marker"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// (a) Two store instances share one file: a resident handle's writes
