@@ -1,4 +1,4 @@
-; Pinvou fork of the Tauri bundler NSIS template. Base: tauri-cli-v2.12.4
+; Pinvou fork of the Tauri bundler NSIS template. Base: tauri-cli-v2.12.6
 ; (crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi). Local deltas:
 ; PINVOU_STAGED_RESOURCES_SIZE_KIB size accounting, PINVOU_INSTALL/UNINSTALL_
 ; STAGED_RESOURCES macro insertion points (staged pre-signed resources bypass

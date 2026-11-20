@@ -421,7 +421,7 @@ zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # Tauri's unstable Wry plugin API lets the browser feature pre-register its
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.
-tauri-runtime-wry = "=2.12.3"
+tauri-runtime-wry = "=2.12.5"
 # Computer Use virtual display (features/computer_use/platform/linux_virtual):
 # pure-Rust X11 connection for Xvfb readiness polling and full-screen GetImage
 # capture. default-features = false keeps the pure-Rust RustConnection path —

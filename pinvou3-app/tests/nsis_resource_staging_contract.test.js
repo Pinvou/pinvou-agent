@@ -86,6 +86,13 @@ const localNsisBuildScriptPath = path.join(
 );
 const localNsisBuildScript = fs.readFileSync(localNsisBuildScriptPath, "utf8");
 const packageJson = JSON.parse(read("package.json"));
+// The CLI pin drives every provenance-version assertion below: the Windows
+// templates are re-based on the bundler version package.json pins, so bind
+// the header pins to the dependency instead of a version that silently
+// drifts away from it.
+const cliPin = packageJson.devDependencies["@tauri-apps/cli"];
+const cliVersion = String(cliPin).replace(/^[~^><= ]*/, "");
+const cliVersionPattern = cliVersion.replaceAll(".", "\\.");
 
 assert.doesNotMatch(
   stageScript,
@@ -147,7 +154,11 @@ assert.doesNotMatch(baseInstallerHooks, /PINVOU_(?:UN)?INSTALL_STAGED_RESOURCES/
 // Restart Manager. The provenance header records the re-base source.
 assert.match(
   installerTemplate,
-  /; Pinvou fork of the Tauri bundler NSIS template\. Base: tauri-cli-v2\.12\.4/u,
+  new RegExp(
+    "; Pinvou fork of the Tauri bundler NSIS template\\. Base: tauri-cli-v" +
+      cliVersionPattern,
+    "u",
+  ),
   "re-base the template on the bundler version pinned by package.json before adding deltas",
 );
 assert.match(
@@ -300,15 +311,26 @@ assert.match(
 );
 assert.match(
   mainWxs,
-  /Base: tauri-cli-v2\.12\.4/u,
+  new RegExp("Base: tauri-cli-v" + cliVersionPattern, "u"),
   "main.wxs must carry the same provenance contract as the NSIS template",
+);
+// Ported from the tauri-v2.12.6 bundler template: a major upgrade must only
+// re-create the desktop shortcut when the user still has it, otherwise the
+// upgrade resurrects a shortcut the user deliberately removed.
+assert.match(
+  mainWxs,
+  /<Property Id="DESKTOPSHORTCUTEXISTS" Secure="yes">[\s\S]*?<FileSearch Id="DesktopShortcutFile" Name="\{\{product_name\}\}\.lnk" \/>/u,
+  "the desktop-shortcut existence probe must ship with the tauri-v2.12.6 template re-base",
+);
+assert.match(
+  mainWxs,
+  /<Condition>NOT WIX_UPGRADE_DETECTED OR DESKTOPSHORTCUTEXISTS<\/Condition>/u,
+  "the desktop shortcut must only be re-created during a major upgrade when the user still has it",
 );
 // The provenance version must track the bundler actually pinned by
 // package.json: a CLI bump without re-basing the template passes every
 // other pin (no CI lane runs makensis), so bind the header to the
 // dependency.
-const cliPin = packageJson.devDependencies["@tauri-apps/cli"];
-const cliVersion = String(cliPin).replace(/^[~^><= ]*/, "");
 assert.ok(
   cliVersion && installerTemplate.includes("Base: tauri-cli-v" + cliVersion),
   "the template provenance header must track the pinned @tauri-apps/cli (" +
