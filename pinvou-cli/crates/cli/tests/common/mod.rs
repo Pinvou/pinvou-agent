@@ -360,7 +360,15 @@ pub fn command_error(arguments: &[&str]) -> CliError {
 /// must carry the exit-code 2 usage marker.
 pub fn assert_usage(arguments: &[&str]) -> String {
     let error = command_error(arguments);
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+    assert_eq!(
+        error.exit_code(),
+        ExitCode::Usage,
+        "expected the usage exit-code class (round-36 review: neither the \
+         CliError Display nor the argv is interpolated into this payload — \
+         usage error text embeds the arguments, so a session-id-bearing argv \
+         in a panic payload trips the cleartext-logging scanner, which the \
+         wave-head CodeQL run confirmed)"
+    );
     error.to_string()
 }
 

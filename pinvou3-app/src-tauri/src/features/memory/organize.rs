@@ -309,10 +309,15 @@ pub async fn organize_memory_with_llm(
 
 /// Report finalization: persist history first (failure becomes a warning), then
 /// write the completion diagnostic.
-fn finish_organize_report(report: &mut MemoryOrganizeReport) {
+pub(super) fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     if let Err(error) = persist_organize_report(report) {
-        let detail = format!("persist organize history: {error}");
-        eprintln!("[memory] {detail}");
+        // Round-15 review minor: report.warnings rides the organize_memory
+        // payload and the history query outbound (both on the Web allowlist),
+        // so it folds the storage root under the same convention as other
+        // memory warnings; the desktop log keeps the raw detail.
+        let raw = format!("persist organize history: {error}");
+        eprintln!("[memory] {raw}");
+        let detail = crate::platform::paths::redact_storage_prefix(&raw);
         report.warnings.push(detail);
     }
     append_memory_review_diagnostic(
@@ -349,15 +354,43 @@ pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
     values
         .into_iter()
         .filter_map(|value| serde_json::from_value::<MemoryOrganizeReport>(value).ok())
+        .map(|mut report| {
+            // Round-16 follow-up review (M3): create-side folding (the six
+            // apply-stage arms plus the persist warning) only covers entries
+            // persisted after this PR; entries already in the history file
+            // (≤ ORGANIZE_HISTORY_MAX_REPORTS, retired by natural rotation)
+            // still carry warnings with the raw absolute storage-root path,
+            // and this query rides outbound (Web allowlist). The read path
+            // adds folding uniformly: redact is idempotent, so re-folding an
+            // already-folded entry is a no-op.
+            report.warnings = report
+                .warnings
+                .iter()
+                .map(|warning| crate::platform::paths::redact_storage_prefix(warning))
+                .collect();
+            report
+        })
         .collect()
 }
 
-fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
+// pub(super): tests.rs drives the on-disk heal assertion through this
+// writer (the heal itself rides the folding load_organize_history read
+// above).
+pub(super) fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
     let _guard = io::write_lock().lock();
     let mut history = load_organize_history();
     history.insert(0, report.clone());
     history.truncate(ORGANIZE_HISTORY_MAX_REPORTS);
-    write_json_atomic(&io::organize_history_path(), &history)
+    // Round-28 review MINOR-5: the atomic-write path's io Display carries no
+    // path (bare OS text), so finish_organize_report's folding was always a
+    // no-op for this arm. Add path context under the same `{path}: {e}`
+    // convention as read_capped, turning the existing fold into one that
+    // carries weight (the desktop eprintln keeping the raw detail is
+    // unchanged).
+    let history_path = io::organize_history_path();
+    write_json_atomic(&history_path, &history).map_err(|error| {
+        std::io::Error::new(error.kind(), format!("{}: {error}", history_path.display()))
+    })
 }
 
 /// One-shot snapshot of the six stores: LLM input, id existence validation, and
@@ -636,8 +669,8 @@ pub(super) fn validate_organize_action(
     // items that expire or get archived after this snapshot — the io update
     // entry points reset status/last_hit to active/now, and honoring the patch
     // would revive a just-archived item for a whole window at its original
-    // ttl_days, contradicting prompt rule 6 (「保持原有过期设置」, "keep the
-    // original expiry setting").
+    // ttl_days, contradicting prompt rule 6 ("keep the original expiry
+    // setting").
     if op != "delete" && matches!(kind.as_str(), "current_focus" | "recent_activity") {
         let not_active = targets
             .iter()
@@ -885,8 +918,23 @@ fn apply_organize_actions(
         Err(error) => {
             // Without the fresh views no action can be verified against the
             // current store: apply nothing rather than trusting the snapshot.
+            // Round-16 review (M5): the io error's Display carries the
+            // absolute storage path (the bounded-read primitive's error is
+            // path.display()), so the storage root must be folded before it
+            // rides the report payload and the history query outbound (Web
+            // allowlist) — the same convention as this function's six error
+            // warning arms and finish_organize_report.
+            // (Round-19 review correction: "the Display carries the path"
+            // holds today for four of the six arms; the errors of the update
+            // and merge-update arms are wrapped by anyhow `.context`, whose
+            // Display renders only the outermost context text, so the path
+            // never surfaces literally — folding there is purely defensive
+            // redundancy. Those two arms keep the fold: the bare io arm's
+            // path does surface, and a new arm falling into the same shape
+            // needs no case-by-case triage.)
             warnings.push(format!(
-                "organize: reload stores before applying actions: {error}; no action applied"
+                "organize: reload stores before applying actions: {}; no action applied",
+                crate::platform::paths::redact_storage_prefix(&error.to_string()),
             ));
             return (deleted, updated, merged, warnings, capped);
         }
@@ -970,8 +1018,11 @@ fn apply_organize_actions(
                             }
                         },
                         Err(error) => {
-                            warnings
-                                .push(format!("organize: delete {} {id}: {error}", action.kind));
+                            warnings.push(format!(
+                                "organize: delete {} {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                            ));
                         }
                     }
                 }
@@ -1007,7 +1058,11 @@ fn apply_organize_actions(
                         ));
                     }
                     Err(error) => {
-                        warnings.push(format!("organize: update {} {id}: {error}", action.kind));
+                        warnings.push(format!(
+                            "organize: update {} {id}: {}",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                        ));
                     }
                 }
             }
@@ -1097,8 +1152,9 @@ fn apply_organize_actions(
                     }
                     Err(error) => {
                         warnings.push(format!(
-                            "organize: merge {} {keep}: {error}; merge skipped",
-                            action.kind
+                            "organize: merge {} {keep}: {}; merge skipped",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
                         ));
                     }
                 }
@@ -1141,8 +1197,9 @@ fn apply_organize_actions(
                             // merge, keep is already updated and this source item lingers, so
                             // the report must pinpoint it as a merge's cleanup delete.
                             warnings.push(format!(
-                                "organize: merge {} cleanup delete {id}: {error}",
-                                action.kind
+                                "organize: merge {} cleanup delete {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
                             ));
                         }
                     }
@@ -1158,7 +1215,10 @@ fn apply_organize_actions(
     // compaction reloads the store it rewrites.
     for kind in ["current_focus", "recent_activity"] {
         if let Err(error) = io::compact_timed_memory_store_unlocked(kind) {
-            warnings.push(format!("organize: compact {kind}: {error}"));
+            warnings.push(format!(
+                "organize: compact {kind}: {}",
+                crate::platform::paths::redact_storage_prefix(&error.to_string())
+            ));
         }
     }
     (deleted, updated, merged, warnings, capped)

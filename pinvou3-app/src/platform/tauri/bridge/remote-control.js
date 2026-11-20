@@ -233,8 +233,12 @@
 
     async function stopRemoteControl() {
       const seq = ++webAccessIntentSeq;
+      // (#876 review P3) no useless initializer: the success branch always
+      // assigns before any read and the failure branch rethrows, so a null
+      // init was dead (no-useless-assignment).
+      let outcome;
       try {
-        await invoke("web_access_disable");
+        outcome = await invoke("web_access_disable");
       } catch (error) {
         if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
         // Round-6 复审:停用失败的错误写入同样必须清掉旧恢复码,与
@@ -243,13 +247,45 @@
         notify();
         throw error;
       }
+      // Latent gap, currently unreachable: a disposition that settles after a
+      // newer intent bumped the seq is discarded here without recording its
+      // warning — unreachable because SettingsView serializes every web-access
+      // action behind the single actionBusy flag.
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
+      // Review P2 (#876, fix-delta follow-up): the local stop always
+      // completes, and the returned disposition truthfully reports where the
+      // old credentials' revocation intent went. On a full queue
+      // (deferred_full_queue) the intent landed nowhere and is never
+      // replayed, so it must surface as a persistent revocation_warning.
+      // A queued disposition covers ONLY the endpoint stopped here: any
+      // earlier endpoint whose intent was dropped stays orphaned (joinable
+      // until expiry or manual cleanup), so queued/not_needed must never
+      // clear an existing warning — auto-clearing would misreport the
+      // still-orphaned endpoint as recovered. The match below is enumerated on
+      // the literal "deferred_full_queue": a future second incomplete-
+      // disposition variant would fall into the keep-existing-warning arm
+      // until the bridge learns the new literal (the same enumerated-pin
+      // blindness the Rust side discloses for its pins).
+      const revocationWarning =
+        outcome && outcome.revocation === "deferred_full_queue"
+          ? "deferred_full_queue"
+          : state.webAccess.revocation_warning || null;
       state.webAccess = Object.assign({}, state.webAccess, {
+        revocation_warning: revocationWarning,
         active: false, endpoint_id: null, url: null, qr_data_url: null,
         web_client_connected: false, host_workspace_authorized: false, status: "stopped", starting: false,
         last_error: null, last_error_code: null,
       });
       notify();
+      // (#876 fix-delta follow-up P2) Callers (the settings dialog) need the
+      // outcome to decide whether the queue-full warning is live after this
+      // stop — the dialog must NOT dismiss itself over an incomplete
+      // revocation. `revocation` carries the effective post-stop warning: a
+      // later queued/not_needed stop preserves a pre-existing warning and
+      // keeps reporting deferred_full_queue, while a clean stop reports null
+      // only when nothing was ever orphaned. `raw` carries the stop's own
+      // disposition for callers that need the boundary value.
+      return { revocation: revocationWarning, raw: outcome || {} };
     }
 
     async function refreshRemoteControlQr() {
@@ -257,8 +293,20 @@
       try {
         const info = await invoke("web_access_rotate");
         if (seq !== webAccessIntentSeq) return info;
+        // Review P2 (#876, fix-delta follow-up): the rotation disposition
+        // describes only the endpoint replaced here — queued means THIS one
+        // was durably queued, while earlier dropped-intent endpoints stay
+        // orphaned, so the warning never auto-clears (deferred_full_queue
+        // overwrites it; anything else keeps what is already shown). The
+        // match is enumerated on the literal "deferred_full_queue": a future
+        // second incomplete-disposition variant falls into the
+        // keep-existing-warning arm until the bridge learns the new literal.
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,
+          revocation_warning:
+            info && info.revocation_disposition === "deferred_full_queue"
+              ? "deferred_full_queue"
+              : state.webAccess.revocation_warning || null,
         });
         notify();
         await refreshRemoteControlStatus(seq);

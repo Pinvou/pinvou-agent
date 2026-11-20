@@ -9,8 +9,10 @@
 
   let activePicker = null;
 
-  // 文案单一来源是 shared/i18n.js 的 uiPlatformMisc.hostFilePicker,由 React 入口
-  // 按当前语言挂到 window.PinvouHostFilePickerStrings;此处保留中文兜底(纯脚本无法 import ES module)。
+  // The single source for this copy is uiPlatformMisc.hostFilePicker in
+  // shared/i18n.js; the React entry attaches it to
+  // window.PinvouHostFilePickerStrings in the active language. These Chinese
+  // strings remain only as a fallback (a plain script cannot import ES modules).
   const FALLBACK_LABELS = {
     pickFolderTitle: "选择桌面端文件夹", pickFileTitle: "选择桌面端文件",
     close: "关闭", goUp: "上一级", loadingPath: "正在读取桌面端目录…", loading: "正在读取…",
@@ -20,6 +22,7 @@
     thisComputer: "此电脑", home: "用户目录", emptyFolder: "此目录中没有可选内容",
     loadFailed: function (err) { return "读取失败：" + err; },
     workspaceNotAuthorized: "请先在桌面端允许远程访问本机目录",
+    listingFailed: "读取桌面端文件列表失败，请重试。",
     alreadyOpen: "已有文件选择器正在打开",
   };
 
@@ -245,15 +248,28 @@
         renderEntries(listing && Array.isArray(listing.entries) ? [...listing.entries] : [], false);
       }
 
-      // Maps stable host-workspace authorization codes to localized copy for
-      // both the listing and the confirm-mint failure paths.
+      // Composes the final failure text for both the listing and the
+      // confirm-mint paths. Stable wire codes map to complete localized
+      // sentences and render bare — the caller must not wrap them again
+      // in loadFailed, or the panel shows the prefix and the sentence
+      // spliced together (e.g. "Failed to read: Listing desktop files
+      // failed. Please try again."). Only unrecognized errors carry the
+      // loadFailed prefix around their raw detail.
       function localizedPickerError(error) {
         const message = String(error && error.message ? error.message : error);
         const code = String(error && error.code ? error.code : "");
         if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
           return labels.workspaceNotAuthorized;
         }
-        return message;
+        // Round-22 review: since round-21, both legs of this command (enum/
+        // mint) fold into a stable wire code (the original chain only lands in
+        // desktop logs), so the picker must map that code to readable copy,
+        // or the panel would render the bare code string directly.
+        if (code === "web_session_list_host_files_failed"
+          || message === "web_session_list_host_files_failed") {
+          return labels.listingFailed;
+        }
+        return labels.loadFailed(message);
       }
 
       function load(path) {
@@ -283,7 +299,7 @@
           }
           rootsButton.disabled = rootEntries.length === 0;
           body.replaceChildren(element("div", "pinvou-host-picker-error",
-            labels.loadFailed(localizedPickerError(error))));
+            localizedPickerError(error)));
         });
       }
 
@@ -328,7 +344,7 @@
             mintInFlight = false;
             confirm.disabled = false;
             body.replaceChildren(element("div", "pinvou-host-picker-error",
-              labels.loadFailed(localizedPickerError(error))));
+              localizedPickerError(error)));
           });
         } else if (directoryMode) finish(currentPath);
         else finish(multiple ? [...selected.keys()] : [...selected.keys()][0] || null);

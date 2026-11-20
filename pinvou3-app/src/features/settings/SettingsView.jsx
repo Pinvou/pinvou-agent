@@ -218,6 +218,15 @@ function hasStoredCredential(record) {
         ? remoteCopy.registerHints?.[webAccess.last_error_code]
         : null;
       const webAccessErrorText = registerHint || webAccess.last_error || null;
+      // Review P2 (#876): a queue-full revocation must surface as a
+      // persistent localized warning (the local stop completed, but the old
+      // credentials' revocation intent landed nowhere and is not replayed
+      // after restart) — local completion and remote revocation stay two
+      // distinct outcomes; the warning lives outside the status field so a
+      // status refresh cannot wipe it.
+      const revocationHint = webAccess.revocation_warning
+        ? remoteCopy.revocationHints?.[webAccess.revocation_warning] || null
+        : null;
       const statusMeta = statusCopy
         ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccessErrorText || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
         : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
@@ -237,7 +246,13 @@ function hasStoredCredential(record) {
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.remoteControl.stopRemoteControl();
+          const outcome = await bridge.remoteControl.stopRemoteControl();
+          // Review P2 (#876 fix-delta follow-up): a queue-full stop is an
+          // INCOMPLETE remote revocation — dismissing the dialog here would
+          // hide the persistent warning surface. Keep the dialog open so
+          // the banner states the incompleteness; the user closes it
+          // explicitly once informed.
+          if (outcome && outcome.revocation === "deferred_full_queue") return;
           onClose();
         } catch { /* stop failure surfaced by the banner */ } finally {
           setActionBusy(false);
@@ -344,6 +359,11 @@ function hasStoredCredential(record) {
               </div>
             )}
             {webAccessErrorText && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccessErrorText}</div>}
+            {revocationHint && (
+              <div data-testid="web-access-revocation-warning" className="mt-3 text-[12px] leading-relaxed text-[#B06000] break-words bg-[#FDF3E1] dark:text-[#F9AB00] dark:bg-[#F9AB00]/10 rounded-lg px-3 py-2">
+                {revocationHint}
+              </div>
+            )}
             {webAccessActive && hostWorkspaceAuthorized && (
               // 授权状态 affirmative 可见 + 可单独撤销:旧版本「开启访问」顺带
               // 写下的 allow_host_workspace 不再只能靠 Stop 整体清除。

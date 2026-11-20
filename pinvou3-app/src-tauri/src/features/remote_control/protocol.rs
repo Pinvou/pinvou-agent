@@ -44,6 +44,39 @@ pub struct WebAccessInfo {
     pub url: String,
     pub qr_data_url: Option<String>,
     pub status: WebAccessStatusKind,
+    /// How this operation disposed of the old credential's remote-revocation
+    /// intent (set for rotate, i.e. the refresh path; None otherwise — stop
+    /// reports its disposition through [`WebAccessStopOutcome`]): on a full
+    /// queue the intent has nowhere to land, so the caller receives not a
+    /// vague Ok but an explicitly incomplete "local rotate done, remote
+    /// revocation not landed" result. Optional so existing JSON
+    /// deserialization is unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_disposition: Option<WebAccessRevocationDisposition>,
+}
+
+/// Disposition of the old credential's remote-revocation intent.
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebAccessRevocationDisposition {
+    /// Persisted into the pending queue; the post-restart replay keeps
+    /// retrying it.
+    Queued,
+    /// Queue full: the revocation intent has nowhere to land, and the old
+    /// endpoint stays joinable until it expires at the relay or is cleaned
+    /// up manually.
+    DeferredFullQueue,
+    /// No pre-existing endpoint, nothing to revoke.
+    NotNeeded,
+}
+
+/// Explicit stop-operation outcome: the local stop (config deletion,
+/// endpoint teardown) always completes, and `revocation` truthfully reports
+/// where the old credential's remote-revocation intent landed (`DeferredFullQueue`
+/// when the queue is full — manual cleanup or relay expiry then applies).
+#[derive(Clone, Serialize, PartialEq, Eq)]
+pub struct WebAccessStopOutcome {
+    pub revocation: WebAccessRevocationDisposition,
 }
 
 impl std::fmt::Debug for WebAccessInfo {
@@ -168,6 +201,7 @@ mod tests {
             url: format!("https://relay.test/pinvou3/remote/#endpoint=ep_123&token={token}"),
             qr_data_url: Some(format!("data:image/png;base64,{token}")),
             status: WebAccessStatusKind::WaitingWebClient,
+            revocation_disposition: None,
         };
         let rendered = format!("{info:?}");
         assert!(
