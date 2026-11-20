@@ -1031,13 +1031,14 @@ fn read_registry_capped(path: &Path) -> std::io::Result<String> {
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
 /// default. An unreadable or wrong-shaped payload is quarantined next to the
-/// original (`<name>.invalid-<timestamp>`; this reader likewise refuses a
-/// missing canonical whose sibling is the desktop's `.corrupt-<timestamp>.<nanos>`
-/// copy or `.invalid-desktop` sentinel) before degrading to the default for
-/// this process — otherwise
-/// the next write through this process would silently destroy the only copy
-/// of the other tasks' data. Newer-schema files stay untouched: they take
-/// the refusal path (`ensure_supported_schema`), not quarantine.
+/// original (`<name>.invalid-<timestamp>`). A missing canonical is refused —
+/// never silently rebuilt — by the mutation reader (`read_registry_for_write`)
+/// when a sibling carries either surface's quarantine naming: the desktop's
+/// `.corrupt-<timestamp>.<nanos>` copy, the desktop's `.invalid-desktop`
+/// sentinel, or this CLI's own `.invalid-` evidence; this read-only reader
+/// just degrades to the default for this process. Newer-schema files stay
+/// untouched: they take the refusal path (`ensure_supported_schema`), not
+/// quarantine.
 fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
     match read_registry_capped(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {

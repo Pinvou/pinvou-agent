@@ -506,10 +506,26 @@ jobs:
               # 读取 native_installer.rs 与 platform/download.rs(下载骨架收敛后
               # HTTPS 候选门与 .part RAII 清理守卫随实现移入 download.rs,
               # 契约断言随之 re-point)做跨语言契约断言;不列出则 Rust-only
-              # 改动会静默跳过该 node 门禁。
+              # 改动会静默跳过该 node 门禁(test_ci_gate_policy 锁定此路由)。
               - 'pinvou3-app/src-tauri/src/features/marketplace/python_dependencies.rs'
               - 'pinvou3-app/src-tauri/src/features/connectors/native_installer.rs'
               - 'pinvou3-app/src-tauri/src/platform/download.rs'
+              # 两契约测试的其余 src-tauri 读取(版本钉/HTTPS 门/重定向守卫/
+              # 提取断言所在源;路由由 test_ci_gate_policy 从测试源码派生锁定,
+              # 删条目即红)。
+              - 'pinvou3-app/src-tauri/src/platform/paths.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/tmeet.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/feishu.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/wecom.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/dingtalk.rs'
+              - 'pinvou3-app/src-tauri/src/platform/os/posix.rs'
+              - 'pinvou3-app/src-tauri/src/platform/os/linux/linux_path.rs'
+              - 'pinvou3-app/src-tauri/src/platform/os/macos/macos_path.rs'
+              - 'pinvou3-app/src-tauri/src/features/marketplace/mod.rs'
+              - 'pinvou3-app/src-tauri/src/features/marketplace/connectors.rs'
+              - 'pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs'
+              - 'pinvou3-app/src-tauri/src/features/runtime_bundle/platform/extraction.rs'
+              - 'pinvou3-app/src-tauri/resources/platforms/**'
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'

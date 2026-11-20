@@ -1,14 +1,13 @@
 //! 流式下载校验 helper:下载到 `.part` → 逐块取消/进度 → sha256 校验 → 原子 rename。
 //!
-//! 收敛 voice/knowledge 两路异步下载共享的「下载 → 校验 → 提升」骨架。两路
-//! 取消机制不同(voice 的 AtomicBool、knowledge 的 AtomicBool + 进度事件),
-//! 因此取消谓词与进度回调一律由调用方以闭包注入,helper 不假定统一取消源。
+//! 收敛 voice 异步下载的「下载 → 校验 → 提升」骨架(现网仅 voice_asr 一路
+//! 接入),取消谓词与进度回调由调用方以闭包注入,helper 不假定统一取消源。
 //!
 //! **设计取舍**:本函数为 `async fn`(reqwest 异步流式)。连接器归档 / Python
 //! wheel 的下载跑在 `reqwest::blocking` 上,且常在 `tokio::task::spawn_blocking`
 //! 内被调用(飞书/钉钉/企微 ensure_cli),该线程上没有可 `.await` 的异步运行时;
 //! 强行 `block_on` 嵌套运行时会与外层 tauri runtime 冲突,属于 force-fit。故异步
-//! helper 只服务 voice/knowledge 两路;同步侧收敛为 [`download_verified_blocking`]
+//! helper 只服务 voice 一路;同步侧收敛为 [`download_verified_blocking`]
 //! 候选循环骨架(#817 B5,原 connectors native_installer 与 marketplace
 //! python_dependencies 各自手写的孪生体),两条路线不合并。
 //!
@@ -1429,6 +1428,55 @@ mod tests {
         let part = destination.with_extension("part-blocktest");
         assert!(!part.exists(), "gated candidates never stage a part");
         assert!(!destination.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Request 失败文本的用户可见契约钉:带 userinfo 的候选 URL 走到真实
+    /// `error_for_status` 失败(本地 404)时,返回的 Request 文本必须不含
+    /// 凭据。经验证 reqwest 0.12 在把 URL 挂上错误 Display 前自己剥离
+    /// userinfo,`map_err` 处的 `redact_url_credentials_in_text` 属纵深防御
+    /// ——其存在无法经 reqwest 路径变异观测(去掉它本测试仍绿),本钉的是
+    ///「无论哪层负责,用户可见文本永不泄凭据」;若未来重构自建错误文本,
+    /// 此处即红线。候选循环测试的 connect-refused 路径 Display 不含 URL,
+    /// 覆盖不到本形态,故直连一层驱动。
+    #[test]
+    fn request_failure_text_is_redacted_end_to_end() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::Write as _;
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.flush();
+        });
+        let client = reqwest::blocking::Client::builder().build().unwrap();
+        let url =
+            reqwest::Url::parse(&format!("http://user:secret@127.0.0.1:{port}/payload")).unwrap();
+        let dir = scratch_dir("request_redact");
+        let destination = dir.join("payload.bin");
+        let spec = blocking_spec(HELLO_SHA, 1024 * 1024);
+        let result = download_one_verified(&client, &url, &spec, &destination);
+        server.join().unwrap();
+        match result {
+            Err(BlockingDownloadFailure::Request(text)) => {
+                assert!(
+                    text.contains("404"),
+                    "expected the error_for_status path (its Display embeds the \
+                     request URL), got: {text}"
+                );
+                assert!(
+                    !text.contains("user:secret"),
+                    "request failure text must be scrubbed of userinfo: {text}"
+                );
+            }
+            other => panic!("expected Request failure, got {other:?}"),
+        }
+        assert!(
+            !destination.exists(),
+            "a failed request never promotes a part"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

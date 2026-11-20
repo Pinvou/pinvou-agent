@@ -920,7 +920,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 /// 文件锁，裸 `read_to_string` 会被植入的 FIFO 卡死在 `open()` 上——锁被持有
 /// 期间所有回收站操作（含 restore 持有的 per-id import 锁）全部停摆。硬化
 /// 语义与其它私有状态文件一致：非普通文件（FIFO/symlink/设备）一律响亮拒绝。
-/// 机制在 store.rs 的 [`load_private_json_locked`]（#817 B4 合并的读写孪生），
+/// 机制在 store.rs 的 [`super::store::load_private_json_locked`]（#817 B4 合并的读写孪生），
 /// 这里只传 recycle-bin.json 自己的损坏文案。
 fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
     super::store::load_private_json_locked(path, "recycle-bin.json 损坏时 fail loud，不静默重建")
@@ -934,7 +934,7 @@ pub(crate) static FAIL_NEXT_RECYCLE_SAVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试）。
-/// 机制在 store.rs 的 [`save_private_json_locked`]；failpoint 留在包装层，
+/// 机制在 store.rs 的 [`super::store::save_private_json_locked`]；failpoint 留在包装层，
 /// 注入的错误必须在触碰磁盘前短路。
 fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
     #[cfg(test)]

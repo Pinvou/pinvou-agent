@@ -2320,8 +2320,18 @@ mod foreign_writer_tests {
             "the sentinel window must refuse the strict lookup"
         );
 
+        // A CLI-owned evidence copy planted beside the sentinel (the shape
+        // the CLI writes when IT quarantines a registry). Persist must clear
+        // ONLY the exact desktop sentinel name — this copy is what keeps an
+        // installed pre-#899 CLI refusing mutations while the canonical is
+        // gone, so a cleanup that broadens to every `.invalid-*` sibling
+        // would reopen the mixed-version default-rewrite window.
+        let cli_evidence = path.with_file_name("task-kinds.json.invalid-20261119T000000Z");
+        std::fs::write(&cli_evidence, b"").unwrap();
+
         // The next successful persist removes the sentinel (the old CLI can
-        // operate again) but keeps the quarantine evidence copy.
+        // operate again) but keeps the quarantine evidence copy — desktop's
+        // own `.corrupt-` copy AND the CLI's planted `.invalid-` copy alike.
         store
             .set_kind("t1", Some(memory_organize()))
             .expect("persist after quarantine");
@@ -2340,6 +2350,10 @@ mod foreign_writer_tests {
         assert!(
             corrupt_kept,
             "the quarantine evidence copy survives persist"
+        );
+        assert!(
+            cli_evidence.exists(),
+            "persist must not touch CLI-owned `.invalid-<stamp>` evidence copies"
         );
 
         let _ = std::fs::remove_dir_all(dir);
