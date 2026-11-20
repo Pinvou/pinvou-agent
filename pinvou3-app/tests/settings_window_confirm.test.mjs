@@ -303,6 +303,19 @@ test('the settings picker escape layer stays IME-guarded (r3 review)', () => {
   );
 });
 
+test('the settings picker stack closes confirm-first (r4 review)', () => {
+  // The settings twin of the ACP layered handler: with the add-all confirm
+  // stacked over the endpoint picker, one Escape press must close exactly the
+  // visual top (the confirm) — the r4 review found this branch order pinned
+  // on the ACP side (source pin + ⑥.18e–g) but not here, so an order flip
+  // (picker closing first) survived every suite.
+  assert.match(
+    SETTINGS_VIEW,
+    /if \(addAllModelsConfirm && !addingAllModels\) setAddAllModelsConfirm\(null\);\s*else if \(endpointPickerOpen\)/,
+    'the stacked confirm branch must stay ahead of the picker branch (confirm-first)',
+  );
+});
+
 test('feedback/memory confirm copy exists in zh/en/ja', () => {
   // Assert key existence only (matching the acp_providers_contract key-existence
   // pattern); freezing exact copy would red CI on normal wording tweaks.

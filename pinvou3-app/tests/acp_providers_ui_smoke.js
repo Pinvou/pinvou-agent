@@ -580,9 +580,10 @@ async function clickSettingsSection(page, label) {
     && !!document.querySelector('[data-testid="acp-provider-form-dialog"]')
   ));
   // ⑥.18g 共开态的「表单侧」Escape:两层都不圈禁焦点,Tab 可让焦点落回表单
-  // (这里以保存键为派发目标重演该几何)。此路径上表单的分层处理器参与派发:
-  // 确认优先的顺序必须仍只关确认层——旧「面板优先」顺序在这里会连面板一起
-  // 关掉(r3 复审 MAJOR-1 的行为级判别用例)。
+  // (这里以保存键为派发目标重演该几何)。表单的分层监听是窗口级常驻的,任何
+  // Escape 都会命中同一组监听(⑥.18f 与本步的参与集合完全一致,派发目标不
+  // 改变参与);确认优先的顺序必须仍只关确认层——旧「面板优先」顺序在这里
+  // 会连面板一起关掉(r3 复审 MAJOR-1 的行为级判别用例)。
   await page.evaluate(() => document.querySelector('[data-testid="acp-provider-form-save"]').focus());
   await page.keyboard.press('Enter');
   await sleep(300);
