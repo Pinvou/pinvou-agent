@@ -10518,6 +10518,9 @@ pub(crate) mod tests {
             );
             // install 期间 resolve_secret_placeholder 灌进进程 env 的占位变量手动清理
             // （with_temp_home 只恢复固定几个，本用例因卸载中止不会走 secrets 删除）。
+            // SAFETY: ENV_LOCK held by with_temp_home for the whole closure;
+            // removing this resolver-seeded placeholder var is serialized
+            // with every other env-mutating test in the crate.
             unsafe { std::env::remove_var("PINVOU3_MCP_SECRET_UP_GUARD_KEY") };
         });
     }

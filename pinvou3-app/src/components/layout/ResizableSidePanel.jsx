@@ -16,7 +16,9 @@ import {
   sidePanelRatioFromWidth,
 } from './side-panel-layout.mjs';
 
-const SidePanelPresenceContext = createContext(null);
+const SidePanelPresenceContext = /** @type {import('react').Context<((panelId: string, present: boolean) => void) | null>} */ (
+  createContext(null)
+);
 
 /** @type {string[]} */
 const EMPTY_STORAGE_KEYS = [];
@@ -123,6 +125,7 @@ export function ResizableSidePanel({
   const presenceId = panelId || generatedId;
   const reportPresence = useContext(SidePanelPresenceContext);
   const panelRef = useRef(null);
+  /** @type {import('react').MutableRefObject<(() => void) | null>} */
   const resizeCleanupRef = useRef(null);
   const normalizedDefaultRatio = normalizeSidePanelRatio(defaultRatio);
   const [legacyStorageKeys] = useState(() => ({

@@ -27,8 +27,8 @@ export function startTranscriptPolling({
   active,
   accept = Array.isArray,
   intervalMs = 1500,
-  schedule = (callback, delay) => globalThis.setTimeout(callback, delay),
-  cancel = (timer) => globalThis.clearTimeout(timer),
+  schedule = (callback, delay) => setTimeout(callback, delay),
+  cancel = (timer) => clearTimeout(timer),
 }) {
   let stopped = false;
   let timer = null;
@@ -36,7 +36,7 @@ export function startTranscriptPolling({
   async function refresh() {
     // null = 本次读取失败（桥已区分"空表"与"失败"）。原样透传：调用方要
     // 保留上次有效数据并显示"读取失败重试中"，不能伪装成没有记录。
-    let result = null;
+    let result;
     try {
       const next = await read();
       result = accept(next) ? next : null;
@@ -69,7 +69,7 @@ export function startSubagentTranscriptPolling({
   ...polling
 }) {
   if (!bridgeAvailable || !selectedAgentId || !agentResolved || transcriptUnavailable) {
-    return undefined;
+    return;
   }
   return startTranscriptPolling({ ...polling, active: !agentDone });
 }

@@ -1790,6 +1790,8 @@ mod tests {
             "fixed schema must not grow content-bearing fields"
         );
 
+        // SAFETY: ENV_LOCK held by _guard (first statement of this test); env
+        // writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -1877,7 +1879,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // edition 2024 起 set_var 为 unsafe；测试进程单线程持有 ENV_LOCK，安全。
+        // edition 2024 起 set_var 为 unsafe。
+        // SAFETY: ENV_LOCK held by _guard (first statement of this test); env
+        // writes are serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-active-turn-guard";

@@ -1,4 +1,4 @@
-/* eslint-disable sonarjs/super-linear-regex, unicorn/prefer-number-is-safe-integer, sonarjs/cognitive-complexity, import-x/namespace -- existing fence-parsing algorithm; regex behavior pinned by tests */
+/* eslint-disable sonarjs/super-linear-regex, unicorn/prefer-number-is-safe-integer, sonarjs/cognitive-complexity -- existing fence-parsing algorithm; regex behavior pinned by tests */
 import { Marked } from 'marked';
 import { lexerSourceMap, matchTokenText, tokenSourceMap, composeMaps } from './markdown-source-map.js';
 

@@ -396,9 +396,13 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
   const c = conversationCopy(copy);
   const tool = item.tool || {};
   const details = searchToolDetails(tool);
-  const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
   const detailsId = useId();
+  // ToolItem only renders this row when isSearchTool(tool) holds, so details
+  // is non-null in practice; the guard keeps the row safe standalone.
+  // Hooks stay above the guard: React forbids conditional hook calls.
+  if (!details) return null;
+  const state = terminalStatus(item.status);
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const query = details.query || tool.title || c.webContent;
   const toolName = String(tool.name || '').trim() || 'web_search';
@@ -464,11 +468,15 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   const c = conversationCopy(copy);
   const tool = item.tool || {};
   const details = fetchToolDetails(tool);
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  // ToolItem only renders this row when isFetchTool(tool) holds, so details
+  // is non-null in practice; the guard keeps the row safe standalone.
+  // Hooks stay above the guard: React forbids conditional hook calls.
+  if (!details) return null;
   const state = terminalStatus(item.status);
   const responseWarning = details.status != null && details.status >= 400;
   const visualState = responseWarning && state !== 'failed' ? 'warning' : state;
-  const [open, setOpen] = useState(false);
-  const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const toolName = String(tool.name || '').trim() || 'fetch_url';
   const statusLabel = details.status == null

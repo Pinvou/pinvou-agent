@@ -1,5 +1,4 @@
 import createDOMPurify from 'dompurify';
-/* eslint-disable import-x/namespace -- marked's ESM internals are resolved by the runtime */
 import { Marked, Parser, Renderer } from 'marked';
 import { escapeCodeHtml, highlightCode } from './syntax-highlighter.js';
 import { MARKDOWN_OPTIONS, scanMarkdownFences } from './markdown-fences.js';

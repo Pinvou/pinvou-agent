@@ -8,6 +8,7 @@
  */
 const assert = require('assert');
 const fs = require('fs');
+const hostConsole = console;
 const path = require('path');
 const vm = require('vm');
 // Node 24 resolves require() of synchronous ESM: share the one deferred
@@ -879,7 +880,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     localStorage: storage,
     sessionStorage: storage,
     CustomEvent,
-    console: { log: function () {}, warn: function () {}, error: function () {} },
+    console: { log: function () {}, warn: function () {}, error: function (m) { hostConsole.error(m); } },
     setTimeout: runtimeOptions.setTimeout || setTimeout,
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
     setInterval: function () { return 0; },

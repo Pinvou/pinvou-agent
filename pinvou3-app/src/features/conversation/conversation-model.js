@@ -366,7 +366,10 @@ export function presentConversationItems(items) {
 }
 
 export function commandExecutionDetails(tool) {
-  return readCommandExecution(tool, true);
+  // forDisplay=true never takes the exit-code-only branch, so the display
+  // path always returns the details object (the union includes `number |
+  // null` only because commandExecutionExitCode shares the reader).
+  return /** @type {{ command: string, cwd: string, output: string, exitCode: number | null, summary: string, commandCount: number }} */ (readCommandExecution(tool, true));
 }
 
 export function commandExecutionExitCode(tool) {

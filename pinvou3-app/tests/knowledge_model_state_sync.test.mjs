@@ -142,8 +142,7 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
     notify() {},
     invoke: async (command) => {
       // tauri 对 Result<_, String> 以原始字符串拒绝，不是 Error 对象——
-      // 仿真这一拒绝形态正是本钉的目的，故豁免 reject-errors 规则。
-      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      // 仿真这一拒绝形态正是本钉的目的。
       if (command === 'kb_model_download') return Promise.reject(kbCancelledSentinel);
       // 取消命令本身也拒绝（web/旧后端的 policy-denial 形态）：cancelKbModel
       // 必须吞掉并 resolve，"永不 reject" 在拒绝式 mock 下才有牙。

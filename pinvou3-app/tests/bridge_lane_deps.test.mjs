@@ -190,6 +190,12 @@ const snapshot = {
 const clusterRe = /"([\w:]+)": function \(deps\) \{\n\s*const b = sharedBridgeBase\(ensureCells\(deps\)\);\n\s*return Object\.freeze\(\{([^}]*)\}\);/g;
 let m;
 while ((m = clusterRe.exec(helpers)) !== null) {
+  // Malformed-entry guard (r5 review): the matchAll below silently skips
+  // entries not spelled `name: b.name` (e.g. a bare shorthand), and a bare
+  // identifier in a freeze body throws ReferenceError at create() time
+  // instead of landing in this snapshot — assert every entry is mapped.
+  const unmapped = m[2].split(',').map((entry) => entry.trim()).filter((entry) => entry && !/^[\w$]+: b\.[\w$]+$/.test(entry));
+  assert.equal(unmapped.length, 0, `cluster ${m[1]} freeze body has non-mapped entries: ${unmapped.join('; ')}`);
   snapshot.clusters[m[1]] = [...m[2].matchAll(/([\w$]+): b\.([\w$]+)/g)].map((p) => `${p[1]}:${p[2]}`);
 }
 const EXPECTED_SURFACE = {
@@ -202,12 +208,13 @@ const EXPECTED_SURFACE = {
   // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
   // the review-sidecar highwater commit) reads only `state`, which every
   // consuming cluster literal already provides — no literal gains a dep.
-  // cancelKbModel (kb_model_cancel chain) reads only `invoke`; the sole
-  // consuming cluster (tauriKnowledgeModel) already passes it, so only the
-  // count moves.
-  // probeEndpointModels (endpoint model auto-discovery wave) reads only
-  // `invoke` as well; the settings cluster already passes it — count only.
-  sharedFnCount: 318,
+  // Debtsweep L4 (+9): normalizeVoiceError, the five chat event payload
+  // handlers, discardPlan + exitPlanToYolo, and commitReconciledWorkingSet
+  // joined the base; cancelKbModel (kb_model_cancel chain) joined separately
+  // and reads only `invoke`. probeEndpointModels (endpoint model
+  // auto-discovery wave, rebased on top) reads only `invoke` as well —
+  // count only (+1).
+  sharedFnCount: 327,
 };
 
 assert.equal(
@@ -295,15 +302,23 @@ const EXPECTED_CLUSTER_KEYS = {
   'tauriChat:31666': ['sid', 'state'],
   'tauriChatEvents': [
     'addChatItem',
+    'addOrMergePruneCompaction',
+    'addSystemItem',
+    'applyAuthoritativeModeState',
     'autoCreateScheduledTaskDraft',
     'bt',
     'finalizeAssistantStreamBeforeReasoning',
     'flushPendingTextBlock',
+    'getBuffer',
     'itemIdSeq',
+    'notify',
     'pendingAssistantBlocks',
     'pendingAssistantText',
     'pendingStreamNotifications',
+    'runSyncOnSession',
     'state',
+    'timeStr',
+    'turnUsageDirty',
   ],
   'tauriDependencies': ['invoke', 'notify', 'state'],
   'tauriInteraction': [
@@ -325,18 +340,29 @@ const EXPECTED_CLUSTER_KEYS = {
     'BT_TABLE',
     'PINVOU_SCENE_EVENTS_STORAGE_PREFIX',
     'addChatItem',
+    'currentStreamId',
+    'currentStreamText',
     'extractArtifactPaths',
     'getBuffer',
     'invoke',
     'isDeliverable',
+    'itemIdSeq',
+    'mergeHydratedChatItems',
     'notify',
+    'pendingAssistantBlocks',
+    'pendingAssistantText',
     'personaPlaceholderTitles',
     'recordAuthoritySyncDiagnostic',
+    'rerenderFromMessages',
+    'resetPendingAssistant',
+    'restoreSteeredWorkingSet',
     'runSyncOnSession',
+    'saveSteeredWorkingSet',
     'scheduledRunSessionOwners',
     'sessionStates',
     'startThinking',
     'state',
+    'toolMeta',
   ],
   'tauriMain:99856': ['addChatItem', 'bt', 'pe'],
   'tauriMemory': [
@@ -537,6 +563,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'loadSessionModel',
     'memoryOverviewSeq',
+    'mergeHydratedChatItems',
     'modelsLoadSeq',
     'monitorBaseline',
     'monitorIntervalId',
@@ -561,6 +588,8 @@ const EXPECTED_CLUSTER_KEYS = {
     'recordAuthoritySyncDiagnostic',
     'refreshHistoryList',
     'reportSidecarReadFailure',
+    'rerenderFromMessages',
+    'resetPendingAssistant',
     'restoreEvictedSessionDraft',
     'runSyncOnSession',
     'scheduledRecentRunsRequestToken',
@@ -589,6 +618,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'stopMediaTracks',
     'switchToSessionInternal',
     'toolMeta',
+    'turnUsageDirty',
     'voiceOperations',
   ],
   'web:158313': ['state'],
@@ -597,6 +627,7 @@ const EXPECTED_CLUSTER_KEYS = {
 };
 
 const EXPECTED_FORWARDER_DEP_NAMES = [
+  'addOrMergePruneCompaction',
   'addSystemItem',
   'autoCreateScheduledTaskDraft',
   'basename',

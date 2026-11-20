@@ -156,13 +156,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # The pre-T11 engine face the interim window is blessed against; see
-# test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-15 onto the
-# session-reader follow head 687358f7e (#157): #157 only extends the
-# registry read-only helper list and its test data — the pinned sanitizer
-# face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
-# previously blessed 8e8d52fdb, verified via the layer-2 source assertions
-# on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "687358f7efde6abd3592737b8ec48adc74ba5a84"
+# test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-17 onto the
+# collapsible-if repay wave head 617360e0b (CodeWhale#164): beyond the
+# previously blessed f70a499d0 the wave adds three commits — contributor-docs
+# alignment (572a1df4), the release.yml allowance drop (e003e4634), and a
+# fail-closed caller-ownership test pin (617360e0b) — none of which touch the
+# pinned sanitizer face (schema_sanitize.rs, MFJS anyOf cap), verified via
+# the layer-2 source assertions on a populated tree before flipping the pin.
+_PINNED_CODEWHALE_GITLINK = "617360e0b91241a37c391837b7a3da0aa61bece5"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
@@ -1181,6 +1182,43 @@ class SchemaContractWalkerTest(unittest.TestCase):
             "the CodeWhale pin advanced — the close-out re-pin may have "
             "landed: reconcile the mirror constants with the new pinned "
             "face, flip the interim notes, and re-bless this gitlink pin")
+
+    def test_contract_smoke_help_flag_exits_fast(self):
+        # The smoke script must parse arguments before main() so -h/--help
+        # is a side-effect-free exit 0 and an unknown flag exits 2; the
+        # pre-fix shape booted every bundled MCP server before argparse
+        # reported usage. The ordering faces, not the wall clock, carry
+        # this pin: a regression that re-hides parse_args behind main()
+        # runs the whole contract matrix first, so --help stdout begins
+        # with the matrix's ✅ check lines (usage printed last) and an
+        # unknown flag prints them before argparse's stderr error — both
+        # red regardless of machine speed (the 30s timeout alone did NOT
+        # fire on a machine that boots the matrix in ~26s; measured in
+        # the round-8 review). The tight timeout is only a backstop; the
+        # fixed --help path costs one interpreter start.
+        for argv, expected_exit in ((["--help"], 0), (["--no-such-flag"], 2)):
+            try:
+                probe = subprocess.run(
+                    [sys.executable, str(SMOKE), *argv],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self.fail(f"contract smoke did not exit fast on {argv}: {exc}")
+            self.assertEqual(
+                probe.returncode, expected_exit,
+                f"{argv} must exit {expected_exit}, got {probe.returncode} "
+                f"(stderr head: {probe.stderr[:200]})")
+            if argv == ["--help"]:
+                self.assertTrue(
+                    probe.stdout.lstrip().startswith("usage:"),
+                    "--help stdout must begin with the argparse usage; got "
+                    f"head {probe.stdout[:120]!r} — matrix output ahead of "
+                    "the usage means parse_args no longer short-circuits")
+            else:
+                self.assertEqual(
+                    probe.stdout, "",
+                    "an unknown flag must exit via argparse before any "
+                    f"matrix output; stdout head: {probe.stdout[:120]!r}")
 
     @unittest.skipIf(
         not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),

@@ -493,8 +493,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // Governance write generation gate (see createToggleWriteGate): per control,
       // only the latest write's completion may apply rollback/error reporting; a
       // late stale failure must not overwrite a newer completion's optimistic state.
+      /** @type {import('react').MutableRefObject<ReturnType<typeof createToggleWriteGate> | null>} */
       const writeGateRef = useRef(null);
       if (writeGateRef.current === null) writeGateRef.current = createToggleWriteGate();
+      // init-once above guarantees non-null; the alias cast only restores that for tsc.
+      const writeGate = /** @type {ReturnType<typeof createToggleWriteGate>} */ (writeGateRef.current);
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
       // Round-38 刷新序号门（round-2 review m9）：连接/开关会在授权写入落定后
@@ -588,7 +591,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         // show the failure; do not swallow it and leave the switch in a false-success
         // state.
         if (bridge.available) {
-          const generation = writeGateRef.current.begin(id);
+          const generation = writeGate.begin(id);
           invokeTauri('set_disabled_connectors',
             { connectorIds: [...next], scope: toolScope, toggledIds: [id] })
             .catch((error) => {
@@ -604,7 +607,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
               // the backend-truth refetch to land (or for an unrelated render);
               // the optimistic switch itself is only corrected when the
               // refetch succeeds.
-              if (!writeGateRef.current.isCurrent(id, generation)) return;
+              if (!writeGate.isCurrent(id, generation)) return;
               refreshToolsMenu(() => true);
               if (wasPending) pending.ids.add(id); else pending.ids.delete(id);
               bumpPendingVersion();
@@ -626,9 +629,9 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           // Rollback on persistence failure mirrors toggleTool: a user governance
           // write must not stay in a false-success state; the generation gate
           // likewise lets only the control's latest write failure apply.
-          const generation = writeGateRef.current.begin(TOGGLE_WRITE_KEY_PROJECT_SKILLS);
+          const generation = writeGate.begin(TOGGLE_WRITE_KEY_PROJECT_SKILLS);
           invokeTauri('set_project_skills_enabled', { enabled: next }).catch((error) => {
-            if (!writeGateRef.current.isCurrent(TOGGLE_WRITE_KEY_PROJECT_SKILLS, generation)) return;
+            if (!writeGate.isCurrent(TOGGLE_WRITE_KEY_PROJECT_SKILLS, generation)) return;
             refreshToolsMenu(() => true);
             pending.projectSkills = wasPending;
             bumpPendingVersion();

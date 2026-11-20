@@ -289,7 +289,6 @@ function hasStoredCredential(record) {
 
       return (
         // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the Escape listener and the close button
-        // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
         <div role="dialog" aria-modal="true" aria-label={remoteCopy.title} className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
