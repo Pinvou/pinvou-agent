@@ -233,8 +233,9 @@
 
     async function stopRemoteControl() {
       const seq = ++webAccessIntentSeq;
+      let outcome = null;
       try {
-        await invoke("web_access_disable");
+        outcome = await invoke("web_access_disable");
       } catch (error) {
         if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
         // Round-6 复审:停用失败的错误写入同样必须清掉旧恢复码,与
@@ -244,7 +245,16 @@
         throw error;
       }
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
+      // 复审 P2(#876):本地停止总是完成,但旧凭据远端撤销意图的去向由
+      // 返回的 disposition 如实报告;queue-full(deferred_full_queue)时
+      // 旧 endpoint 的撤销意图没有任何持久落点,重启后也不会重放——
+      // 必须以持久的 revocation_warning 三语提示呈现,本地完成与远端
+      // 撤销保持两种口径,不得把处置吞成无声的干净停止。非 queue-full
+      // 处置(queued/not_needed)清除既有警告。
+      const revocationWarning =
+        outcome && outcome.revocation === "deferred_full_queue" ? "deferred_full_queue" : null;
       state.webAccess = Object.assign({}, state.webAccess, {
+        revocation_warning: revocationWarning,
         active: false, endpoint_id: null, url: null, qr_data_url: null,
         web_client_connected: false, host_workspace_authorized: false, status: "stopped", starting: false,
         last_error: null, last_error_code: null,
@@ -257,8 +267,17 @@
       try {
         const info = await invoke("web_access_rotate");
         if (seq !== webAccessIntentSeq) return info;
+        // 复审 P2(#876):rotation 的 revocation_disposition 与 stop 同口径
+        // ——queue-full 必须以持久警告呈现,queued/not_needed 清除既有警告。
+        const revocationWarning =
+          info && info.revocation_disposition === "deferred_full_queue"
+            ? "deferred_full_queue"
+            : info && info.revocation_disposition
+              ? null
+              : (state.webAccess.revocation_warning || null);
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,
+          revocation_warning: revocationWarning,
         });
         notify();
         await refreshRemoteControlStatus(seq);

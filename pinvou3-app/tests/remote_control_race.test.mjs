@@ -144,6 +144,83 @@ test('stop 新鲜失败必须清除 starting（start 被顶掉后无人兜底）
   assert.equal(rt.state.webAccess.active, undefined, '陈旧 start 不写任何状态');
 });
 
+test('#876 P2: stop 带 deferred_full_queue 处置必须落到 revocation_warning（本地完成≠远端撤销）', async () => {
+  const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
+  const dDisable = rt.defer('web_access_disable');
+  const pStop = rt.api.stopRemoteControl();
+  dDisable.resolve({ revocation: 'deferred_full_queue' });
+  await pStop;
+  assert.equal(rt.state.webAccess.status, 'stopped', '本地停止已完成：status 保持 stopped');
+  assert.equal(rt.state.webAccess.active, false, '本地停止已完成：端点拆除');
+  assert.equal(rt.state.webAccess.last_error, null, '这不是错误：不得走 last_error 通道');
+  assert.equal(
+    rt.state.webAccess.revocation_warning,
+    'deferred_full_queue',
+    'queue-full 处置必须以持久警告呈现，不得吞成无声的干净停止'
+  );
+
+  // 状态刷新不得抹除警告（刷新 payload 不携带 revocation_warning）。
+  await rt.api.refreshRemoteControlStatus();
+  assert.equal(
+    rt.state.webAccess.revocation_warning,
+    'deferred_full_queue',
+    '警告必须跨状态刷新存续'
+  );
+
+  // 后续 stop 落了 queued（意图已持久）：警告清除。
+  const d2 = rt.defer('web_access_disable');
+  const p2 = rt.api.stopRemoteControl();
+  d2.resolve({ revocation: 'queued' });
+  await p2;
+  assert.equal(rt.state.webAccess.revocation_warning, null, 'queued 处置清除警告');
+});
+
+test('#876 P2: stop 无处置（not_needed/无旧凭据）不得留下警告', async () => {
+  const rt = loadRemoteControlFeature({ revocation_warning: 'deferred_full_queue' });
+  const dDisable = rt.defer('web_access_disable');
+  const pStop = rt.api.stopRemoteControl();
+  dDisable.resolve({ revocation: 'not_needed' });
+  await pStop;
+  assert.equal(rt.state.webAccess.revocation_warning, null, 'not_needed 清除警告');
+});
+
+test('#876 P2: rotate 的 deferred_full_queue 处置同样落警告，queued 清除', async () => {
+  const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
+  const dRotate = rt.defer('web_access_rotate');
+  const pRotate = rt.api.refreshRemoteControlQr();
+  dRotate.resolve({
+    url: 'https://example.test/new',
+    revocation_disposition: 'deferred_full_queue',
+  });
+  await pRotate;
+  assert.equal(
+    rt.state.webAccess.revocation_warning,
+    'deferred_full_queue',
+    'rotate 的 queue-full 处置必须落警告'
+  );
+
+  const d2 = rt.defer('web_access_rotate');
+  const p2 = rt.api.refreshRemoteControlQr();
+  d2.resolve({
+    url: 'https://example.test/newer',
+    revocation_disposition: 'queued',
+  });
+  await p2;
+  assert.equal(rt.state.webAccess.revocation_warning, null, 'rotate 的 queued 清除警告');
+});
+
+test('#876 P3: 三语 i18n 都携带 revocationHints.deferred_full_queue 恢复指引', async () => {
+  const i18nDir = path.join(here, '..', 'src', 'shared', 'i18n');
+  for (const loc of ['zh', 'en', 'ja']) {
+    const names = { zh: 'dictZh', en: 'dictEn', ja: 'dictJa' };
+    const mod = await import(path.join(i18nDir, `${loc}.js`) + `?v=${Date.now()}`);
+    const dict = mod[names[loc]] ?? mod.default;
+    const hint = dict?.uiRemote?.revocationHints?.deferred_full_queue;
+    assert.equal(typeof hint, 'string', `${loc}.uiRemote.revocationHints.deferred_full_queue 必须是字符串`);
+    assert.ok(hint.length > 20, `${loc} 的恢复指引不得为占位符`);
+  }
+});
+
 test('rotate 新鲜失败必须清除 starting', async () => {
   const rt = loadRemoteControlFeature();
   const dEnable = rt.defer('web_access_enable');

@@ -218,6 +218,13 @@ function hasStoredCredential(record) {
         ? remoteCopy.registerHints?.[webAccess.last_error_code]
         : null;
       const webAccessErrorText = registerHint || webAccess.last_error || null;
+      // 复审 P2(#876):queue-full 的远端撤销意图落空必须以持久的三语
+      // 警告呈现(本地停止已完成,但旧凭据的撤销意图无落点且重启不
+      // 重放)——本地完成与远端撤销保持两种口径,警告独立于 status 存
+      // 在,状态刷新不抹除。
+      const revocationHint = webAccess.revocation_warning
+        ? remoteCopy.revocationHints?.[webAccess.revocation_warning] || null
+        : null;
       const statusMeta = statusCopy
         ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccessErrorText || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
         : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
@@ -344,6 +351,11 @@ function hasStoredCredential(record) {
               </div>
             )}
             {webAccessErrorText && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccessErrorText}</div>}
+            {revocationHint && (
+              <div data-testid="web-access-revocation-warning" className="mt-3 text-[12px] leading-relaxed text-[#B06000] break-words bg-[#FDF3E1] dark:text-[#F9AB00] dark:bg-[#F9AB00]/10 rounded-lg px-3 py-2">
+                {revocationHint}
+              </div>
+            )}
             {webAccessActive && hostWorkspaceAuthorized && (
               // 授权状态 affirmative 可见 + 可单独撤销:旧版本「开启访问」顺带
               // 写下的 allow_host_workspace 不再只能靠 Stop 整体清除。
