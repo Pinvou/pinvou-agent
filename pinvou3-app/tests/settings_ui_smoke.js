@@ -904,13 +904,15 @@ assert.doesNotMatch(
   /savedKeys=/,
   'the ACP line must omit savedKeys so picker rows stay addable (providers have no saved-model dedup)',
 );
-// 复审 ACP minor(Escape 逐层关闭):候选面板打开时 Escape 只关面板,其次二级
-// 确认层,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+// 复审 ACP minor(Escape 逐层关闭):确认层打开时 Escape 只关确认层,其次候选
+// 面板,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+// r3 复审修正层级顺序:旧顺序「面板优先」在键盘路径下面板+确认层可同时打开
+// (面板无焦点圈禁,Tab 可达面板底下的保存键),一次 Escape 曾连关两层。
 // IME 守卫随 #817 B1 复审补齐:组合词窗口中的 Escape(取消候选词)不得关闭任何层。
 assert.match(
   providerFormModalSource,
-  /if \(event\.key === 'Escape' && !isImeComposing\(event\)\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
-  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only), IME-guarded',
+  /if \(event\.key === 'Escape' && !isImeComposing\(event\)\) \{\s*if \(confirmStep\) setConfirmStep\(null\);\s*else if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else onClose\(\);/,
+  'Escape must close the confirm layer first (the visual top), then the endpoint picker, then the whole form — one layer per press even when the picker and the confirm co-open (r3 review), IME-guarded',
 );
 // 复审 2026-11-20:确认层 portal 到 body 后,表单卡片的 stopPropagation 仍是
 // 承载层——React 合成事件沿 React 树冒泡,删掉它确认弹层的背景点击会一路

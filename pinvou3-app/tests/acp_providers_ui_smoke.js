@@ -535,10 +535,64 @@ async function clickSettingsSection(page, label) {
     document.querySelector('[data-testid="acp-provider-model"]').value === 'gpt-5.2'
     && document.querySelector('[data-testid="acp-provider-context-window"]').value === '262144'
   ));
-  // 收尾(复审 ACP minor):Escape 逐层关闭——先重开候选面板,第一下 Escape 只关
-  // 面板(表单保留),第二下才关表单;随后断言全程未产生保存调用。
+  // 收尾(复审 ACP minor;r3 复审补共开回归钉):候选面板(z-[100])没有焦点
+  // 圈禁,键盘用户能 Tab 到面板底下的保存键回车——确认层(z-[120])与面板
+  // 同时打开。第一下 Escape 必须只关确认层(视觉顶层),面板与表单都保留
+  // (⑥.18e/f);面板自身仍按 面板→表单 逐层收尾(⑥.18a/b 不受影响)。
+  // 全程不应产生保存调用。
   await page.click('[data-testid="acp-provider-fetch-models"]');
   await sleep(500);
+  await page.evaluate(() => {
+    const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    const key = document.querySelector('[data-testid="acp-provider-api-key"]');
+    if (key && key.value) {
+      inputSetter.call(key, '');
+      key.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // save() 会先校验名称——空名直接 setError 返回,根本到不了确认层;
+    // 该表单此前未填名称,这里补一个(原生 setter + input 事件走 React onChange,
+    // 面板 z-[100] 盖住表单,page.type 的点击会落在面板上,不能用)。
+    const name = document.querySelector('[data-testid="acp-provider-name"]');
+    if (name && !name.value) {
+      inputSetter.call(name, '共开冒烟');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-testid="acp-provider-form-save"]').focus();
+  });
+  await page.keyboard.press('Enter');
+  await sleep(300);
+  rec('⑥.18e keyboard save under the open picker co-opens the confirm layer', await page.evaluate(() =>
+    !!document.querySelector('[data-testid="acp-provider-form-confirm"]')
+    && !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+  ));
+  // The dispatch target decides which handler participates: focus moved into
+  // the confirm on mount, and a user can Tab straight back into the picker
+  // (it has no focus trap). Focus the picker's close button and Escape from
+  // there — this is the path where the form's layered handler runs; with the
+  // confirm-first order it must still close only the confirm.
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-picker-close"]')?.focus());
+  await sleep(100);
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.18f co-open: first Escape closes only the confirm (picker and form stay)', await page.evaluate(() =>
+    !document.querySelector('[data-testid="acp-provider-form-confirm"]')
+    && !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !!document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
+  // ⑥.18g 共开态的「表单侧」Escape:两层都不圈禁焦点,Tab 可让焦点落回表单
+  // (这里以保存键为派发目标重演该几何)。此路径上表单的分层处理器参与派发:
+  // 确认优先的顺序必须仍只关确认层——旧「面板优先」顺序在这里会连面板一起
+  // 关掉(r3 复审 MAJOR-1 的行为级判别用例)。
+  await page.evaluate(() => document.querySelector('[data-testid="acp-provider-form-save"]').focus());
+  await page.keyboard.press('Enter');
+  await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-testid="acp-provider-form-save"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  await sleep(200);
+  rec('⑥.18g form-targeted Escape in the co-open stack closes only the confirm', await page.evaluate(() =>
+    !document.querySelector('[data-testid="acp-provider-form-confirm"]')
+    && !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !!document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
   await page.keyboard.press('Escape');
   await sleep(200);
   rec('⑥.18a Escape closes the endpoint picker first and keeps the form open', await page.evaluate(() =>

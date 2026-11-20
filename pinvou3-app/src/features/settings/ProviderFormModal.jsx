@@ -222,13 +222,17 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
 
   useEffect(() => {
     const onKey = event => {
-      // Escape 逐层关闭(复审 ACP minor):候选面板打开时只关面板,其次二级
-      // 确认弹窗(打开时只关确认层),最后才是整个表单——上层浮层绝不连带
-      // 下层一起消失。与全应用对话框一致,IME 组合中的 Escape(取消候选词)
-      // 不关闭任何层(shared/ime-guard.mjs)。
+      // Escape 逐层关闭(复审 ACP minor;r3 复审修正层级顺序):二级确认弹窗
+      // 打开时只关确认层(视觉顶层,z-[120]),其次候选面板(z-[100]),最后才是
+      // 整个表单——上层浮层绝不连带下层一起消失。旧顺序「面板优先」在键盘
+      // 路径下面板+确认层可同时打开(面板无焦点圈禁,Tab 可达面板底下的保存
+      // 键),一次 Escape 曾连关两层;确认层自身的 ModalShell 监听也只关确认
+      // 层,与本处理器幂等。行为级回归钉:acp_providers_ui_smoke ⑥.18e/f。
+      // 与全应用对话框一致,IME 组合中的 Escape(取消候选词)不关闭任何层
+      // (shared/ime-guard.mjs)。
       if (event.key === 'Escape' && !isImeComposing(event)) {
-        if (endpointPickerOpen) setEndpointPickerOpen(false);
-        else if (confirmStep) setConfirmStep(null);
+        if (confirmStep) setConfirmStep(null);
+        else if (endpointPickerOpen) setEndpointPickerOpen(false);
         else onClose();
       }
     };
