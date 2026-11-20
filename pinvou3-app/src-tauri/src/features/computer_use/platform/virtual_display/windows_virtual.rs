@@ -730,7 +730,8 @@ fn nc_press_pair(index: u8, button: MouseButton) -> (u32, u32) {
 enum NcZoneDelivery {
     /// Caption buttons (HTCLOSE/HTMINBUTTON/HTMAXBUTTON): the DOWN enters
     /// a capture + modal pump filtered to `WM_MOUSEFIRST..WM_MOUSELAST`
-    /// (0x200..0x20E) that a posted `WM_NCLBUTTONUP` (0xA2, below the
+    /// (0x200..0x20E on current SDK tiers; 0x20D before WM_MOUSEHWHEEL
+    /// existed) that a posted `WM_NCLBUTTONUP` (0xA2, below the
     /// range) can NEVER satisfy — the system command fires only when some
     /// later stranded client `WM_LBUTTONUP` arrives (a deferred close in
     /// the middle of an unrelated action). Deliver the end state directly:
@@ -761,10 +762,12 @@ enum NcZoneDelivery {
     /// Zones DefWindowProc handles with no loop and no state
     /// (`HTBORDER`, `HTGROWBOX`, `HTOBJECT`): the plain
     /// (down, up) pair completes as a no-op, exactly like real input.
-    /// `HTHELP` rides in this family too — but not as a no-op: DefWindowProc
-    /// drives the help button from the DOWN itself (WM_APPCOMMAND), so the
-    /// posted DOWN takes the same path a real press takes and the effect IS
-    /// delivered (the "no-op" wording for HTHELP was wrong — r7).
+    /// `HTHELP` rides in this family too — a plain no-op in both win32k
+    /// mirrors: neither ReactOS's nor Wine's NC switch has an HTHELP arm,
+    /// `WM_APPCOMMAND` is generated from X-button UP only, and the
+    /// documented caption-help path is `SC_CONTEXTHELP` — none of those is
+    /// reachable from a synthetic HTHELP DOWN (the r7 "WM_APPCOMMAND"
+    /// wording was itself wrong — r8).
     NoOp,
 }
 
@@ -778,9 +781,9 @@ fn nc_zone_delivery(zone: u32) -> NcZoneDelivery {
         | HTBOTTOMRIGHT | HTHSCROLL | HTVSCROLL => NcZoneDelivery::ModalLoop,
         // HTBORDER, HTGROWBOX, HTOBJECT: DefWindowProc's switch has no case
         // for these (or an explicit `break` for HTBORDER) — a no-op, like
-        // real input. HTHELP lands here too: its DOWN reaches the app's
-        // own WM_NCLBUTTONDOWN → DefWindowProc WM_APPCOMMAND path, the same
-        // one a real help-button press drives (r7 wording).
+        // real input. HTHELP lands here too: the mirrors' NC switches have
+        // no HTHELP arm either, so the DOWN is a no-op exactly like real
+        // input (the r7 WM_APPCOMMAND wording was itself wrong — r8).
         _ => NcZoneDelivery::NoOp,
     }
 }
@@ -839,9 +842,15 @@ enum CaptionCompletion {
     /// movement, activation preserved; the loop retrieves it via
     /// `PM_REMOVE`, so the app never sees a stray client UP).
     MoveLoopExit,
-    /// RIGHT down: the system-menu tracking loop — a `WM_RBUTTONUP` at
-    /// the SCREEN caption point ends tracking with no item selected, the
-    /// same end state a real release produces.
+    /// RIGHT down: the system-menu tracking loop — its capture pump
+    /// exits on a `WM_RBUTTONUP` by message type alone (either mirror's
+    /// `NC_HandleNCRButtonDown` breaks only on that message and never
+    /// decodes the lParam), so the posted UP ends what the DOWN started
+    /// deterministically. The UP carries the SCREEN caption point —
+    /// faithful to a real release — but the pump reads its point from
+    /// the queue's cursor at post time, so whether the system menu then
+    /// opens follows where the physical cursor sits, not the delivered
+    /// coordinates (r8 note).
     SystemMenuRelease,
     /// No loop opened (MIDDLE down is a DefWindowProc no-op, and every
     /// double-click press is loop-free): nothing to complete.
@@ -1967,8 +1976,12 @@ impl GdiPool {
                 if GetWindowRect(hwnd, &mut rect).is_err() {
                     continue; // window died between enumeration and rect read
                 }
-                let w = rect.right - rect.left;
-                let h = rect.bottom - rect.top;
+                // Saturating like the UIA serializers (r8): a hostile app
+                // can wrap its own window rect via SetWindowPos, and the
+                // plain difference panics (debug) or wraps (release) on
+                // the extreme pair.
+                let w = rect.right.saturating_sub(rect.left);
+                let h = rect.bottom.saturating_sub(rect.top);
                 if w <= 0 || h <= 0 {
                     continue;
                 }
@@ -2586,8 +2599,8 @@ unsafe fn write_class_tree_node(
             &sanitize_name(&raw_name, MAX_NAME_CHARS),
             rect.left,
             rect.top,
-            (rect.right - rect.left).max(0),
-            (rect.bottom - rect.top).max(0),
+            rect.right.saturating_sub(rect.left).max(0),
+            rect.bottom.saturating_sub(rect.top).max(0),
             &flags,
         );
         let _ = writeln!(out, "{line}");
@@ -2692,8 +2705,8 @@ unsafe fn window_element_info(hwnd: HWND, context: &str) -> Result<ElementInfo, 
             name: sanitize_name(&raw_name, MAX_NAME_CHARS),
             x: rect.left,
             y: rect.top,
-            width: (rect.right - rect.left).max(0),
-            height: (rect.bottom - rect.top).max(0),
+            width: rect.right.saturating_sub(rect.left).max(0),
+            height: rect.bottom.saturating_sub(rect.top).max(0),
             secure: password_style_for_class(&role, GetWindowLongPtrW(hwnd, GWL_STYLE)),
             role,
         })
@@ -3445,13 +3458,16 @@ impl WindowsVirtualDesktopBackend {
                         self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(point.x, point.y))?;
                     }
                     if let CaptionCompletion::SystemMenuRelease = completion {
-                        // The system-menu tracker reads mouse lParams as
-                        // SCREEN coordinates (the r5 menu contract): a
-                        // client-translated UP would end tracking at a
-                        // decoded point near the screen origin. A release
-                        // over the caption point ends tracking with no
-                        // item selected — the same end state a real
-                        // release produces.
+                        // The DOWN opened a capture pump filtered to
+                        // WM_MOUSEFIRST..WM_MOUSELAST that exits on a
+                        // WM_RBUTTONUP — by message type alone (the r5
+                        // screen-coord contract belongs to the menu
+                        // tracking loop, not this pump: the posted UP's
+                        // decoded point is the queue's cursor at post
+                        // time, not its lParam). The UP deterministically
+                        // ends what the DOWN started; whether the system
+                        // menu opens afterward follows the physical
+                        // cursor, as for a real release (r8 note).
                         self.post(
                             target,
                             WM_RBUTTONUP,
@@ -3799,12 +3815,19 @@ fn capability_notes() -> String {
      clicks aimed elsewhere and dismisses on Escape, so drive menus \
      deliberately one step at a time); clicks on window edges, borders, and \
      scrollbars are refused (a press there enters a modal move/size/\
-     scroll loop posted messages cannot complete); zones that ask the OS \
+     scroll loop posted messages cannot complete); the non-client route \
+     also refuses disabled windows outright (the OS routes them no real \
+     input), while clicks and drags that resolve to a client area are \
+     still posted to such a window (its procedure receives posted \
+     messages regardless of the enabled state, so the effect there is \
+     app-defined rather than the guaranteed swallow real input would \
+     produce); zones that ask the OS \
      to pass input through them (transparent static labels and group \
      boxes) and points whose hit-test cannot be classified fall back to \
      the plain client-area posts instead of non-client messages, and the \
      receipt warns that such a click may be swallowed (verify with a \
-     screenshot); but a \
+     screenshot; a probe that fails or times out on a busy target \
+     answers client and degrades without this warning); but a \
      window cannot be moved \
      by dragging its title bar or resized by dragging a border (those \
      need a live pointer stream this injection cannot provide) and the \
@@ -4144,7 +4167,20 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                  move/resize by dragging is not supported on this stack",
             ));
         }
-        if !zone_is_client(start_zone) {
+        if zone_is_bypassed(start_zone) {
+            // Same receipt family as the click route (r8): a transparent/
+            // nowhere/error answer has no drivable zone, the popup class
+            // check below does not cover it, and the presses land on THIS
+            // window and are usually swallowed — a silently-lost press is
+            // a told-to-the-model fact, not a bare success.
+            self.warnings.push(
+                "the drag starts on a point whose hit-test cannot be \
+                 driven (transparent, nowhere, or error); the pressed-\
+                 then-released client assembly may be swallowed — verify \
+                 with a follow-up screenshot"
+                    .to_string(),
+            );
+        } else if !zone_is_client(start_zone) {
             self.warnings.push(
                 "the drag starts on non-client area (title bar, menu bar, \
                  or a caption button); client-area drag simulation cannot \
@@ -5696,13 +5732,15 @@ mod tests {
         );
         assert_eq!(
             src.matches("self.warnings.push(").count(),
-            4,
-            "exactly four producers: the packaged-keyboard-target \
+            5,
+            "exactly five producers: the packaged-keyboard-target \
              advisory, the transparent-zone swallowed-click receipt (r4), \
              the chrome multi-click churn receipt (r5 — the first SC \
-             already ran the command), and the non-client drag-start \
+             already ran the command), the non-client drag-start \
              receipt (r6 — client-area drag simulation cannot move \
-             windows)"
+             windows), and the bypassed-zone drag-start receipt (r8 — \
+             transparent/nowhere/error starts get the click route's \
+             swallowed-press receipt instead of a bare success)"
         );
     }
 
@@ -5949,13 +5987,14 @@ mod tests {
         );
         assert_eq!(
             src.matches("zone_is_bypassed(").count(),
-            3,
+            4,
             "definition + the client-route judgment + the click receipt \
-             warning: every unroutable zone answer (HTTRANSPARENT, \
-             HTNOWHERE, HTERROR) must degrade to client posts WITH the \
-             swallowed-click warning — a silent degradation is a bare \
-             success on a click that was likely lost (r4 transparent; r7 \
-             extended to HTNOWHERE/HTERROR)"
+             warning + the drag-start receipt (r8): every unroutable zone \
+             answer (HTTRANSPARENT, HTNOWHERE, HTERROR) must degrade to \
+             client posts WITH the swallowed-click warning — a silent \
+             degradation is a bare success on an input that was likely \
+             lost (r4 transparent; r7 extended to HTNOWHERE/HTERROR; r8 \
+             extended the receipt to the drag route)"
         );
         assert_eq!(
             src.matches("WS_DISABLED.0 as isize != 0").count(),
@@ -6538,6 +6577,31 @@ mod tests {
              (byte-identical payloads across all three stacks; the literals \
              themselves are pinned by the Linux-runnable golden test in \
              helpers.rs) (r5)"
+        );
+        assert_eq!(
+            src.matches("roots.into_iter().rev()").count(),
+            1,
+            "the ui_tree consumption must reverse the painter-order roots \
+             into topmost-first (r8): the node budget then cuts BOTTOM-most \
+             windows, the same direction the cap footer declares — a revert \
+             to painter order silently drops the active (topmost) window \
+             first, exactly the regression r7 closed; the helper leg carries \
+             the same pin in uia_helper.rs"
+        );
+        assert_eq!(
+            src.matches("rect.right.saturating_sub(rect.left)").count(),
+            3,
+            "the capture composite + the class-tree row + window_element_info \
+             (r8): a hostile app can wrap its own GetWindowRect pair via \
+             SetWindowPos, and the plain difference panics (debug) or wraps \
+             (release) on the extreme pair — the same saturation rationale \
+             the UIA serializers landed in r7"
+        );
+        assert_eq!(
+            src.matches("rect.bottom.saturating_sub(rect.top)").count(),
+            3,
+            "the same three height subtractions, saturated for the same \
+             wrapped-rect reason (r8)"
         );
         assert_eq!(
             src.matches("CaptionCompletion::MoveLoopExit").count(),

@@ -995,5 +995,17 @@ mod tests {
              Ok(None) — deleting it greens a regression that unmasks \
              typing over an unreadable target"
         );
+        // The helper tree consumes the painter-order roots topmost-first
+        // (r8 pin): the node budget then cuts BOTTOM-most windows, the
+        // same direction the cap footer declares and the fallback walk's
+        // own pin (windows_virtual.rs) enforces — a revert to painter
+        // order silently drops the active (topmost) window first while
+        // every other count stays green.
+        assert_eq!(
+            production.matches("roots.into_iter().rev()").count(),
+            1,
+            "the helper tree must render roots topmost-first, matching \
+             the fallback walk's r8 reorder"
+        );
     }
 }
