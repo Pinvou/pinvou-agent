@@ -1043,8 +1043,19 @@
   // mirror only the structural subset here — shapes the engine rejects on
   // its own can stay engine errors, which surface through the same catch.
   // Returns a rejection reason string, or null when the draft may create.
+  // (#900 review P3, round 2) JS trim() misses U+0085, which the engine
+  // trims, so `"\u0085FREQ=CRON;…"` used to parse under an orphaned key and
+  // dodge the classification entirely. Every trim here uses the editor's
+  // Unicode White_Space set (schedule-cron-expr.js) instead — the same set
+  // the engine's str::trim applies.
+  const CRON_WS_CLASS = "[\\t\\n\\v\\f\\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]";
+  const CRON_WS_TRIM = new RegExp(`^${CRON_WS_CLASS}+|${CRON_WS_CLASS}+$`, "g");
+  const CRON_WS_SPLIT = new RegExp(`${CRON_WS_CLASS}+`);
+  function cronWsTrim(text) {
+    return String(text || "").replaceAll(CRON_WS_TRIM, "");
+  }
   function scheduledTaskDraftCronReject(rrule) {
-    const text = String(rrule || "").trim().toUpperCase();
+    const text = cronWsTrim(rrule).toUpperCase();
     // (#900 review P2) Classify AFTER parsing the fields, never by a raw
     // prefix: the engine parses trimmed KEY=VALUE segments in arbitrary
     // order with last-wins duplicates, so `EXPR=…;FREQ=CRON`, `FREQ = CRON`
@@ -1055,13 +1066,13 @@
     const parts = {};
     const duplicateKeys = [];
     for (const raw of text.split(";")) {
-      const segment = raw.trim();
+      const segment = cronWsTrim(raw);
       if (!segment) continue;
       const eq = segment.indexOf("=");
       if (eq <= 0) return "invalid rrule: segment '" + segment.slice(0, 32) + "' is not KEY=VALUE";
-      const key = segment.slice(0, eq).trim();
+      const key = cronWsTrim(segment.slice(0, eq));
       if (key in parts && !duplicateKeys.includes(key)) duplicateKeys.push(key);
-      parts[key] = segment.slice(eq + 1).trim();
+      parts[key] = cronWsTrim(segment.slice(eq + 1));
     }
     if ((parts.FREQ || "") !== "CRON") return null;
     if (duplicateKeys.length) {
@@ -1073,8 +1084,11 @@
     // Same whitespace definition as the bundled editor (schedule-cron-expr.js):
     // exactly the Unicode White_Space set — JS \s additionally matches U+FEFF,
     // which neither the engine's split_whitespace nor the editor treats as
-    // whitespace, and JS \s misses U+0085, which both accept (#900 review P3).
-    const fields = parts.EXPR.trim().split(/[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+/);
+    // whitespace, and JS \s misses U+0085, which both accept (#900 review
+    // P3). Trim the edges with the same set: JS trim() misses U+0085, so a
+    // padded edge used to leave a phantom empty first field here while the
+    // editor's parseCronExprFields accepted the expression.
+    const fields = cronWsTrim(parts.EXPR).split(CRON_WS_SPLIT);
     if (fields.length !== 5) return "invalid rrule: CRON EXPR must have exactly 5 fields";
     const minute = fields[0];
     if (!/^\d+$/.test(minute) || Number(minute) > 59) {

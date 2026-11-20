@@ -103,6 +103,13 @@ const jaScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'share
 // cross-surface contract (creation_requests.rs + server.py) is
 // behavior-tested here, not only source-pinned.
 const scheduleCronExpr = require('../src/features/scheduled/schedule-cron-expr.js');
+// (#900 review P2) the RRULE field grammar behind the schedule editor —
+// parse/project/build the stored rule, mirroring the backend's trim.
+const scheduleRruleFields = require('../src/features/scheduled/schedule-rrule-fields.js');
+const scheduleRruleFieldsSrc = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'scheduled', 'schedule-rrule-fields.js'),
+  'utf8'
+);
 
 function mustContain(text) {
   assert.ok(
@@ -309,8 +316,8 @@ assert(
 assert.ok(
   /editor\.interval/.test(indexHtml) &&
     /editor\.repeat === 'hourly' \? scheduledCopy\.startTime : scheduledCopy\.time/.test(indexHtml) &&
-    /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(indexHtml) &&
-    /previousEditor\.hasTimeAnchor/.test(indexHtml) &&
+    /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(scheduleRruleFieldsSrc) &&
+    /previousEditor\.hasTimeAnchor/.test(scheduleRruleFieldsSrc) &&
     /placeholder=.*scheduledCopy\.setStart/.test(indexHtml) &&
     !indexHtml.includes("repeat === 'minutely'"),
   'hourly schedules should expose an optional start anchor without migrating legacy rules implicitly'
@@ -386,8 +393,8 @@ assert.ok(
   'hourly schedules should expose a themed 1-24 hour interval selector'
 );
 assert.ok(
-  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduledViewSource) &&
-    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduledViewSource),
+  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduleRruleFieldsSrc) &&
+    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduleRruleFieldsSrc),
   'hourly schedule edits must carry inherited BYDAY restrictions into the rule instead of silently dropping them; the Rust scheduler honors BYDAY when triggering hourly tasks'
 );
 assert.ok(
@@ -480,7 +487,7 @@ assert.ok(
     /const lastRequiredSelection = multiple && active && selectedValues\.length <= minSelected/.test(indexHtml) &&
     /onChange=\{values => editSchedule\('days', values\)\} multiple minSelected=\{1\}/.test(indexHtml) &&
     /onClose=\{\(\) => setScheduleRepeatIntent\(null\)\}/.test(indexHtml) &&
-    /WEEKDAY_CODES\.filter\(day => requested\.has\(day\)\)/.test(indexHtml),
+    /WEEKDAY_CODES\.filter\(day => requested\.has\(day\)\)/.test(scheduleRruleFieldsSrc),
   'weekly schedules should support an ordered one-to-seven day multi-select, reject empty selections, and normalize presets after the menu closes'
 );
 assert.ok(
@@ -569,7 +576,7 @@ assert.ok(
   'backend prompt must teach once-only schedules, reject past one-shot times, and pin AT to local wall-clock format'
 );
 assert.ok(
-  scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
+  scheduleRruleFieldsSrc.includes("fields.FREQ === 'ONCE'") &&
     scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
   'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
 );
@@ -578,9 +585,9 @@ assert.ok(
 // The routing pin targets the buildCronRrule call itself so neutering the
 // guard (falling back to the weekly builder) fails the assert.
 assert.ok(
-  scheduledViewSource.includes("fields.FREQ === 'CRON'") &&
-    scheduledViewSource.includes("repeat: 'cron'") &&
-    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)\s*\{\s*return buildCronRrule\(fields, key, value, currentRrule\);/.test(scheduledViewSource),
+  scheduleRruleFieldsSrc.includes("fields.FREQ === 'CRON'") &&
+    scheduleRruleFieldsSrc.includes("repeat: 'cron'") &&
+    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)\s*\{\s*return buildCronRrule\(fields, key, value, currentRrule\);/.test(scheduleRruleFieldsSrc),
   'the schedule editor must give CRON rules their own mode instead of the weekly fallback that silently rewrote them on save (issue #821)'
 );
 assert.ok(
@@ -629,7 +636,7 @@ assert.ok(
   'backend prompt must teach the monthly/CRON subset the gates accept (issue #821)'
 );
 assert.ok(
-  scheduledViewSource.includes("function onceScheduleParts"),
+  scheduleRruleFieldsSrc.includes("function onceScheduleParts"),
   'the schedule editor must resolve once AT to the local wall clock instead of dropping stored UTC offsets'
 );
 assert.ok(
@@ -9183,6 +9190,62 @@ function scheduleCronExprBehavior() {
   assert.strictEqual(scheduleCronExpr.cronExprWithTime('0 9-18 1 * *', '07:05'), '0 9-18 1 * *');
 }
 
+// (#900 review P2, fixwave 2): the backend accepts and stores whitespace-
+// padded KEY=VALUE rules (validate_product_rrule / server.py both trim keys
+// and values), so the detail editor's field map must project them the same
+// way — the weekly-fallback misread used to turn a CRON time edit into
+// appended BYHOUR/BYMINUTE the domain refuses, and the bounced patch then
+// wedged the pending-patch flush on every later action. Drive the real
+// save → detail time-edit chain through the extracted module.
+function scheduleRruleFieldsBehavior() {
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ = CRON;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'spaces around the separator must not orphan the FREQ field'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ= CRON; EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a space-padded mid-rule segment must parse like the engine segment trim'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('=X;FREQ=WEEKLY'),
+    { FREQ: 'WEEKLY' },
+    'an empty-key segment stays skipped without hiding the real fields'
+  );
+  // the padded CRON rule projects to the CRON editor, not the weekly fallback
+  const editor = scheduleRruleFields.scheduleEditorValue('FREQ = CRON;EXPR=30 9 1 * *');
+  assert.strictEqual(editor.repeat, 'cron');
+  assert.strictEqual(editor.cronExpr, '30 9 1 * *');
+  assert.strictEqual(editor.time, '09:30');
+  assert.strictEqual(editor.hasTimeAnchor, true);
+  // the real chain: a detail time edit rewrites the CRON expression in place
+  // instead of appending BYHOUR/BYMINUTE to it
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ = CRON;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *'
+  );
+  // value trim also rescues ONCE time edits on padded AT segments
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ = ONCE; AT = 2027-06-01T09:30', 'time', '08:15'),
+    'FREQ=ONCE;AT=2027-06-01T08:15'
+  );
+  // round-trip re-emission: keys land in the backend's uppercase form,
+  // values stay verbatim (the stored rule is normalized upstream) and
+  // lose only the separator padding
+  assert.strictEqual(
+    scheduleRruleFields.serializeScheduleFields(
+      scheduleRruleFields.parseScheduleFields('freq = weekly ; byday = MO,WE ; byhour = 9 ; byminute = 30')
+    ),
+    'FREQ=weekly;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30'
+  );
+  // canonical weekly rules keep their existing edit shape
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30', 'time', '07:05'),
+    'FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=7;BYMINUTE=5'
+  );
+}
+
 // Round-3 review M2 (issue #821): the chat draft fence auto-creates with the
 // model's rrule and the engine accepts the full cron vocabulary, so the
 // shared helpers must structurally reject out-of-subset CRON drafts — the
@@ -9257,6 +9320,29 @@ function scheduledTaskDraftCronRejectBehavior() {
     /minute field must be a fixed value/,
     'a U+0085-separated wildcard-minute EXPR must still be refused'
   );
+  // #900 review P3 (round 2): JS trim() misses U+0085, which the engine
+  // trims — edge padding used to orphan the key (dodging classification
+  // entirely) or leave a phantom empty field the editor never sees.
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=\u008530 9 1 * *'),
+    null,
+    'a U+0085 edge-padded fixed-minute EXPR must pass like the editor'
+  );
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=30 9 1 * *\u0085'),
+    null,
+    'trailing U+0085 edge padding must not become a phantom sixth field'
+  );
+  assert.match(
+    reject('\u0085FREQ=CRON;EXPR=*/5 9 1 * *'),
+    /minute field must be a fixed value/,
+    'a U+0085-padded rrule is an engine-valid CRON draft the fence must still refuse'
+  );
+  assert.match(
+    reject('FREQ=CRON\u0085;EXPR=*/5 9 1 * *'),
+    /minute field must be a fixed value/,
+    'a U+0085-padded value must not split the FREQ classification'
+  );
 }
 
   /// (#900 review P2, fixwave): the reordered / space-padded / duplicate-FREQ
@@ -9307,6 +9393,7 @@ function scheduledTaskDraftCronRejectBehavior() {
 
 Promise.resolve()
   .then(scheduleCronExprBehavior)
+  .then(scheduleRruleFieldsBehavior)
   .then(scheduledTaskDraftCronRejectBehavior)
   .then(cronGuardRefusesVariantsThroughAutoCreate)
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
