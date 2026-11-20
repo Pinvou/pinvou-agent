@@ -951,13 +951,7 @@ Section Uninstall
     DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
     DeleteRegKey /ifempty HKCU "${MANUKEY}"
 
-    SetShellVarContext current
-    RmDir /r "$APPDATA\${BUNDLEID}"
-    RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
-    ; Pinvou stores its runtime data under ~/.pinvou3 (sessions, settings,
-    ; knowledge); remove it here too so the checkbox matches the MSI
-    ; RemovePinvouUserData opt-in contract.
-    RmDir /r "$PROFILE\.pinvou3"
+    !insertmacro PinvouDeleteInteractiveUserData
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

@@ -39,6 +39,13 @@ const baseInstallerHooks = read(
   "nsis",
   "installer-hooks.nsh",
 );
+const userProfileScript = read(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "nsis",
+  "pinvou-user-profile.ps1",
+);
 const runtimeEnvScript = read(
   "src-tauri",
   "packaging",
@@ -101,6 +108,16 @@ assert.match(
   stageScript,
   /\[Math\]::Ceiling\(\$StagedResourceBytes \/ 1KB\)/u,
   "staged size must stay in KiB to match the bundler's estimated_size units",
+);
+// Round-2 space safety: trailing separators are stripped from the staging
+// source and destination before the native robocopy call (PowerShell 5.1
+// parses a trailing backslash before a closing quote as a literal quote,
+// corrupting the argument for checkout paths containing spaces). Both call
+// sites are load-bearing — dropping either one corrupts one side of the
+// robocopy invocation — so the pin counts occurrences, not mere presence.
+assert.ok(
+  (stageScript.match(/TrimEnd\('\\',\s*'\/'\)/gu) || []).length >= 2,
+  "staging source and destination paths must both strip trailing separators before robocopy (both call sites)",
 );
 assert.match(stageScript, /Measure-Object -Property Length -Sum/u);
 assert.match(stageScript, /File \/a \/r/u);
@@ -265,7 +282,7 @@ assert.match(
 
 // MSI user-data deletion must stay behind an explicit opt-in property
 // (mirroring the NSIS uninstaller's unchecked delete-app-data checkbox,
-// which additionally removes the WebView2 cache directories).
+// which additionally removes the WebView2 app-data directories).
 assert.match(
   mainWxs,
   /\(REMOVE = "ALL"\) AND NOT UPGRADINGPRODUCTCODE AND PINVOU_REMOVE_USER_DATA/u,
@@ -286,10 +303,237 @@ assert.match(
   /Base: tauri-cli-v2\.12\.4/u,
   "main.wxs must carry the same provenance contract as the NSIS template",
 );
+// The provenance version must track the bundler actually pinned by
+// package.json: a CLI bump without re-basing the template passes every
+// other pin (no CI lane runs makensis), so bind the header to the
+// dependency.
+const cliPin = packageJson.devDependencies["@tauri-apps/cli"];
+const cliVersion = String(cliPin).replace(/^[~^><= ]*/, "");
+assert.ok(
+  cliVersion && installerTemplate.includes("Base: tauri-cli-v" + cliVersion),
+  "the template provenance header must track the pinned @tauri-apps/cli (" +
+    cliPin +
+    "); re-base the template when the CLI moves",
+);
+// The NSIS delete-app-data checkbox must remove the prompting user's
+// ~/.pinvou3 and app-data directories (MSI RemovePinvouUserData parity),
+// through the interactive session owner's profile: the uninstaller runs
+// elevated, and under over-the-shoulder elevation the shell constants
+// ($PROFILE/$APPDATA/$LOCALAPPDATA, like SetShellVarContext current)
+// resolve against the elevation token's account, which would wipe the
+// admin's data instead of the prompting user's. The whole deletion block
+// therefore lives in the Pinvou-owned hooks macro (not the rebase-costly
+// template fork) and derives every target from the resolver's profile.
+assert.match(
+  baseInstallerHooks,
+  /!macro PinvouDeleteInteractiveUserData/u,
+  "the delete-app-data resolution must stay in the Pinvou-owned hooks macro, not the upstream-fork template",
+);
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /!insertmacro PinvouDeleteInteractiveUserData/u,
+  "the hooks must define PinvouDeleteInteractiveUserData, not insert it",
+);
 assert.match(
   installerTemplate,
-  /RmDir \/r "\$PROFILE\\\.pinvou3"/u,
-  "the NSIS delete-app-data checkbox must also remove ~/.pinvou3 (MSI RemovePinvouUserData parity)",
+  /!insertmacro PinvouDeleteInteractiveUserData/u,
+  "the template must invoke the hook macro from the delete-app-data checkbox",
+);
+assert.doesNotMatch(
+  installerTemplate,
+  /RmDir \/r "\$(PROFILE|APPDATA|LOCALAPPDATA)/u,
+  "the uninstaller must not delete through token-following shell constants: $PROFILE/$APPDATA/$LOCALAPPDATA follow the elevation token under over-the-shoulder elevation",
+);
+assert.match(
+  baseInstallerHooks,
+  /File "\/oname=\$PLUGINSDIR\\pinvou-user-profile\.ps1" "\$\{PINVOU_HOOKS_DIR\}\\\.\.\\\.\.\\\.\.\\packaging\\windows\\nsis\\pinvou-user-profile\.ps1"/u,
+  "the resolver must be packed from the committed packaging/windows/nsis source (same ${PINVOU_HOOKS_DIR} arithmetic as the sibling hook scripts)",
+);
+assert.match(
+  baseInstallerHooks,
+  /nsExec::ExecToStack \/OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
+  "the resolver invocation must pass /OEM as a separate nsExec parameter: the nsExec switch parser recognizes /OEM only when a popped argument equals it, so a quoted '/OEM powershell ...' single argument is treated as the whole command line and the resolver never starts",
+);
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /nsExec::ExecToStack '\/OEM /u,
+  "the quoted '/OEM powershell ...' single-argument form must never return: nsExec would treat it as the command line (spawn failure), silently keeping every uninstall's app data",
+);
+assert.match(
+  baseInstallerHooks,
+  /\$\{If\} \$8 == 0\s*\$\{AndIf\} \$9 != ""/u,
+  "the delete guard must string-compare the exit code and require a non-empty path: nsExec pushes the literal \"error\" on spawn failure and LogicLib '=' is numeric (\"error\" parses as 0)",
+);
+assert.match(
+  baseInstallerHooks,
+  /RmDir \/r "\$R2\\AppData\\Roaming\\\$\{BUNDLEID\}"\s*RmDir \/r "\$R2\\AppData\\Local\\\$\{BUNDLEID\}"\s*RmDir \/r "\$R2\\\.pinvou3"/u,
+  "all three deletion targets must derive from the resolved interactive-user profile (the validated decode accumulator, never the raw stdout payload)",
+);
+assert.match(
+  baseInstallerHooks,
+  /Could not identify the interactive user's profile/,
+  "profile-resolution failure must keep the data and tell the user (fail safe, never guess-and-wipe)",
+);
+assert.match(
+  userProfileScript,
+  /Win32_Process/u,
+  "the resolver must derive the owner from the interactive session's shell process",
+);
+assert.match(
+  userProfileScript,
+  /SessionId = \$sessionId/u,
+  "the resolver must scope the shell-process enumeration to the uninstaller's own session: over-the-shoulder elevation keeps the requesting user's session, while the first explorer.exe across all sessions can belong to any other logged-in user",
+);
+assert.match(
+  userProfileScript,
+  /GetOwnerSid/u,
+  "the resolver must take the session owner's SID, never its bare account name",
+);
+assert.match(
+  userProfileScript,
+  /ReturnValue -eq 0/u,
+  "the resolver must check GetOwnerSid's ReturnValue before trusting the SID",
+);
+assert.match(
+  userProfileScript,
+  /Win32_UserProfile[\s\S]*?SID -ieq \$ownerSids\[0\]/u,
+  "profile mapping must compare Win32_UserProfile SID against the session owner's SID: name-based leaf matching breaks on renames and picks the wrong profile on cross-domain name collisions",
+);
+assert.match(
+  userProfileScript,
+  /WTSQuerySessionInformation/u,
+  "the session user must be confirmed against the WTS session record (the authoritative logon identity): a unique shell-owner SID is only a heuristic, and a runas-spawned or restarted foreign-SID explorer in the same session would otherwise select another account's profile for deletion",
+);
+assert.match(
+  userProfileScript,
+  /\$sessionUserSid[\s\S]*?-ine \$ownerSids\[0\][\s\S]{0,80}\{[\s\S]{0,40}exit 2/u,
+  "the resolver must require the shell-owner SID to equal the WTS session-user SID and fail closed on any disagreement: the profile match alone confirms the selected account without proving it is the session's logon user",
+);
+assert.match(
+  userProfileScript,
+  /catch \{[\s\S]{0,40}exit 2/u,
+  "the resolver must fail closed when the WTS session identity cannot be resolved to a SID (empty record, translation failure): unprovable identity means the data is retained under the manual-removal guidance",
+);
+assert.match(
+  userProfileScript,
+  /exit 2/u,
+  "the resolver must fail closed (non-zero exit, no path printed) when the owner is ambiguous",
+);
+assert.match(
+  userProfileScript,
+  /\$pathHex = \$profileMatches\[0\]\.ToCharArray\(\)/u,
+  "the transport must encode the resolved path itself (never prose or diagnostics) as four-hex-digit code units: the payload survives any stdout channel losslessly, closing the reviewer's receiver-side round-trip finding - emitting text in the OEM code page and assuming the nsExec decoder restores it was unprovable, and UTF-8 OEM configurations were the standing hole",
+);
+assert.match(
+  userProfileScript,
+  /ToCharArray\(\) \| ForEach-Object \{ '\{0:x4\}' -f \[int\]\$_ \}[\s\S]*? -join ''/u,
+  "the payload must be four lowercase hex digits per UTF-16 code unit, most significant digit first, contiguous: pure ASCII is a fixed point of every OEM code page including 65001, and per-unit digit order removes byte-order interpretation from the wire entirely",
+);
+assert.doesNotMatch(
+  userProfileScript,
+  /OEMCP|GetEncoding|OutputEncoding/u,
+  "no code-page dependence may remain in the resolver: with the hex transport the OEM registry read, the encoder construction, and the console binding are all dead weight whose defects (name-vs-number overload, writer mismatch) previously stranded cleanups",
+);
+assert.match(
+  baseInstallerHooks,
+  /nsExec::ExecToStack \/OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
+  "the uninstaller must consume the resolver through ExecToStack with /OEM as a separate nsExec parameter: the switch parser recognizes /OEM only when a popped argument equals it, and on the pure-ASCII hex payload /OEM is an identity transform",
+);
+assert.match(
+  baseInstallerHooks,
+  /StrCpy \$R4 "\$9" 4 \$R3[\s\S]*?IntOp \$R1 "0x\$R4" \+ 0[\s\S]*?IntFmt \$R5 "%04x" \$R1[\s\S]*?\$\{If\} \$R5 != \$R4[\s\S]*?\$\{ExitWhile\}/u,
+  "the NSIS decoder must validate every four-digit unit by hex-parsing it, re-encoding it canonically, and comparing it back to its source before acceptance: uppercase digits, non-hex characters, or any other format drift must fail the round-trip instead of silently parsing as 0",
+);
+assert.match(
+  baseInstallerHooks,
+  /IntOp \$R1 \$R0 % 4[\s\S]*?\$\{If\} \$R1 == 0[\s\S]*?\$\{While\} \$R3 < \$R0[\s\S]*?\$\{If\} \$R3 == \$R0[\s\S]*?\$\{AndIf\} \$R2 != ""[\s\S]*?StrCpy \$R6 1/u,
+  "the decoder must require a multiple-of-four payload and a fully consumed, non-empty decode before arming deletion: an odd trailing length or a payload that decodes to nothing must land in the keep-data branch",
+);
+assert.match(
+  baseInstallerHooks,
+  /\$\{If\} \$R5 != \$R4[\s\S]{0,60}\$\{ExitWhile\}[\s\S]{0,60}\$\{EndIf\}[\s\S]{0,60}\$\{If\} \$R1 == 0[\s\S]{0,60}\$\{ExitWhile\}/u,
+  "the decoder must explicitly reject a decoded zero code unit: a canonical \"0000\" round-trip alone would accept it (it re-encodes to itself), and the %c append would silently contribute nothing, letting a NUL-spliced path pass validation and authorize cleanup of a path the resolver never produced",
+);
+assert.match(
+  baseInstallerHooks,
+  /\$\{If\} \$R6 == 1[\s\S]*?RmDir \/r "\$R2\\AppData\\Roaming\\\$\{BUNDLEID\}"/u,
+  "deletion must derive from the validated decoded path ($R2), never from the raw stdout payload: every malformed resolver output keeps the user's data under the manual-removal guidance",
+);
+assert.doesNotMatch(
+  userProfileScript,
+  /RmDir|Remove-Item/u,
+  "the resolver must never delete anything itself",
+);
+
+// Executable mirrors of the two transport algorithms. This host cannot run
+// Windows PowerShell 5.1 or the NSIS interpreter, so the round trip is proven
+// here against these exact algorithm shapes while the source pins above tie
+// both shipped scripts to them; the packaged end-to-end pass (real
+// makensis-built uninstaller against a non-ASCII profile) remains disclosed
+// as not locally executable.
+const psEncodeMirror = (value) => {
+  let hex = "";
+  for (let i = 0; i < value.length; i += 1) {
+    hex += value.charCodeAt(i).toString(16).padStart(4, "0");
+  }
+  return hex;
+};
+const nsisDecodeMirror = (payload) => {
+  if (payload.length === 0 || payload.length % 4 !== 0) return null;
+  let decoded = "";
+  for (let i = 0; i < payload.length; i += 4) {
+    const unit = payload.slice(i, i + 4);
+    const code = Number.parseInt(`0x${unit}`, 16);
+    if (!Number.isInteger(code) || code < 0 || code > 0xffff) return null;
+    if (code.toString(16).padStart(4, "0") !== unit) return null;
+    if (code === 0) return null;
+    decoded += String.fromCharCode(code);
+  }
+  return decoded;
+};
+for (const sample of [
+  "C:\\Users\\aster\\AppData",
+  "C:\\Users\\佐藤\\AppData",
+  "C:\\Users\\Øystein Åse\\pinvou3 😀",
+  "C:\\Users\\Jürgen\\profile (2) 'quoted'",
+]) {
+  const payload = psEncodeMirror(sample);
+  assert.match(
+    payload,
+    /^[\da-f]*$/u,
+    `the emitted payload must be pure ASCII hex for ${sample}`,
+  );
+  assert.equal(
+    nsisDecodeMirror(payload),
+    sample,
+    `the NSIS decoder mirror must reconstruct the exact profile path for ${sample}`,
+  );
+}
+for (const malformed of ["", "abc", "zzzz", "D83D", "00", "0g001234", "004100000042"]) {
+  assert.equal(
+    nsisDecodeMirror(malformed),
+    null,
+    `malformed payload must fail closed (keep data): ${JSON.stringify(malformed)}`,
+  );
+}
+// "004100000042" = 'A' + U+0000 + 'B': the zero unit hides mid-payload, so
+// a length-only or decode-emptiness check would miss it while the spliced
+// "AB" result would still be non-empty.
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /pinjou_/u,
+  "the hooks must never reference a j-spelled identifier: it would be a makensis-dangling label no test lane compiles away",
+);
+// Template delta pin: the dump_system_prompt dev-tool exclusion has no
+// runtime test today (nothing enumerates that binary yet), so pin the
+// exclusion in both binary loops (install and uninstall). The count targets
+// the loop guard itself — the template's third dump_system_prompt mention
+// is the provenance comment, which must not be able to keep the pin green
+// after either loop loses its exclusion.
+assert.ok(
+  (installerTemplate.match(/!if "\{\{this\}\}" != "dump_system_prompt\.exe"/gu) || [])
+    .length >= 2,
+  "dump_system_prompt.exe must be excluded in both binary loops (install and uninstall)",
 );
 
 const installSectionOffset = installerTemplate.indexOf("Section Install");
