@@ -274,7 +274,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM，不要带 Z 或时区偏移后缀。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。草稿不支持分钟级频率（不要输出分钟级草稿）；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间、每月指定日期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM，不要带 Z 或时区偏移后缀。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。草稿不支持分钟级频率（不要输出分钟级草稿）；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间、每周指定时间或每月指定日期，不要输出草稿。
 
 每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
@@ -282,7 +282,10 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 - 每 6 小时一次，从 08:30 起算：FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30
 - 每天 08:30：FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30
 - 每周一、三 09:30：FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30
+- 每月 1 日 09:30：FREQ=CRON;EXPR=30 9 1 * *
 - 2027-06-01 09:30 运行一次：FREQ=ONCE;AT=2027-06-01T09:30
+
+每月固定日期等自定义计划用 CRON 表达：FREQ=CRON;EXPR=<标准 5 字段 cron 表达式>，五个字段依次是 分 时 日 月 周，用空格分隔；分钟字段必须是固定值（不支持分钟级频率），其余字段支持 *、列表、区间和步进；rrule 只允许 FREQ 和 EXPR 两个字段。
 
 当信息足够时，请直接给出最终任务参数，并使用下面这种完整代码块格式：
 ```scheduled-task-draft
@@ -1917,6 +1920,27 @@ fn weekday_label(day: Weekday) -> &'static str {
     }
 }
 
+/// 每月 label for the canonical monthly cron shape (fixed minute, hour and
+/// day-of-month with wildcard month and day-of-week); every other CRON
+/// expression stays custom — the expression itself is shown instead of the
+/// raw `FREQ=CRON;EXPR=…` rrule string (issue #821).
+fn humanize_cron_expr(expr: &str) -> String {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() == 5 && fields[3] == "*" && fields[4] == "*" {
+        let (Ok(minute), Ok(hour), Ok(day)) = (
+            fields[0].parse::<u32>(),
+            fields[1].parse::<u32>(),
+            fields[2].parse::<u32>(),
+        ) else {
+            return format!("自定义 CRON（{expr}）");
+        };
+        if minute <= 59 && hour <= 23 && (1..=31).contains(&day) {
+            return format!("每月 {day} 日 {hour:02}:{minute:02}");
+        }
+    }
+    format!("自定义 CRON（{expr}）")
+}
+
 fn humanize_rrule(rrule: &str) -> String {
     match AutomationSchedule::parse_rrule(rrule) {
         Ok(AutomationSchedule::Hourly {
@@ -1979,7 +2003,7 @@ fn humanize_rrule(rrule: &str) -> String {
             "一次性 {}",
             at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
         ),
-        Ok(AutomationSchedule::Cron { .. }) => rrule.to_string(),
+        Ok(AutomationSchedule::Cron { expr }) => humanize_cron_expr(&expr),
         Err(_) => rrule.to_string(),
     }
 }
@@ -2789,6 +2813,21 @@ mod tests {
             humanize_rrule("FREQ=ONCE;AT=2100-01-01T09:30"),
             "一次性 2100-01-01 09:30"
         );
+        // Issue #821: CRON tasks get a 每月 label for the canonical monthly
+        // shape and the expression itself (not the raw FREQ=CRON;… rrule)
+        // for everything else.
+        assert_eq!(
+            humanize_rrule("FREQ=CRON;EXPR=30 9 1 * *"),
+            "每月 1 日 09:30"
+        );
+        assert_eq!(
+            humanize_rrule("FREQ=CRON;EXPR=0 9-18 1,15 * MON-FRI"),
+            "自定义 CRON（0 9-18 1,15 * MON-FRI）"
+        );
+        assert_eq!(
+            humanize_rrule("FREQ=CRON;EXPR=05 08 31 * *"),
+            "每月 31 日 08:05"
+        );
     }
 
     // ── 删除一次定时运行的级联 ────────────────────────────────────────
@@ -3571,7 +3610,7 @@ mod tests {
         assert!(prompt.contains("请一次只问我一个问题，并依次确认这些信息："));
         assert!(prompt.contains("1. 任务要做什么。"));
         assert!(prompt.contains(
-            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束"
+            "2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间、每月指定日期和时间，以及一次性定时（在指定时刻运行一次后自动结束"
         ));
         // One-shot moments in the past are rejected outright by the creation
         // chain, so the prompt must teach the model to confirm a new time.
@@ -3586,6 +3625,14 @@ mod tests {
         assert!(prompt.contains("整理草稿时，请把时间转换成 rrule："));
         assert!(prompt.contains("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30"));
         assert!(prompt.contains("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"));
+        // Issue #821: 每月/CRON is a taught product shape, not silently
+        // rewritten by the editor — the prompt pins the subset the gates
+        // accept (fixed minute, FREQ+EXPR only).
+        assert!(prompt.contains("每月指定日期和时间"));
+        assert!(prompt.contains("FREQ=CRON;EXPR=30 9 1 * *"));
+        assert!(prompt.contains("五个字段依次是 分 时 日 月 周"));
+        assert!(prompt.contains("分钟字段必须是固定值"));
+        assert!(prompt.contains("rrule 只允许 FREQ 和 EXPR 两个字段"));
         // One-shot (ONCE) scheduling: the base parser (automation_manager)
         // supports it and the creation chain (AutomationSchedule::Once) and
         // display pass it through, so the prompt must teach it; otherwise

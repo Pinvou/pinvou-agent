@@ -115,9 +115,9 @@ const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 const SHADOW_AUDIT_ROTATE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// rrule product subset (deliberately stricter than the domain parser, same
-/// rules as the MCP server's `validate_rrule`): HOURLY/WEEKLY/ONCE only —
-/// CRON and minute-granular frequencies are a product-level rejection, not a
-/// parse error.
+/// rules as the MCP server's `validate_rrule`): HOURLY/WEEKLY/ONCE plus the
+/// CRON fixed-minute subset (issue #821) — minute-granular frequencies stay
+/// a product-level rejection, not a parse error.
 const WEEKDAY_TOKENS: [&str; 7] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
 
 /// Guard for the creation-request watcher task: held in a
@@ -399,13 +399,13 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         "MINUTELY" | "SECONDLY" | "DAILY" => {
             bail!("minute-granular or daily FREQ '{freq}' is not supported by the product subset")
         }
-        "CRON" => bail!("CRON rrule is not supported by the product subset"),
-        "HOURLY" | "WEEKLY" | "ONCE" => {}
+        "CRON" | "HOURLY" | "WEEKLY" | "ONCE" => {}
         other => bail!("unsupported FREQ '{other}'"),
     }
     let allowed: &[&str] = match freq {
         "HOURLY" => &["FREQ", "INTERVAL", "BYDAY", "BYHOUR", "BYMINUTE"],
         "WEEKLY" => &["FREQ", "BYDAY", "BYHOUR", "BYMINUTE"],
+        "CRON" => &["FREQ", "EXPR"],
         _ => &["FREQ", "AT"],
     };
     for (key, _) in &parts {
@@ -473,6 +473,12 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
             };
             parse_int("BYMINUTE", byminute, 0, 59)?;
         }
+        "CRON" => {
+            let Some(expr) = get("EXPR") else {
+                bail!("invalid rrule: FREQ=CRON requires EXPR");
+            };
+            validate_cron_expr(expr)?;
+        }
         _ => {
             // ONCE: exactly the local wall-clock form YYYY-MM-DDTHH:MM — no
             // seconds, no 'Z', no UTC offset — and strictly in the future
@@ -530,6 +536,56 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         }
     }
     Ok(normalized)
+}
+
+/// Validates the CRON EXPR subset the product surfaces accept — structural
+/// rules only, mirroring the MCP server's CRON arm (B9: the watcher must
+/// reject exactly what the server rejects). The engine's `ParsedCronExpr`
+/// stays the semantic authority on every path: field bounds, impossible
+/// day-of-month/month combinations, and unknown names are rejected there,
+/// and that engine error reaches the caller through the same failure path.
+///
+/// Product rules:
+/// - exactly five whitespace-separated fields (minute hour day-of-month
+///   month day-of-week);
+/// - the minute field must be one fixed value 0-59 — minute-granular
+///   schedules stay outside the product subset (the same constraint the
+///   scheduled-task wizard prompt states), so lists/ranges/steps are not
+///   accepted there;
+/// - the remaining fields keep the standard cron vocabulary the engine
+///   parses (`*`, lists, `a-b` ranges, `p/s` steps, JAN-DEC/SUN-SAT
+///   names) with no empty list items.
+fn validate_cron_expr(expr: &str) -> Result<()> {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() != 5 {
+        bail!(
+            "invalid rrule: CRON EXPR must have exactly 5 fields: minute hour day-of-month month day-of-week"
+        );
+    }
+    let minute = fields[0];
+    if !minute.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("invalid rrule: CRON EXPR minute field must be a fixed value, got '{minute}'");
+    }
+    let Ok(minute_value) = minute.parse::<u32>() else {
+        bail!("invalid rrule: CRON EXPR minute field must be a fixed value, got '{minute}'");
+    };
+    if minute_value > 59 {
+        bail!("invalid rrule: CRON EXPR minute must be between 0 and 59");
+    }
+    for field in &fields[1..] {
+        // split_whitespace never yields an empty item (same reason server.py
+        // has no empty-field arm), so no explicit empty-field check here.
+        if !field
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b',' | b'-' | b'/'))
+        {
+            bail!("invalid rrule: CRON EXPR field '{field}' is not valid cron syntax");
+        }
+        if field.split(',').any(|item| item.is_empty()) {
+            bail!("invalid rrule: CRON EXPR field '{field}' contains an empty list item");
+        }
+    }
+    Ok(())
 }
 
 fn spool_root() -> PathBuf {
@@ -1254,12 +1310,29 @@ fn is_permanent_domain_error(error: &str) -> bool {
     // handles field shape, mode, schedule syntax and body limits. I/O, registry
     // recovery and index-read failures remain bounded retries. A typed error
     // migration is deferred; do not classify generic OS/parse text as poison.
-    const PERMANENT_MARKERS: [&str; 5] = [
+    const PERMANENT_MARKERS: [&str; 13] = [
         "only scheduled-message tasks can change their target session",
         "target_session not found:",
         "scheduled task not found:",
         "ACP/code session",
         "Once schedule has no future run",
+        // Engine CRON parse classes (automation_manager): the watcher gate
+        // admits these shapes structurally and the engine is the semantic
+        // authority (issue #821), but the stored rrule is fixed — a retry
+        // re-runs the identical parse, so the failure marker must land on
+        // the first attempt instead of burning the 3-attempt budget.
+        "Invalid CRON",
+        "is out of range",
+        "step must be >= 1",
+        "Failed to parse CRON",
+        "range start must be <=",
+        "can never occur",
+        // Engine CRON next-run guards: deterministic for a fixed rule, and
+        // reachable from gate-admitted shapes (a leap-day rule resumed in
+        // 2097-2098 has no Feb 29 inside the 5-year window — 2100 is not a
+        // leap year). Both name CRON, so they cannot swallow HOURLY/WEEKLY.
+        "Unable to compute next CRON run within 5 years",
+        "CRON schedule exceeded its range",
     ];
     PERMANENT_MARKERS
         .iter()
@@ -2917,6 +2990,17 @@ mod tests {
             " FREQ=ONCE;AT=2099-06-01T09:30 ",
             "FREQ=HOURLY",
             "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=0;BYMINUTE=59",
+            // Issue #821: CRON/每月 is a product surface. Fixed minute, the
+            // full engine cron vocabulary (ranges/steps/names) in the other
+            // fields; semantic bounds stay the engine's job. Leading-zero and
+            // Unicode-White_Space separators parse exactly as the server's
+            // mirror does (B9), so the editor and spool shapes agree.
+            "FREQ=CRON;EXPR=30 9 1 * *",
+            "freq=cron;expr=0 9-18 1,15 * MON-FRI",
+            "FREQ=CRON;EXPR=15 9 */2 * *",
+            "FREQ=CRON;EXPR=5 9 1 JAN *",
+            "FREQ=CRON;EXPR=059 9 1 * *",
+            "FREQ=CRON;EXPR=30\u{3000}9 1 * *",
         ] {
             let normalized = validate_product_rrule(rrule)
                 .unwrap_or_else(|e| panic!("{rrule} should pass: {e}"));
@@ -2927,7 +3011,32 @@ mod tests {
     #[test]
     fn rrule_subset_rejects_cron_and_minute_granular() {
         for rrule in [
+            // Minute-granular CRON stays outside the product subset even
+            // though the domain parser would run it.
             "FREQ=CRON;EXPR=*/5 * * * *",
+            "FREQ=CRON;EXPR=0,30 * * * *",
+            "FREQ=CRON;EXPR=5-55/10 * * * *",
+            "FREQ=CRON;EXPR=* * * * *",
+            // Structural subset bounds.
+            "FREQ=CRON",
+            "FREQ=CRON;EXPR=30 9 1 *",
+            "FREQ=CRON;EXPR=30 9 1 * * *",
+            "FREQ=CRON;EXPR=60 9 1 * *",
+            "FREQ=CRON;EXPR=abc 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1,3 * *;BYDAY=MO",
+            "FREQ=CRON;EXPR=30 9 1,,3 * *",
+            "FREQ=CRON;EXPR=30 9 1 * ?",
+            // B9: Python's isspace() strips/splits U+001C-U+001F but this
+            // watcher's Unicode White_Space does not — the server aligns to
+            // the White_Space set, and these vectors pin that both sides
+            // reject every shape carrying the four separators.
+            "FREQ=CRON;EXPR=30\u{1c}9 1 * *",
+            "FREQ=CRON;EXPR=\u{1c}30 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1 * *\u{1c}",
+            "FREQ=WEEKLY;BYDAY=\u{1c}MO;BYHOUR=9;BYMINUTE=30",
+            // Minute overflowing u32: the same fixed-value rejection class
+            // the server's bounds check lands on.
+            "FREQ=CRON;EXPR=99999999999999999999 9 1 * *",
             "FREQ=MINUTELY;INTERVAL=5",
             "FREQ=DAILY;BYHOUR=8;BYMINUTE=30",
             "FREQ=HOURLY;INTERVAL=0",
@@ -3787,8 +3896,12 @@ mod tests {
         // swallow the bump (the natural write raced the park clock on CI).
         let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         *retries.parked.get_mut("swap.json").expect("parked") = parked_at;
+        // Still poison after issue #821: the fixed-minute product subset
+        // accepts simple CRON schedules, so a valid-looking rule like
+        // "0 5 * * *" would now apply — the corrected payload must stay a
+        // REJECTED shape (minute-granular) for the re-park to be a poison.
         let corrected =
-            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=0 5 * * *"))]);
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=*/5 * * * *"))]);
         std::fs::write(spool.join("swap.json"), &corrected).unwrap();
         std::fs::File::options()
             .write(true)
@@ -7129,6 +7242,19 @@ mod tests {
         for error in [
             "scheduled task not found: task-1",
             "target_session not found: target001",
+            // Engine CRON parse classes: every deterministic rejection the
+            // fixed-minute gate can hand to the engine (issue #821 opened the
+            // subset; these are the shapes that pass it structurally).
+            "Failed to create scheduled task: CRON hour value 24 is out of range 0-23",
+            "Failed to create scheduled task: Invalid CRON day-of-week value 'XYZ'",
+            "Failed to create scheduled task: CRON EXPR day-of-month/month combination can never occur",
+            "Failed to create scheduled task: CRON hour step must be >= 1",
+            "Failed to create scheduled task: Failed to parse CRON hour step",
+            "Failed to create scheduled task: CRON day-of-month range start must be <= end",
+            // Next-run guards (round-3 review minor 5): deterministic for a
+            // fixed rule once a gate-admitted shape reaches activation.
+            "Failed to create scheduled task: Unable to compute next CRON run within 5 years",
+            "Failed to create scheduled task: CRON schedule exceeded its range",
         ] {
             assert!(is_permanent_domain_error(error));
         }
