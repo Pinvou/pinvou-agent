@@ -1494,4 +1494,26 @@ mod tests {
             }
         }
     }
+
+    /// The physical stack's truncation footers route through the shared
+    /// builder (r6 pin): the r5 consolidation moved the byte-literals into
+    /// helpers.rs (golden-pinned there byte-exactly), but nothing pinned
+    /// the PHYSICAL stack's routing — a one-stack revert to inline
+    /// literals would fork the payload format across stacks while every
+    /// gate stayed green (the exact r5 drift class; windows_virtual.rs's
+    /// routing and uia_helper.rs's routing carry their own pins).
+    #[test]
+    fn physical_tree_footers_route_through_the_shared_builder() {
+        let src = include_str!("windows.rs");
+        let production = src.split("mod tests {").next().unwrap_or("");
+        assert_eq!(
+            production
+                .matches("append_tree_truncation_footers(")
+                .count(),
+            1,
+            "the physical ui_tree must emit its truncation footers through \
+             the shared builder (cap_bounded=false) — an inline-literal \
+             revert forks the payload format across stacks"
+        );
+    }
 }

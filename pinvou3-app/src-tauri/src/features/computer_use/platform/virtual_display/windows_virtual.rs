@@ -167,8 +167,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
     WM_NCLBUTTONUP, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN, WM_NCMBUTTONUP, WM_NCMOUSEMOVE,
     WM_NCRBUTTONDBLCLK, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_DISABLED, WS_MAXIMIZE, WS_MINIMIZE,
-    WindowFromPoint,
+    WM_RBUTTONUP, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_DISABLED, WS_MAXIMIZE,
+    WS_MAXIMIZEBOX, WS_MINIMIZE, WS_MINIMIZEBOX, WS_SYSMENU, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -592,6 +592,30 @@ fn pack_mouse_lparam(x: i32, y: i32) -> isize {
     (((y as u16 as u32) << 16) | (x as u16 as u32)) as isize
 }
 
+/// Whether the point can be encoded faithfully in a mouse-message lParam
+/// (both coordinates ride signed 16-bit fields — the encoding
+/// `GET_X_LPARAM` decodes on the receiving side). A point outside the range
+/// occurs only on a virtual screen wider/taller than 32767 px (legal
+/// multi-4K arrangements): delivering one would wrap through the u16
+/// truncation to a negative coordinate, so the hit-test probe and the post
+/// would agree with each other and BOTH disagree with reality — the action
+/// refuses instead of silently landing at `coord − 65536`. Client-side
+/// posts stay in range while the window origin lies on the same virtual
+/// screen (the normal shape). Pure; pinned.
+fn mouse_point_encodable(x: i32, y: i32) -> bool {
+    (i16::MIN as i32..=i16::MAX as i32).contains(&x)
+        && (i16::MIN as i32..=i16::MAX as i32).contains(&y)
+}
+
+/// The refusal for a point [`mouse_point_encodable`] rejects.
+fn unencodable_point_error() -> ComputerUseError {
+    ComputerUseError::unavailable(
+        "the point lies beyond the ±32767 coordinates a mouse message can \
+         encode (an oversized multi-monitor virtual screen); the action was \
+         not delivered",
+    )
+}
+
 /// Unpack a mouse lParam (inverse of [`pack_mouse_lparam`]; test-only shape
 /// mirror of how targets decode it).
 #[cfg(test)]
@@ -757,24 +781,34 @@ fn nc_zone_delivery(zone: u32) -> NcZoneDelivery {
 
 /// The `WM_SYSCOMMAND` code for a chrome-button press — the exact mapping
 /// `NC_DoButton` performs from the window style (min → restore when already
-/// minimized, max → restore when already maximized). Pure; pinned.
-fn nc_chrome_system_command(zone: u32, style: isize) -> u32 {
+/// minimized, max → restore when already maximized), INCLUDING the style
+/// gates `NC_DoButton` enforces before it ever derives a command: a window
+/// without `WS_MINIMIZEBOX`/`WS_MAXIMIZEBOX`/`WS_SYSMENU` has no working
+/// button there (`WM_NCHITTEST` never returns the button zone for standard
+/// frames, so this gate only bites custom-chrome windows that answer
+/// HTMINBUTTON/HTMAXBUTTON/HTCLOSE without the backing styles — real input
+/// is a no-op there, and synthesizing the SC would DELIVER what the OS
+/// would refuse). `None` = the press must be refused, not faked. Pure;
+/// pinned.
+fn nc_chrome_system_command(zone: u32, style: isize) -> Option<u32> {
+    let offers = |feature: isize| style & feature != 0;
     match zone {
-        HTCLOSE => SC_CLOSE,
-        HTMINBUTTON => {
+        HTCLOSE if offers(WS_SYSMENU.0 as isize) => Some(SC_CLOSE),
+        HTMINBUTTON if offers(WS_MINIMIZEBOX.0 as isize) => {
             if style & WS_MINIMIZE.0 as isize != 0 {
-                SC_RESTORE
+                Some(SC_RESTORE)
             } else {
-                SC_MINIMIZE
+                Some(SC_MINIMIZE)
             }
         }
-        _ => {
+        HTMAXBUTTON if offers(WS_MAXIMIZEBOX.0 as isize) => {
             if style & WS_MAXIMIZE.0 as isize != 0 {
-                SC_RESTORE
+                Some(SC_RESTORE)
             } else {
-                SC_MAXIMIZE
+                Some(SC_MAXIMIZE)
             }
         }
+        _ => None,
     }
 }
 
@@ -2974,6 +3008,12 @@ impl WindowsVirtualDesktopBackend {
         let rect = unsafe { desktop_virtual_screen_rect() };
         self.pointer = clamp_point_to_rect((x, y), &rect);
         let (px, py) = self.pointer;
+        // The clamp bounds the point into the virtual screen, but the
+        // screen ITSELF can exceed the 16-bit message encoding — refuse the
+        // unencodable point instead of silently wrapping it negative.
+        if !mouse_point_encodable(px, py) {
+            return Err(unencodable_point_error());
+        }
         if let Some((pressed_button, press_target, _, _)) = self.held_press {
             // A held-button move carries the pressed mark to the press
             // target, exactly like real captured input (see the doc).
@@ -3013,12 +3053,20 @@ impl WindowsVirtualDesktopBackend {
                 pack_mouse_lparam(px, py),
             );
         }
-        self.post(
-            target,
-            WM_MOUSEMOVE,
-            0,
-            pack_mouse_lparam(client_x, client_y),
-        )
+        // A menu popup's client space IS screen space for its tracking loop
+        // (the same r5 contract the click route honors): the loop decodes
+        // mouse-message lParams as SCREEN coordinates, so a hover posted
+        // with translated client coordinates would highlight the wrong item
+        // or spawn a stray submenu near the screen origin (r6 — the click
+        // route had this, the hover route didn't).
+        //
+        // SAFETY: class-name query on the hit-tested desktop window.
+        let move_lparam = if menu_popup_needs_screen_coords(&unsafe { window_class_name(target) }) {
+            pack_mouse_lparam(px, py)
+        } else {
+            pack_mouse_lparam(client_x, client_y)
+        };
+        self.post(target, WM_MOUSEMOVE, 0, move_lparam)
     }
 
     /// Detect a packaged (Microsoft Store) keyboard target and record the
@@ -3287,7 +3335,21 @@ impl WindowsVirtualDesktopBackend {
             }
             match nc_zone_delivery(zone) {
                 NcZoneDelivery::ChromeButton => {
-                    let command = nc_chrome_system_command(zone, style);
+                    // The style gates run per press (like NC_DoButton, the
+                    // style was snapshotted before the loop — a multi-click
+                    // on a button whose window changed style mid-sequence
+                    // is churn the multi-click warning below already
+                    // discloses). None = the OS button tracking would
+                    // ignore this press (missing WS_MINIMIZEBOX/
+                    // WS_MAXIMIZEBOX/WS_SYSMENU): refuse, don't synthesize
+                    // a command real input could never fire.
+                    let Some(command) = nc_chrome_system_command(zone, style) else {
+                        return Err(ComputerUseError::unavailable(
+                            "the window's chrome does not offer this button \
+                             (the style bits the OS button tracking requires \
+                             are absent, so a real press there is a no-op)",
+                        ));
+                    };
                     self.post(target, WM_SYSCOMMAND, command as usize, lparam)?;
                     if index + 1 < count.max(1) {
                         // Deterministic churn disclosure: the first press
@@ -3661,7 +3723,9 @@ fn capability_notes() -> String {
      caption min/max/close buttons fire their system commands — a \
      disabled or absent Close is refused, not faked — and a menu-bar or \
      system-menu press opens the menu, whose items are then clicked with \
-     screen coordinates); clicks on window edges, borders, and \
+     screen coordinates; while a menu's tracking loop is open it consumes \
+     clicks aimed elsewhere and dismisses on Escape, so drive menus \
+     deliberately one step at a time); clicks on window edges, borders, and \
      scrollbars are refused (a press there enters a modal move/size/\
      scroll loop posted messages cannot complete); zones that ask the OS \
      to pass input through them (transparent static labels and group \
@@ -3688,8 +3752,11 @@ fn capability_notes() -> String {
      rather than as clickable rows; shell windows are excluded and the \
      top level is capped, with a cap-bound walk disclosed in its \
      footer — Windows 11's shell XAML hosts may still appear as noise \
-     roots; the fallback's screening verdict runs on the full raw \
-     caption), \
+     roots; the fallback's screening verdict runs on the raw caption \
+     bounded at 4096 UTF-16 units (a caption past that bound is screened \
+     on its first 4096 units — the bound exists so a hostile app cannot \
+     make the walk allocate unboundedly, and any real caption is far \
+     shorter)), \
      posted chords do not update the app's async \
      key-state table (apps that read modifier state from \
      GetKeyState may see unmodified keys), scroll events go \
@@ -3833,6 +3900,9 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let (x, y) = self.cursor_point();
+        if !mouse_point_encodable(x, y) {
+            return Err(unencodable_point_error());
+        }
         let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop; \
@@ -3920,6 +3990,9 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let (x, y) = self.cursor_point();
+        if !mouse_point_encodable(x, y) {
+            return Err(unencodable_point_error());
+        }
         let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
@@ -3949,6 +4022,11 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             self.held_press = Some((pressed_button, target, client_x, client_y));
         }
         let (x, y) = self.cursor_point();
+        // No encodability guard here: the up is the button's release — the
+        // emergency release path relies on it being best-effort and
+        // non-fatal, so an exotic-coordinate release must attempt delivery
+        // (a wrapped release on an oversized virtual screen beats a
+        // refused one that strands the press).
         let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             // An up with no window under the cursor is a harmless no-op —
             // the emergency release path relies on this being non-fatal.
@@ -3970,6 +4048,57 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                 "there is no window at the drag start point on the hidden desktop",
             ));
         };
+        // The drag start is non-client-blind no longer (r6): a border/
+        // scrollbar press enters a modal move/size/scroll loop the client
+        // posts cannot complete — the same refusal the click route gives —
+        // and any other non-client start (title bar, menu bar, caption
+        // button) gets the likely-no-effect receipt instead of a bare
+        // success (client-area drag simulation cannot move windows or press
+        // non-client controls; the notes disclose the same limitation).
+        let start_zone = unsafe { Self::nc_zone_of(target, start_x, start_y) };
+        if matches!(nc_zone_delivery(start_zone), NcZoneDelivery::ModalLoop) {
+            return Err(ComputerUseError::unavailable(
+                "the drag starts on a window edge, border, or scrollbar; \
+                 pressing there enters the modal move/size/scroll loop that \
+                 only live pointer or keyboard input can complete — window \
+                 move/resize by dragging is not supported on this stack",
+            ));
+        }
+        if !zone_is_client(start_zone) {
+            self.warnings.push(
+                "the drag starts on non-client area (title bar, menu bar, \
+                 or a caption button); client-area drag simulation cannot \
+                 move a window or press non-client controls, so this drag \
+                 likely had no effect beyond focusing the target — use \
+                 click for non-client zones"
+                    .to_string(),
+            );
+        }
+        if !mouse_point_encodable(start_x, start_y) {
+            return Err(unencodable_point_error());
+        }
+        // The clamped drop point is computed BEFORE the press (and guarded
+        // with it): refusing after `WM_LBUTTONDOWN` would strand the pressed
+        // button. The delivered drop is the CLAMPED endpoint, not the raw
+        // `to`: the tool layer clamps model coordinates to the LAST
+        // screenshot, which can exceed the live virtual screen once a
+        // monitor leaves mid-session (the exact case the clamp doc names).
+        // The press will be delivered at the clamped start, so the
+        // waypoints and the button-up must interpolate between and land on
+        // the clamped endpoints too — a raw endpoint would deliver the drop
+        // outside the screen while `pointer` claims the clamped edge,
+        // leaving state and delivered messages disagreeing about where the
+        // drop landed. A segment between two in-rect points stays in the
+        // rect (convex), so every waypoint is a clamped position by
+        // construction.
+        let drop_point = clamp_point_to_rect(
+            to,
+            // SAFETY: metric query on the attached worker thread.
+            &unsafe { desktop_virtual_screen_rect() },
+        );
+        if !mouse_point_encodable(drop_point.0, drop_point.1) {
+            return Err(unencodable_point_error());
+        }
         self.focus_dance(target);
         // A drag completes a press+release assembly — the tool layer clears
         // its held-left flag on drag success on exactly that assumption — so
@@ -4011,23 +4140,6 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // bounds, list reorders, and canvas pans crossing into a sibling
         // window all broke, and the button-up could land on a different
         // window than the press.
-        // The delivered drop is the CLAMPED endpoint, not the raw `to`: the
-        // tool layer clamps model coordinates to the LAST screenshot, which
-        // can exceed the live virtual screen once a monitor leaves
-        // mid-session (the exact case this file's clamp doc names). The
-        // press above was delivered at the clamped start, so the waypoints
-        // and the button-up must interpolate between and land on the
-        // clamped endpoints too — a raw endpoint would deliver the drop
-        // outside the screen (past ±32767 the lParam packing wraps it
-        // negative) while `pointer` claims the clamped edge, leaving state
-        // and delivered messages disagreeing about where the drop landed.
-        // A segment between two in-rect points stays in the rect (convex),
-        // so every waypoint here is a clamped position by construction.
-        let drop_point = clamp_point_to_rect(
-            to,
-            // SAFETY: metric query on the attached worker thread.
-            &unsafe { desktop_virtual_screen_rect() },
-        );
         let move_result = (|| {
             for (x, y) in drag_waypoints((start_x, start_y), drop_point, DRAG_STEPS) {
                 if self.cancelled() {
@@ -4071,6 +4183,9 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         let clicks = clicks.min(MAX_SCROLL_CLICKS);
         let (x, y) = self.cursor_point();
+        if !mouse_point_encodable(x, y) {
+            return Err(unencodable_point_error());
+        }
         let Some((target, _, _)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
@@ -5283,6 +5398,25 @@ mod tests {
             "the transport-only fallback, the soft-verdict honest error, \
              and the first-query spawn cost must be disclosed (r5)"
         );
+        // r6: the fallback screening input's bound must be stated AS a
+        // bound (the old "runs on the full raw caption" phrasing
+        // over-claimed a 4096-unit read as unbounded — the same
+        // padding-evasion class the bound exists to bound).
+        assert!(
+            notes.contains("bounded at 4096 UTF-16 units"),
+            "the fallback screening caption bound must be disclosed, not \
+             over-claimed as the full caption"
+        );
+        // r6 (the r5 prescription that had been dropped): an open menu
+        // tracking loop consumes clicks aimed elsewhere and dismisses on
+        // Escape — a model clicking past an open menu sees its click eaten
+        // by the menu, which reads as a mystery failure without this.
+        assert!(
+            notes.contains("consumes clicks aimed elsewhere")
+                && notes.contains("dismisses on Escape"),
+            "the menu tracking loop's click consumption and Escape \
+             dismissal must be disclosed"
+        );
     }
 
     /// The virtual pointer's geometry helpers: center placement (the
@@ -5434,11 +5568,13 @@ mod tests {
         );
         assert_eq!(
             src.matches("self.warnings.push(").count(),
-            3,
-            "exactly three producers: the packaged-keyboard-target \
+            4,
+            "exactly four producers: the packaged-keyboard-target \
              advisory, the transparent-zone swallowed-click receipt (r4), \
-             and the chrome multi-click churn receipt (r5 — the first SC \
-             already ran the command)"
+             the chrome multi-click churn receipt (r5 — the first SC \
+             already ran the command), and the non-client drag-start \
+             receipt (r6 — client-area drag simulation cannot move \
+             windows)"
         );
     }
 
@@ -5484,6 +5620,53 @@ mod tests {
             "no input-desktop cursor-API call may return: both require the \
              input desktop and fail with ERROR_ACCESS_DENIED on the hidden \
              desktop regardless of attachment"
+        );
+    }
+
+    /// The 16-bit lParam encoding guard (r6): mouse messages carry each
+    /// coordinate in a signed 16-bit field, and a virtual screen wider/
+    /// taller than 32767 px (legal multi-4K arrangements) produces points
+    /// past that range that wrap through the u16 truncation to a negative
+    /// coordinate — the hit-test probe and the post would agree with each
+    /// other and BOTH disagree with reality. The action entries refuse
+    /// instead; the release path deliberately does not (a refused up
+    /// strands the press).
+    #[test]
+    fn mouse_point_encoding_refuses_points_past_the_16_bit_fields() {
+        assert!(mouse_point_encodable(0, 0));
+        assert!(
+            mouse_point_encodable(-1920, 1079),
+            "negative multi-monitor coordinates are the normal shape and \
+             encode faithfully (GET_X_LPARAM's i16 reinterpret)"
+        );
+        assert!(
+            mouse_point_encodable(32767, -32768),
+            "the i16 range endpoints themselves encode"
+        );
+        assert!(
+            !mouse_point_encodable(32768, 0),
+            "one past the high end wraps to -32768 through the u16 \
+             truncation"
+        );
+        assert!(!mouse_point_encodable(0, -32769), "one past the low end");
+        assert!(!mouse_point_encodable(40000, 40000));
+        // The wiring: every action entry that derives a screen point
+        // guards it (production-only cut — the pure assertions above live
+        // in the test half).
+        let src = production_source();
+        assert_eq!(
+            src.matches("mouse_point_encodable(").count(),
+            7,
+            "definition + move_to + click + mouse_down + scroll + the \
+             drag's clamped start and clamped drop: an unguarded entry \
+             wraps the coordinate silently (mouse_up is deliberately \
+             unguarded — a refused release strands the press)"
+        );
+        assert_eq!(
+            src.matches("unencodable_point_error()").count(),
+            7,
+            "each guarded entry refuses with the explicit oversized-screen \
+             error, not a generic failure"
         );
     }
 
@@ -5553,10 +5736,10 @@ mod tests {
         let src = production_source();
         assert_eq!(
             src.matches("nc_zone_of(").count(),
-            3,
-            "definition + the click route point + the hover route point: a \
-             revert that skips the zone query and posts client messages \
-             everywhere fails here"
+            4,
+            "definition + the click route point + the hover route point + \
+             the drag-start probe (r6): a revert that skips the zone query \
+             and posts client messages everywhere fails here"
         );
         assert_eq!(
             src.matches("nc_click(").count(),
@@ -5566,9 +5749,10 @@ mod tests {
         );
         assert_eq!(
             src.matches("zone_is_client(").count(),
-            3,
-            "definition + both route verdicts: a route that treats NC zones \
-             as client space fails here"
+            4,
+            "definition + both route verdicts + the drag-start receipt \
+             check (r6): a route that treats NC zones as client space \
+             fails here"
         );
         assert_eq!(
             src.matches("nc_multi_click_message(").count(),
@@ -5587,12 +5771,13 @@ mod tests {
         );
         assert_eq!(
             src.matches("nc_zone_delivery(").count(),
-            5,
+            6,
             "definition + the pre-post refusal + the non-primary-button \
-             gate + the Close-disabled gate + the per-press arm: the \
-             per-zone delivery model (chrome SC / caption / menu / modal \
-             refusal / no-op) must stay wired — a revert to the uniform \
-             (down, up) pair reopens the modal-loop wedges (r5)"
+             gate + the Close-disabled gate + the per-press arm + the \
+             drag-start ModalLoop refusal (r6): the per-zone delivery \
+             model (chrome SC / caption / menu / modal refusal / no-op) \
+             must stay wired — a revert to the uniform (down, up) pair \
+             reopens the modal-loop wedges (r5)"
         );
         assert_eq!(
             src.matches("nc_chrome_system_command(").count(),
@@ -5615,11 +5800,12 @@ mod tests {
         );
         assert_eq!(
             src.matches("menu_popup_needs_screen_coords(").count(),
-            2,
-            "definition + the click route: a menu popup's items must be \
-             driven with SCREEN coordinates (the tracking loop reads mouse \
-             lParams as screen points — client-translated posts land on \
-             the wrong item) (r5)"
+            3,
+            "definition + the click route + the hover route (r6): a menu \
+             popup's items must be driven with SCREEN coordinates (the \
+             tracking loop reads mouse lParams as screen points — \
+             client-translated posts land on the wrong item; the hover \
+             had the same defect as a wrong-item highlight) (r5/r6)"
         );
         assert_eq!(
             src.matches("zone_is_transparent(").count(),
@@ -5962,31 +6148,53 @@ mod tests {
         assert_eq!(nc_zone_delivery(HTGROWBOX), NcZoneDelivery::NoOp);
         assert_eq!(nc_zone_delivery(HTOBJECT), NcZoneDelivery::NoOp);
 
-        // Chrome SC codes mirror NC_DoButton's style mapping.
+        // Chrome SC codes mirror NC_DoButton's style mapping, including its
+        // style gates: a window lacking the backing style bits has no
+        // working button there (real input no-ops; custom chrome answering
+        // the zone without the style must be refused, not over-delivered).
         assert_eq!(
-            nc_chrome_system_command(HTCLOSE, 0),
-            SC_CLOSE,
-            "close is close regardless of style"
+            nc_chrome_system_command(HTCLOSE, WS_SYSMENU.0 as isize),
+            Some(SC_CLOSE),
+            "close on a window with a system menu is SC_CLOSE"
         );
         assert_eq!(
-            nc_chrome_system_command(HTMINBUTTON, WS_MINIMIZE.0 as isize),
-            SC_RESTORE,
+            nc_chrome_system_command(HTMINBUTTON, (WS_MINIMIZEBOX | WS_MINIMIZE).0 as isize),
+            Some(SC_RESTORE),
             "min on an already-minimized window restores"
         );
         assert_eq!(
-            nc_chrome_system_command(HTMINBUTTON, 0),
-            SC_MINIMIZE,
+            nc_chrome_system_command(HTMINBUTTON, WS_MINIMIZEBOX.0 as isize),
+            Some(SC_MINIMIZE),
             "min on a normal window minimizes"
         );
         assert_eq!(
-            nc_chrome_system_command(HTMAXBUTTON, WS_MAXIMIZE.0 as isize),
-            SC_RESTORE,
+            nc_chrome_system_command(HTMAXBUTTON, (WS_MAXIMIZEBOX | WS_MAXIMIZE).0 as isize),
+            Some(SC_RESTORE),
             "max on an already-maximized window restores"
         );
         assert_eq!(
-            nc_chrome_system_command(HTMAXBUTTON, 0),
-            SC_MAXIMIZE,
+            nc_chrome_system_command(HTMAXBUTTON, WS_MAXIMIZEBOX.0 as isize),
+            Some(SC_MAXIMIZE),
             "max on a normal window maximizes"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMINBUTTON, WS_MINIMIZE.0 as isize),
+            None,
+            "HTMINBUTTON without WS_MINIMIZEBOX refuses: NC_DoButton \
+             no-ops the press (custom chrome answering the zone without \
+             the backing style must not get a synthesized SC)"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTMAXBUTTON, 0),
+            None,
+            "HTMAXBUTTON without WS_MAXIMIZEBOX refuses"
+        );
+        assert_eq!(
+            nc_chrome_system_command(HTCLOSE, 0),
+            None,
+            "HTCLOSE without WS_SYSMENU refuses (the OS would not offer \
+             the button; the GetMenuState close gate covers the remaining \
+             grayed/disabled/CS_NOCLOSE shapes)"
         );
 
         // The Close-disabled gate mirrors NC_DoButton's own refusal.

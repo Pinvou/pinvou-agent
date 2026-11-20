@@ -35,9 +35,13 @@
 //! for a re-granted session. A healthy helper's SOFT verdict (an honest
 //! "cannot serve" — e.g. nothing holds focus) is the helper answering
 //! normally: it surfaces as the query's error but NEVER tears the client
-//! down ([`UiaHelperOutcome`]). The parent's NDJSON reader bounds one line
-//! at [`MAX_LINE_BYTES`] — a longer line is framing corruption (transport
-//! death), not an unbounded allocation.
+//! down ([`UiaHelperOutcome`]). The NDJSON readers bound ONE line at
+//! [`MAX_LINE_BYTES`] in both directions (a fresh limit per read, so the
+//! bound does not accrue across a session's traffic) — a longer or
+//! delimiter-less chunk is framing corruption (transport death), not an
+//! unbounded allocation. Lines cross the pipe WITH std's delimiter and are
+//! decoded through [`decode_line`] before any comparison or parse — the
+//! ready handshake's bare-constant comparison depends on that strip (r6).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::io::FromRawHandle;
@@ -58,7 +62,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::super::types::{ComputerUseError, ElementInfo, UiTreeOptions};
 use super::helpers::{MAX_TREE_DEPTH, MAX_TREE_NODES, append_tree_truncation_footers, tree_budget};
-use super::uia_helper_protocol::{Op, READY_LINE, Request, Response, WireElement};
+use super::uia_helper_protocol::{Op, READY_LINE, Request, Response, WireElement, decode_line};
 use super::virtual_display::windows_virtual::{
     TREE_TOP_LEVEL_CAP, deepest_window_at, desktop_target_path, is_shell_window_class,
     launch_suspended_in_job, walk_visible_toplevels, window_class_name,
@@ -87,12 +91,18 @@ const HELPER_ELEMENT_TIMEOUT_MS: u64 = 5_000;
 /// scaled timeout bounds the wait (see `helper_tree` below and the module
 /// doc's residual note).
 const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
-/// Framing containment on the parent's NDJSON reader: one line is bounded
-/// (the largest honest response — the full-budget tree — is well under
-/// 240 KiB of sanitized rows; 1 MiB leaves headroom). A longer line means
-/// the helper's framing is corrupt or hostile: the reader stops and the
-/// client is torn down as a transport failure instead of streaming an
-/// unbounded allocation into memory.
+/// Framing containment on the NDJSON pipe, BOTH directions: one line is
+/// bounded by [`MAX_LINE_BYTES`]. The honest bound math: a worst-case tree
+/// row is ~0.4 KiB (depth indent + index + quoted 80-CHAR name — up to ~240
+/// UTF-8 bytes for CJK — plus rect and flags), so the 2000-node ceiling
+/// produces at most ~0.8 MiB and 1 MiB leaves ~20% headroom. A longer (or
+/// delimiter-less) line means the framing is corrupt or hostile: the reader
+/// stops and the client is torn down as a transport failure instead of
+/// streaming an unbounded allocation into memory. The limit re-arms PER
+/// LINE (a fresh `Take` per read, r6): `io::Take` bounds the TOTAL bytes
+/// across the reader it wraps, so a reader-lifetime `take` would kill a
+/// healthy helper once ~1 MiB of responses had crossed the pipe — several
+/// full-budget trees into a session.
 const MAX_LINE_BYTES: u64 = 1 << 20;
 
 // ── helper-side loop (runs in the re-spawned process on the hidden desktop) ──
@@ -149,27 +159,41 @@ pub(crate) fn run_helper_loop() {
     emit_line(READY_LINE);
 
     let stdin = std::io::stdin();
-    let mut requests = BufReader::new(stdin.lock()).lines();
+    let mut raw = BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();
-    while let Some(Ok(line)) = requests.next() {
-        // EOF simply ends this loop (the parent closed the write end); a
-        // blank line is skipped without consuming an id.
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => handle_request(&uia, &request),
-            Err(error) => Response::error(0, format!("unparsable request: {error}")),
-        };
-        let payload = match serde_json::to_string(&response) {
-            Ok(payload) => payload,
-            // A response that cannot serialize is a bug, not churn: fail the
-            // loop rather than answer nothing (the parent times out and
-            // degrades either way).
-            Err(_) => break,
-        };
-        if emit_line_to(&mut stdout, &payload).is_err() {
-            break; // parent gone
+    loop {
+        let mut raw_line = String::new();
+        // Same per-line containment as the parent's reader (r6): a fresh
+        // `Take` per read bounds ONE line — a reader-lifetime limit would
+        // stop serving after ~1 MiB of well-framed requests — and a chunk
+        // without its delimiter (over-cap or a dying parent) is framing
+        // corruption: stop serving rather than grow the allocation.
+        match (&mut raw).take(MAX_LINE_BYTES + 1).read_line(&mut raw_line) {
+            Ok(0) => break, // stdin EOF: the parent dropped the write end
+            Ok(_) => {
+                let Some(line) = decode_line(&raw_line) else {
+                    break; // delimiter-less chunk: corrupt framing
+                };
+                // A blank line is skipped without consuming an id.
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let response = match serde_json::from_str::<Request>(&line) {
+                    Ok(request) => handle_request(&uia, &request),
+                    Err(error) => Response::error(0, format!("unparsable request: {error}")),
+                };
+                let payload = match serde_json::to_string(&response) {
+                    Ok(payload) => payload,
+                    // A response that cannot serialize is a bug, not churn:
+                    // fail the loop rather than answer nothing (the parent
+                    // times out and degrades either way).
+                    Err(_) => break,
+                };
+                if emit_line_to(&mut stdout, &payload).is_err() {
+                    break; // parent gone
+                }
+            }
+            Err(_) => break, // stdin gone
         }
     }
     // stdin EOF: the parent dropped the write end (client dropped). Exit
@@ -461,25 +485,45 @@ impl UiaHelperClient {
         drop(child_ends);
 
         let (tx, rx) = channel::<String>();
+        // The client is assembled BEFORE the reader thread spawns (r6):
+        // the thread spawn is the one failure path left after a successful
+        // launch, and constructing first means the `?` below drops the
+        // client — whose Drop terminates and closes the retained spawn
+        // handle — instead of leaking one kernel handle per occurrence
+        // (the raw-HANDLE-in-a-bare-local class the r4 guard closed for
+        // the pipe ends).
+        let mut client = Self {
+            stdin: Some(stdin),
+            reader: Some(rx),
+            reader_thread: None,
+            next_id: 1,
+            process,
+        };
         let reader_thread = std::thread::Builder::new()
             .name("cu-uia-helper-reader".to_string())
             .spawn(move || {
-                // One line is bounded by MAX_LINE_BYTES (+1 to let an
-                // exactly-maximal well-framed line through): `take` stops
-                // the read there, and a chunk that arrives without its
-                // newline is framing corruption — stop instead of streaming
-                // the rest of an unbounded line into memory.
-                let mut reader = BufReader::new(read_file).take(MAX_LINE_BYTES + 1);
+                // Per-line framing containment (r6): `io::Take` bounds the
+                // TOTAL bytes across the reader it wraps, so a
+                // reader-lifetime `take` (the r5 shape) would kill a
+                // healthy helper once ~1 MiB of responses had crossed the
+                // pipe — the fresh limit PER read bounds ONE line. A chunk
+                // that arrives without its newline is framing corruption —
+                // stop instead of streaming the rest of an unbounded line
+                // into memory, and never hand a delimiter-less chunk to a
+                // caller (see `decode_line`).
+                let mut raw = BufReader::new(read_file);
                 loop {
                     let mut line = String::new();
-                    match reader.read_line(&mut line) {
+                    match (&mut raw).take(MAX_LINE_BYTES + 1).read_line(&mut line) {
                         Ok(0) => break, // EOF: the helper exited
-                        Ok(_) if line.ends_with('\n') => {
+                        Ok(_) => {
+                            let Some(line) = decode_line(&line) else {
+                                break; // delimiter-less chunk: corrupt framing
+                            };
                             if tx.send(line).is_err() {
                                 break; // client dropped
                             }
                         }
-                        Ok(_) => break,  // cap hit without a newline: corrupt framing
                         Err(_) => break, // pipe broken
                     }
                 }
@@ -490,13 +534,7 @@ impl UiaHelperClient {
                     "cannot spawn the UIA helper reader thread: {e}"
                 )))
             })?;
-        let mut client = Self {
-            stdin: Some(stdin),
-            reader: Some(rx),
-            reader_thread: Some(reader_thread),
-            next_id: 1,
-            process,
-        };
+        client.reader_thread = Some(reader_thread);
         client.wait_ready()?;
         Ok(client)
     }
@@ -504,7 +542,12 @@ impl UiaHelperClient {
     /// Bounded wait for the ready line (a stray early response line would
     /// be protocol corruption — treated as failure). Both arms terminate:
     /// the ready line ends the wait, anything else is untrustworthy
-    /// framing — there is no third case to loop on.
+    /// framing — there is no third case to loop on. `take_line` yields
+    /// DELIMITER-STRIPPED lines (`decode_line` in the reader thread), so
+    /// the bare-constant comparison is exact — the r6 handshake failure
+    /// compared a newline-inclusive line against this constant and failed
+    /// forever; the framing contract is pinned Linux-side in
+    /// `line_decoding_strips_the_delimiter_and_rejects_unframed_chunks`.
     fn wait_ready(&mut self) -> Result<(), HelperTransportError> {
         let remaining = Duration::from_millis(HELPER_READY_TIMEOUT_MS);
         match self.take_line(remaining)? {
@@ -515,6 +558,10 @@ impl UiaHelperClient {
         }
     }
 
+    /// One line from the reader thread, delimiter already stripped
+    /// (`decode_line`). The channel carries decoded lines so every
+    /// consumer (this ready compare, `exchange`'s parse and id check)
+    /// sees the same clean shape.
     fn take_line(&mut self, timeout: Duration) -> Result<String, HelperTransportError> {
         let rx = self
             .reader
@@ -626,9 +673,31 @@ impl UiaHelperClient {
         &mut self,
     ) -> Result<UiaHelperOutcome<Option<ElementInfo>>, HelperTransportError> {
         match self.exchange(Op::Focus, Duration::from_millis(HELPER_ELEMENT_TIMEOUT_MS)) {
+            // Focus NEVER answers Ok(None): an unidentified focus must
+            // surface as the query's error (the tool layer masks the
+            // confirm preview on it), because a confirmed "nothing holds
+            // focus" would clear the uncertain-focus mask and let an
+            // unreadable target type unmasked. `element: None` is
+            // meaningful for at_point only — for focus it is a malformed
+            // frame (the helper answers focus queries with Some or an
+            // error, so a Some(ok) frame without an element is a helper
+            // regression, treated as transport corruption like the tree
+            // op's "no tree and no error" arm).
             Ok(Response {
-                ok: true, element, ..
-            }) => Ok(UiaHelperOutcome::Ok(element.map(wire_to_info))),
+                ok: true,
+                element: Some(element),
+                ..
+            }) => Ok(UiaHelperOutcome::Ok(Some(wire_to_info(element)))),
+            Ok(Response {
+                ok: true,
+                element: None,
+                ..
+            }) => Err(HelperTransportError::Unparsable(
+                "the focus response carried no element despite ok — focus \
+                 uncertainty must surface as a soft/error verdict, never a \
+                 confirmed none"
+                    .to_string(),
+            )),
             Ok(Response {
                 ok: false,
                 error: Some(error),
@@ -802,17 +871,88 @@ mod tests {
             "the client Drop must terminate the retained spawn handle: EOF \
              alone cannot reach a helper wedged inside a UIA COM call"
         );
-        // The NDJSON reader stays line-capped (r5): reverting to plain
-        // BufReader::lines() compiles and passes everything while an
-        // unframed helper line streams unbounded into memory — the cap is
-        // containment, not behavior (uia_helper.rs is Windows-cfg'd, so no
-        // Linux gate would see the revert).
+        // The NDJSON line cap travels PER LINE (r6): `io::Take` bounds the
+        // TOTAL bytes across the reader it wraps, so the r5 reader-lifetime
+        // `take` killed a healthy helper once ~1 MiB of responses had
+        // crossed the pipe (a handful of full-budget trees into a session)
+        // while every gate stayed green. Both directions re-arm the limit
+        // per read — the parent's response reader AND the helper's request
+        // loop — and route every line through `decode_line`, which strips
+        // the delimiter std delivers (the r6 ready-handshake BLOCKER was a
+        // newline-inclusive line compared against the bare READY_LINE
+        // constant; the framing behavior itself is pinned Linux-side in the
+        // protocol file's decode test).
         assert_eq!(
-            production.matches(".take(MAX_LINE_BYTES + 1)").count(),
+            production
+                .matches("(&mut raw).take(MAX_LINE_BYTES + 1)")
+                .count(),
+            2,
+            "parent reader + helper request loop: each read re-arms the \
+             per-line bound; collapsing to a reader-lifetime take (the r5 \
+             shape) changes the token or the count and fails here"
+        );
+        assert_eq!(
+            production.matches("decode_line(&").count(),
+            2,
+            "both loops must decode the std-delivered line before sending \
+             it on — the bare-constant ready comparison and every JSON \
+             parse depend on the delimiter strip"
+        );
+        // The client is assembled before the reader thread spawns (r6): a
+        // reader-thread spawn failure then drops the client, whose Drop
+        // terminates the retained spawn handle — the construct-after shape
+        // leaked one kernel handle per failed spawn.
+        assert_eq!(
+            production
+                .matches("client.reader_thread = Some(reader_thread);")
+                .count(),
             1,
-            "the parent reader must bound one NDJSON line: a longer line is \
-             framing corruption (transport death), not an allocation to grow \
-             into"
+            "client-before-reader-thread ordering: the spawn-failure path \
+             must run the client's Drop (terminate + close the retained \
+             handle)"
+        );
+        // The helper's tree walk shares the fallback's shell exclusion
+        // (r6 pin): the exclusion predicate itself is pinned in
+        // windows_virtual.rs, but the HELPER's use of it — the primary
+        // structured-query path — had no pin, so deleting it would
+        // green-light shell windows crowding every helper tree while all
+        // gates stayed green.
+        assert_eq!(
+            production
+                .matches("is_shell_window_class(&window_class_name(hwnd))")
+                .count(),
+            1,
+            "the helper's top-level walk must apply the shared \
+             shell-exclusion predicate exactly once (the fallback walk's \
+             use is pinned in windows_virtual.rs; the two answers must \
+             describe the same desktop)"
+        );
+        // The tree wait must keep scaling with the node budget (r6 pin):
+        // each node is a bounded cross-process COM fetch, so a flat
+        // timeout desyncs the parent's wait from the walk budget and
+        // strands escalated-budget queries in timeout/cooldown loops.
+        assert_eq!(
+            production
+                .matches(
+                    "HELPER_TREE_TIMEOUT_BASE_MS + u64::from(max_nodes) * \
+                     HELPER_TREE_TIMEOUT_PER_NODE_MS"
+                )
+                .count(),
+            1,
+            "the tree wait budget must scale per node (the formula token \
+             is single-line, CRLF-safe)"
+        );
+        // The helper serializes through the shared footer builder (r6
+        // pin): a revert to inline literals would fork the payload format
+        // across stacks (the builder's bytes are golden-pinned in
+        // helpers.rs; windows.rs's routing is pinned in its own file).
+        assert_eq!(
+            production
+                .matches("append_tree_truncation_footers(")
+                .count(),
+            1,
+            "the helper tree must emit its truncation footers through the \
+             shared builder — one format across the three stacks"
         );
     }
 }
