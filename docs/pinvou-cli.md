@@ -531,8 +531,10 @@ super-permission pkexec toggle.
   no CI leg at all; round-32 review: the app-side filter loop grew the
   executed-count guard its pinvou-cli sibling already had, closing the
   ignored-only hole in the same class; the gate-policy suite covers the
-  filter set, the routing `if` and the guard bodies, so a deleted filter or
-  a skipped step fails CI).
+  filter set, the routing `if`, and each executed-count guard copy
+  individually (per-step pins plus a job-wide occurrence count), so a
+  deleted filter, a skipped step, or a deleted/weakened guard copy fails
+  CI).
   The rest of the CLI lib suite still executes on Linux only.
 
 ## Implementation map

@@ -2423,14 +2423,16 @@ test("pins the server bound to within 1 KiB of the desktop bound on both sides",
 
 // Strip closed /* */ block comments the way the Rust-side
 // `strip_closed_block_comments` helper (platform/test_support.rs) does:
-// depth-tracked nesting (relay_client.rs nests block comments, so a
-// first-closer freeze leaves inner-comment text alive and a crafted decoy
-// can false-match a ^…$m needle), newline-count preservation (collapsing a
-// multi-line comment to one space could merge the pinned line into its
-// predecessor and silently break the match), and unterminated blocks kept
-// verbatim as compile-error territory. Round-33 review: ported from the
-// first-closer single-space variant after a nested decoy was shown to
-// survive it.
+// depth-tracked so a future nested block comment in the pinned source
+// cannot fool the needle match (a first-closer freeze leaves
+// inner-comment text alive and a crafted decoy can false-match a ^…$m
+// needle), newline-count preservation (collapsing a multi-line comment to
+// one space could merge the pinned line into its predecessor and silently
+// break the match), and unterminated blocks kept verbatim as
+// compile-error territory. relay_client.rs itself carries no block
+// comments today, so the depth tracking is prophylactic — the nesting test
+// below is what binds it. Round-33 review: ported from the first-closer
+// single-space variant after a nested decoy was shown to survive it.
 const stripClosedBlockComments = (text) => {
   let out = "";
   let index = 0;

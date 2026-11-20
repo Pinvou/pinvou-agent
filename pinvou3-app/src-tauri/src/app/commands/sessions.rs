@@ -355,7 +355,8 @@ pub(crate) fn first_send_title_source<'a>(message: &'a str, fallback: Option<&'a
     }
 }
 
-/// While the title is still the default "新对话", derives the session title from the
+/// While the title is still the default "新对话" (the built-in new-session
+/// title literal), derives the session title from the
 /// first message (or attachment names as fallback; first 28 characters).
 ///
 /// Both send paths — ACP (codex_acp_prompt) and native (chat) — auto-name through

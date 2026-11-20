@@ -366,7 +366,12 @@ const RELAY_ERROR_TEXT_MAX_CHARS: usize = 16_384;
 /// while its disk-backed worker stayed alive, so the retain may drop nothing
 /// and the failure arm's re-push would otherwise grow past the cap and
 /// re-wedge every later acknowledgement (the exact wedge class above, in
-/// miniature).
+/// miniature). Durable-erasure disclosure: a retired disk-backed entry keeps
+/// retrying only for this process's lifetime — the next sibling
+/// acknowledgement's whole-ledger persist is sourced from the (now smaller)
+/// memory backlog, so the same persist drops the retired entry from the
+/// durable ledger too and the worker's eventual success can no longer be
+/// recorded.
 fn cap_pending_revocation_backlog(backlog: &mut Vec<PendingRevocation>) {
     let excess = backlog.len().saturating_sub(MAX_PENDING_REVOCATIONS);
     if excess == 0 {
@@ -1227,7 +1232,7 @@ impl RemoteControlManager {
                     revocation_disposition = Some(WebAccessRevocationDisposition::Queued);
                 }
                 // Round-15 review: a full queue no longer wedges rotation — rotation is a
-                // recovery path, and from the 33th relay-less rotation onward the queue is
+                // recovery path, and from the 33rd relay-less rotation onward the queue is
                 // full, where `?` propagation would make every later refresh fail.
                 // Degrade to logging and continue; the cost must be stated honestly
                 // (Round-17 review correction — the original "revocation intent stays in
@@ -7137,8 +7142,10 @@ mod tests {
             body.contains("self.emit_status();"),
             "revoke must push the refreshed status so the modal reflects the revoked row"
         );
-        // 复审 P2(落盘失败对账):persist 失败不得裸 `?` 直接传播——必须
-        // 发布权威状态、带语境错误返回(内存撤权保持生效,不回滚)。
+        // Re-review P2 (persist-failure reconciliation): a persist failure must
+        // not propagate through a bare `?` — the authoritative state must be
+        // published and the error returned with context (the in-memory
+        // revocation stays in force, no rollback).
         {
             let persist_at = body
                 .find("if let Err(error) = persist_config(&config)")
@@ -7334,9 +7341,9 @@ mod tests {
              live process mint fresh grants immediately, violating immediate \
              invalidation of the old authorization"
         );
-        let emit_pos = arm_body.find("self.emit_status();").expect(
-            "the validation failure arm must refresh status before                      returning",
-        );
+        let emit_pos = arm_body
+            .find("self.emit_status();")
+            .expect("the validation failure arm must refresh status before returning");
         // Round-23 review MINOR caliber: the emit's unconditional position — the braces
         // between the arm opener's `{` and the emit must be balanced, so a mutant moving
         // the emit inside any conditional block mismatches and turns red. Both shapes (disk
@@ -7418,7 +7425,7 @@ mod tests {
     /// Wiring pin (Round-15 review minor: full-queue wedging of recovery paths). stop/refresh
     /// must degrade a full pending-revocation queue to log-and-continue by the shared prefix;
     /// reverting to `queue_pending_revocation(…)?`'s `?` propagation revives both wedge
-    /// classes at once: stop cannot stop, and refresh fails permanently from the 33th rotation
+    /// classes at once: stop cannot stop, and refresh fails permanently from the 33rd rotation
     /// on (mutant executed). The same-key-different-secret conflict branch stays as-is (the
     /// round-14 fail-closed boundary).
     #[test]

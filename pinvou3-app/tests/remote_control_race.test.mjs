@@ -159,7 +159,8 @@ test('#876 P2: stop 带 deferred_full_queue 处置必须落到 revocation_warnin
     'queue-full 处置必须以持久警告呈现，不得吞成无声的干净停止'
   );
 
-  // 状态刷新不得抹除警告（刷新 payload 不携带 revocation_warning）。
+  // A status refresh must not wipe the warning (the refresh payload
+  // carries no revocation_warning).
   await rt.api.refreshRemoteControlStatus();
   assert.equal(
     rt.state.webAccess.revocation_warning,
@@ -167,9 +168,11 @@ test('#876 P2: stop 带 deferred_full_queue 处置必须落到 revocation_warnin
     '警告必须跨状态刷新存续'
   );
 
-  // 后续 stop 落了 queued：queued 只覆盖本次停止的那个 endpoint，更早被
-  // 丢弃意图的 endpoint 仍是孤儿——警告不得自动清除（fix-delta follow-up
-  // P2：自动清除会把"更早 endpoint 仍待清理"错误报告为已恢复）。
+  // A later stop lands as queued: queued only covers the endpoint stopped
+  // this time; the endpoint whose earlier revocation intent was dropped is
+  // still an orphan — the warning must not auto-clear (fix-delta follow-up
+  // P2: auto-clearing would misreport "the earlier endpoint still needs
+  // cleanup" as recovered).
   const d2 = rt.defer('web_access_disable');
   const p2 = rt.api.stopRemoteControl();
   d2.resolve({ revocation: 'queued' });
@@ -188,14 +191,15 @@ test('#876 P2: stop 带 deferred_full_queue 处置必须落到 revocation_warnin
 
 test('#876 P2: A→B deferred 后 B→C queued——孤儿 A 的警告不得被 queued 清除', async () => {
   const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
-  // A→B：queue-full，A 的撤销意图被丢弃 → 警告落位。
+  // A→B: queue-full, A's revocation intent is dropped → the warning lands.
   const d1 = rt.defer('web_access_rotate');
   const p1 = rt.api.refreshRemoteControlQr();
   d1.resolve({ url: 'https://example.test/b', revocation_disposition: 'deferred_full_queue' });
   await p1;
   assert.equal(rt.state.webAccess.revocation_warning, 'deferred_full_queue');
 
-  // B→C：容量恢复，B 的撤销意图入队（queued）——A 仍是孤儿。
+  // B→C: capacity recovered, B's revocation intent enqueues (queued) — A is
+  // still an orphan.
   const d2 = rt.defer('web_access_rotate');
   const p2 = rt.api.refreshRemoteControlQr();
   d2.resolve({ url: 'https://example.test/c', revocation_disposition: 'queued' });
@@ -206,14 +210,16 @@ test('#876 P2: A→B deferred 后 B→C queued——孤儿 A 的警告不得被 
     'B 的 queued 不代表 A 已撤销——警告保持'
   );
 
-  // 状态刷新跨窗口保持警告。
+  // The warning survives a status refresh across the window.
   await rt.api.refreshRemoteControlStatus();
   assert.equal(rt.state.webAccess.revocation_warning, 'deferred_full_queue');
 });
 
-// UI 层断言（fix-delta follow-up P2）：queue-full 停止后设置弹窗不得自关
-// ——handleDisableWebAccess 必须检查 stop 返回的处置并在 deferred_full_queue
-// 时保持对话框打开（警告横幅是弹窗内的唯一呈现面）。
+// UI-layer assertion (fix-delta follow-up P2): after a queue-full stop the
+// settings dialog must not close itself — handleDisableWebAccess must check
+// the disposition stop returned and keep the dialog open on
+// deferred_full_queue (the warning banner is the only surface inside the
+// dialog).
 test('#876 P2: SettingsView 的 stop 处理器在 queue-full 时保持弹窗打开', () => {
   const src = fs.readFileSync(
     path.join(here, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),

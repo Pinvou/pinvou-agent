@@ -45,11 +45,12 @@ pub struct WebAccessInfo {
     pub qr_data_url: Option<String>,
     pub status: WebAccessStatusKind,
     /// How this operation disposed of the old credential's remote-revocation
-    /// intent (set for stop/rotate, None otherwise): on a full queue the
-    /// intent has nowhere to land, so the caller receives not a vague Ok but
-    /// an explicitly incomplete "local stop done, remote revocation not
-    /// landed" result. Optional so existing JSON deserialization is
-    /// unaffected.
+    /// intent (set for rotate, i.e. the refresh path; None otherwise — stop
+    /// reports its disposition through [`WebAccessStopOutcome`]): on a full
+    /// queue the intent has nowhere to land, so the caller receives not a
+    /// vague Ok but an explicitly incomplete "local rotate done, remote
+    /// revocation not landed" result. Optional so existing JSON
+    /// deserialization is unaffected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revocation_disposition: Option<WebAccessRevocationDisposition>,
 }

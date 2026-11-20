@@ -1127,7 +1127,7 @@ for (const label of [
 // and only unrecognized errors carry the loadFailed prefix around raw
 // detail. Re-wrapping the mapped copy at the call sites (the previous
 // shape) spliced the prefix and the sentence together in every language
-// ("读取失败：读取桌面端文件列表失败，请重试。"); either rollback goes red.
+// (zh: "读取失败：读取桌面端文件列表失败，请重试。"); either rollback goes red.
 assert.doesNotMatch(hostFilePicker, /loadFailed\(localizedPickerError/,
   'the picker must not re-wrap the mapper output — recognized codes already render complete sentences');
 assert.match(hostFilePicker, /return labels\.listingFailed;[\s\S]{0,200}return labels\.loadFailed\(message\);/,

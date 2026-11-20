@@ -1999,16 +1999,38 @@ class CiGatePolicyTests(unittest.TestCase):
         # "ok. 0 passed; N ignored" and used to pass silently here. The
         # macOS step's "same filtered-run pattern" comment is now true
         # again; pin the guard bodies so a deletion reverts the asymmetry.
-        self.assertIn(
-            "^test result: ok\\. [1-9][0-9]* passed",
-            windows_rust_steps,
-            "the Windows executed-count guard keeps an #[ignore]d pin from "
-            "passing the step silently (the round-23 review hole, closed "
-            "symmetrically in round-27)",
+        # Round-35 review: the src-tauri regression loop's guard carries
+        # the IDENTICAL needle text, so the old whole-job assertIn was
+        # satisfied by EITHER copy -- deleting either guard left the suite
+        # green. Pin THIS step's copy inside its own step slice (the loop
+        # pin holds the job-wide occurrence count) so each copy binds
+        # individually.
+        guard_steps = [
+            step
+            for step in re.split(r"\n      - name: ", windows_rust_steps)[1:]
+            if "run_filtered() {" in step
+        ]
+        self.assertEqual(
+            len(guard_steps),
+            1,
+            "exactly one step defines the run_filtered helper whose "
+            "executed-count guard this pin binds",
         )
         self.assertIn(
-            "an ignored-only run must not pass the guard",
-            windows_rust_steps,
+            "^test result: ok\\. [1-9][0-9]* passed",
+            guard_steps[0],
+            "the pinvou-cli run_filtered executed-count guard keeps an "
+            "#[ignore]d pin from passing the step silently (the round-23 "
+            "review hole, closed symmetrically in round-27); this "
+            "step-sliced pin must fail when THIS copy is deleted or its "
+            "regex weakened",
+        )
+        self.assertIn(
+            "filter '$*' executed 0 tests (an ignored-only run must not "
+            "pass the guard)",
+            guard_steps[0],
+            "the pinvou-cli guard's failure wording is pinned inside THIS "
+            "step's slice so the sibling loop guard cannot satisfy it",
         )
         self.assert_run_filtered_filter(
             windows_rust_steps,
@@ -3241,15 +3263,58 @@ class CiGatePolicyTests(unittest.TestCase):
             # The loop's zero-match guard is load-bearing (a renamed test
             # must fail the step, not pass silently).
             "回归过滤器 '$filter' 匹配 0 个测试",
-            # Round-32 review: the loop gains the executed-count guard its
-            # pinvou-cli sibling grew in round-27 — an ignored-only run
-            # prints "ok. 0 passed; N ignored" and passed the zero-match
-            # guard alone. Pin both the regex and the failure wording so a
-            # deletion reverts to the asymmetric shape.
-            "^test result: ok\\. [1-9][0-9]* passed",
-            "an ignored-only run must not pass the guard",
         ]:
             self.assertIn(needle, windows_rust_test)
+        # Round-32 review: the loop gains the executed-count guard its
+        # pinvou-cli sibling grew in round-27 — an ignored-only run
+        # prints "ok. 0 passed; N ignored" and passed the zero-match
+        # guard alone. Round-35 review: the sibling run_filtered guard
+        # carries the IDENTICAL needle text, so a whole-job assertIn was
+        # satisfied by EITHER copy — deleting either guard left the suite
+        # green. Pin THIS loop's copy inside its own step slice, and hold
+        # the job-wide occurrence count at exactly two (one per guard
+        # copy), so each copy binds individually.
+        loop_steps = [
+            step
+            for step in re.split(r"\n      - name: ", windows_rust_test)[1:]
+            if "/tmp/windows_regression.log" in step
+        ]
+        self.assertEqual(
+            len(loop_steps),
+            1,
+            "exactly one step owns the src-tauri regression loop whose "
+            "executed-count guard this pin binds",
+        )
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            loop_steps[0],
+            "the loop's executed-count guard keeps a filter whose every "
+            "match is #[ignore]d from passing the leg silently; this "
+            "step-sliced pin must fail when THIS copy is deleted or its "
+            "regex weakened",
+        )
+        self.assertIn(
+            "regression filter '$filter' passed 0 tests — an ignored-only "
+            "run must not pass the guard",
+            loop_steps[0],
+            "the loop guard's failure wording is pinned inside THIS "
+            "step's slice so the sibling run_filtered guard cannot "
+            "satisfy it",
+        )
+        self.assertEqual(
+            windows_rust_test.count("^test result: ok\\. [1-9][0-9]* passed"),
+            2,
+            "the job must carry EXACTLY two executed-count guard copies "
+            "(the regression loop and the pinvou-cli run_filtered body); "
+            "a deleted or newly duplicated copy must fail the suite",
+        )
+        self.assertEqual(
+            windows_rust_test.count("an ignored-only run must not pass the guard"),
+            2,
+            "the executed-count failure wording must appear exactly once "
+            "per guard copy; a deleted or duplicated echo must fail the "
+            "suite",
+        )
 
     def test_memory_setup_disk_swap_is_mandatory(self):
         # Disk swap is mandatory (2026-09-19): with the zram pool capped at

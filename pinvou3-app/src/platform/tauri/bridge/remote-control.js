@@ -247,6 +247,10 @@
         notify();
         throw error;
       }
+      // Latent gap, currently unreachable: a disposition that settles after a
+      // newer intent bumped the seq is discarded here without recording its
+      // warning — unreachable because SettingsView serializes every web-access
+      // action behind the single actionBusy flag.
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
       // Review P2 (#876, fix-delta follow-up): the local stop always
       // completes, and the returned disposition truthfully reports where the
@@ -257,7 +261,11 @@
       // earlier endpoint whose intent was dropped stays orphaned (joinable
       // until expiry or manual cleanup), so queued/not_needed must never
       // clear an existing warning — auto-clearing would misreport the
-      // still-orphaned endpoint as recovered.
+      // still-orphaned endpoint as recovered. The match below is enumerated on
+      // the literal "deferred_full_queue": a future second incomplete-
+      // disposition variant would fall into the keep-existing-warning arm
+      // until the bridge learns the new literal (the same enumerated-pin
+      // blindness the Rust side discloses for its pins).
       const revocationWarning =
         outcome && outcome.revocation === "deferred_full_queue"
           ? "deferred_full_queue"
@@ -289,7 +297,10 @@
         // describes only the endpoint replaced here — queued means THIS one
         // was durably queued, while earlier dropped-intent endpoints stay
         // orphaned, so the warning never auto-clears (deferred_full_queue
-        // overwrites it; anything else keeps what is already shown).
+        // overwrites it; anything else keeps what is already shown). The
+        // match is enumerated on the literal "deferred_full_queue": a future
+        // second incomplete-disposition variant falls into the
+        // keep-existing-warning arm until the bridge learns the new literal.
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,
           revocation_warning:

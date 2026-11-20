@@ -2431,9 +2431,10 @@ mod tests {
                 .expect("an escaping untracked symlink must be refused");
             let rendered = format!("{error:#}");
             // The Round-12 P3 resolved-landing containment re-check fires before this
-            // arm's dedicated naming: the escape refusal now happens earlier as "越过
-            // 了项目根目录" (before any content read), keeping the untracked leg's
-            // "越出了工作区" as defense-in-depth naming. Both messages can only be
+            // arm's dedicated naming: the escape refusal now happens earlier as
+            // "越过了项目根目录" ("crossed the project root", before any content
+            // read), keeping the untracked leg's "越出了工作区" ("escaped the
+            // workspace") as defense-in-depth naming. Both messages can only be
             // escape refusals — the leak guarantee (target bytes never appear in the
             // diff) is pinned by the .err() expectation above itself.
             assert!(

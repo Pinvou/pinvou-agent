@@ -62,12 +62,18 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // (R2 REQUIRED-1), and a mid-text drive verbatim fold left a mangled
     // `//?/` stem behind. Text containing none of the spellings is returned
     // byte-identical (the root is never rewritten without a fold).
-    // Round-28 复审 MINOR-4(折叠前先拦退化部署):needle 是替换文本的
-    // 子串时(PINVOU3_HOME 为 `~`/`3`/`pinv` 这类退化相对值),折叠产物
-    // 仍含 needle——重入式再折叠无界增长,读回愈合每读一次膨胀一次,幂
-    // 等契约破裂。真实绝对家目录必然含第二个分隔符或盘符冒号,不可能成
-    // 为 `~/.pinvou3` 的子串,故该形态只可能是退化部署;按恒等返回的保守
-    // 方向拦截(文本本就呈 `~/.pinvou3` 相对形态,无需折叠)。
+    // Round-28 re-review MINOR-4 (intercept degenerate homes before the
+    // fold): when the needle is a substring of the replacement text
+    // (PINVOU3_HOME is a degenerate relative value like `~`, `3`, or
+    // `pinv`), the folded output still contains the needle — re-entrant
+    // re-folding grows without bound and read-back healing bloats a
+    // little more on every read, breaking the idempotence contract. A
+    // real absolute home directory necessarily contains a second
+    // separator or a drive-letter colon and can never be a substring of
+    // `~/.pinvou3`, so this shape can only be a degenerate deployment;
+    // intercept it in the conservative identity-return direction (the
+    // text already reads as the relative `~/.pinvou3` form and needs no
+    // fold).
     if "~/.pinvou3".contains(prefix.as_str()) {
         return text.to_string();
     }
@@ -104,28 +110,42 @@ pub fn redact_storage_prefix(text: &str) -> String {
             changed = true;
         }
     }
-    // Round-15 复审 F4:配置根的 plain 拼写按 ASCII 无关大小写折叠——
-    // Windows 的盘符/用户段大小写不稳定(错误文本里的 `c:\users\…` 对
-    // home `C:\Users\…` 此前完全不折叠,绝对路径带过 relay)。Linux 上
-    // 大小写敏感文件系统的异拼只是显示层过折叠(方向安全),不影响任何
-    // 路径解析。(Round-18 复审残留注记:替换在两个方向上都只限 ASCII
-    // ——PINVOU3_HOME 本身含非 ASCII 字母时,错误文本里这些字节层面的
-    // 异拼仍不折叠;极罕见的安装形态,按已披露残留处理。Round-19 复审
-    // 披露的两类 verbatim 残留——(a) 正斜杠拼写仍不折叠;(b) verbatim
-    // drive/UNC 拼写不折叠——其中 (b) 已由上方多拼写精确折叠闭合;(a)
-    // 正斜杠拼写仍按残留披露。Round-21 复审补记:PINVOU3_HOME 为相对值
-    // (如测试的 `p8`、畸形部署的裸目录名)时 needle 就是该相对串,不含
-    // 分隔符的文本中任何相同子串都会被过折叠(display-safe 的过宽方向,
-    // 与 Linux 大小写过折叠同族);needle 为空已在上方拦截,子串形态已
-    // 由 Round-28 MINOR-4 守卫恒等拦截,截断风险无。Round-22 复审补记:
-    // needle 在读取时取自当前 PINVOU3_HOME——此前家目录下落盘的旧警告
-    // (home 迁移/数据目录还原后仍在 20 条历史窗口内)不再含当前 needle,
-    // 读回折叠救不了它们;触发面窄(需家目录变更 + 旧条目存活),泄漏是
-    // 失效的旧路径,按已披露残留处理。另记于此而非调用点:
-    // redact_storage_prefix 只折 `~/.pinvou3` 存储根,不折用户 `$HOME`
-    // 本身——`list_host_files` 缺省枚举 `$HOME` 的错误臂在 round-21(M3)
-    // 改走命令层稳定码折叠,依赖本原语兜 `$HOME` 的用法兜不住,必须走
-    // 稳定码。)
+    // Round-15 re-review F4: the configured root's plain spelling folds
+    // ASCII case-insensitively — Windows drive-letter/user-segment case
+    // is unstable (`c:\users\…` in an error text previously did not fold
+    // at all against home `C:\Users\…`, shipping an absolute path through
+    // the relay). On Linux's case-sensitive filesystems an alternate-case
+    // spelling is only a display-layer over-fold (the safe direction) and
+    // affects no path resolution. (Round-18 re-review residual note: the
+    // replacement is ASCII-only in both directions — when PINVOU3_HOME
+    // itself contains non-ASCII letters, those byte-level alternate
+    // spellings in error text still do not fold; an extremely rare
+    // install shape, handled as a disclosed residual. Round-19 re-review
+    // disclosed two verbatim residuals — (a) forward-slash spellings
+    // still do not fold; (b) verbatim drive/UNC spellings do not fold —
+    // of which (b) has since been closed by the exact multi-spelling
+    // folds above; (a) forward-slash spellings remain a disclosed
+    // residual. Round-21 re-review addendum: when PINVOU3_HOME is a
+    // relative value (the tests' `p8`, or a bare directory name in a
+    // malformed deployment), the needle is that relative string, and any
+    // identical substring of separator-free text gets over-folded (the
+    // display-safe over-broad direction, same family as the Linux case
+    // over-fold); an empty needle is already intercepted above and the
+    // substring shape is identity-intercepted by the Round-28 MINOR-4
+    // guard, so there is no truncation risk. Round-22 re-review
+    // addendum: the needle is taken from the CURRENT PINVOU3_HOME at
+    // read time — old warnings persisted under a previous home (still
+    // inside the 20-entry history window after a home migration /
+    // data-directory restore) no longer contain the current needle, and
+    // read-back folding cannot save them; the trigger surface is narrow
+    // (requires a home change + surviving old entries) and what leaks is
+    // a stale path, handled as a disclosed residual. Also recorded here
+    // rather than at the call site: redact_storage_prefix folds only the
+    // `~/.pinvou3` storage root, not the user's `$HOME` itself —
+    // `list_host_files`'s default `$HOME` enumeration error arm moved to
+    // command-layer stable-code folding in round-21 (M3); relying on
+    // this primitive to cover `$HOME` usage does not hold, the stable
+    // code is mandatory.)
     let plain = replace_ascii_case_insensitive(&folded, &prefix, "~/.pinvou3");
     if plain != folded {
         folded = plain;
@@ -1199,9 +1219,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉
-    /// 的 `#[test]` 行,钉体静默失联(`dead_code=allow` 下零警告)。恢复
-    /// 属性:本文件块注释宣称的五钉必须全部真实执行。
+    /// Round-14 re-review M1: the `ad0971d2e` parallel wave inserted the
+    /// separators pin and swallowed this pin's `#[test]` line, silently
+    /// orphaning the pin body (zero warnings under `dead_code=allow`).
+    /// Restored property: the five pins this file's block comment claims
+    /// must all actually execute.
     #[test]
     fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
         crate::platform::test_support::with_temp_home("paths-redact-sibling", || {
@@ -1483,11 +1505,15 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// Round-28 复审 MINOR-4:needle 是替换文本的子串时(PINVOU3_HOME 为
-    /// `~` 这类退化相对值),折叠产物仍含 needle——重入式再折叠无界增长,
-    /// 读回愈合每读一次膨胀一次。护栏必须恒等返回:单次输出不变、二次
-    /// 折叠恒等。删守卫突变:两次折叠的两次断言皆红(`~` 在替换文本
-    /// `~/.pinvou3` 内存活,每折一次多长一段)。
+    /// Round-28 re-review MINOR-4: when the needle is a substring of the
+    /// replacement text (PINVOU3_HOME is a degenerate relative value like
+    /// `~`), the folded output still contains the needle — re-entrant
+    /// re-folding grows without bound and read-back healing bloats a
+    /// little more on every read. The guard must return identically: the
+    /// single-pass output unchanged and a second fold an identity.
+    /// Delete-the-guard mutation: both assertions of the two-fold probe
+    /// go red (`~` survives inside the replacement text `~/.pinvou3`,
+    /// growing a longer run with every fold).
     #[test]
     fn redact_storage_prefix_substring_of_replacement_guard_is_idempotent() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);

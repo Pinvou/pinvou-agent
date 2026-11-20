@@ -866,9 +866,13 @@
           this.desktopCapabilitiesReady = false;
           this.leaseId = null;
           // Round-25 review NIT: closedPermanently/connection semantics also
-          // invalidate inside the catch — clear the wedge clock here too, so
-          // the documented "every detach path clears this field" contract
-          // holds literally (rescue/speculativeClose/connect all clear it).
+          // invalidate inside the catch — clear the wedge clock here too. The
+          // clock's clearers are connect, the rescue, speculativeClose, and
+          // this catch; the remaining detach paths (the close handler's
+          // socket-null teardown and closePermanently's terminal teardown)
+          // leave a stale value but never read one — nothing reads the clock
+          // without a live socket, and closePermanently stops the liveness
+          // timer — so the contract holds observably, though not literally.
           this.closingStartedAt = null;
           try { sourceSocket.close(); } catch { /* already closing */ }
           // Delegating the reconnect to the close event instead left a zombie

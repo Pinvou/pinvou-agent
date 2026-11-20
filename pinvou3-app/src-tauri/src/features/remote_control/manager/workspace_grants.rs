@@ -366,7 +366,8 @@ mod tests {
                 now + Duration::from_secs(4),
                 true
             ),
-            "a reservation stamped before a revocation must stay dead even              after a later re-authorization flips the flag back to true"
+            "a reservation stamped before a revocation must stay dead even \
+             after a later re-authorization flips the flag back to true"
         );
         assert!(!store.contains(&handle));
 
