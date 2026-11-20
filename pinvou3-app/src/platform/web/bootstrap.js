@@ -338,11 +338,7 @@
         this.desktopOnline = false;
         this.desktopCapabilitiesReady = false;
         this.leaseId = null;
-        if (this.speculativeReconnect && socket !== this.speculativeSource) {
-          // A socket issued by the speculative reconnect died before it could
-          // rejoin: verification failed, so stop hiding the recovery.
-          this.noteSpeculativeFailure();
-        }
+        this.noteVerificationFailureIfOwned(socket);
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
@@ -523,9 +519,7 @@
         // scheduleReconnect: once speculativeReconnect is cleared, this
         // reconnect's copy is no longer suppressed by the speculative
         // semantics and becomes visible to the user again.
-        if (this.speculativeReconnect && rescued !== this.speculativeSource) {
-          this.noteSpeculativeFailure();
-        }
+        this.noteVerificationFailureIfOwned(rescued);
         this.scheduleReconnect("连接已断开，正在重试…");
         return;
       }
@@ -537,6 +531,20 @@
       // past the failure cap the reconnect becomes visible instead of
       // speculatively repeating forever (see LIVENESS_MAX_SPECULATIVE_FAILURES).
       this.speculativeClose(this.socket);
+    }
+
+    // Shared verification branch of the three speculative sites (the close
+    // handler, the CLOSING/CLOSED rescue, and the event-failure catch): a
+    // socket issued by the speculative reconnect dying or failing before it
+    // could rejoin is a verification failure and counts toward the ladder,
+    // while the speculative source itself is forgiven. Round-11 extracted
+    // speculativeClose for the same drift hazard; round-33 does the same for
+    // this branch, which had drifted into three verbatim copies differing
+    // only in the socket variable.
+    noteVerificationFailureIfOwned(socket) {
+      if (this.speculativeReconnect && socket !== this.speculativeSource) {
+        this.noteSpeculativeFailure();
+      }
     }
 
     // Shared tail of the two speculative-close sites (liveness watchdog and
@@ -882,9 +890,7 @@
           // passed join verification" does not hold — the speculative source
           // may be fully joined; that rationale is load-bearing, and changing
           // the count on its basis would regress the ladder).
-          if (this.speculativeReconnect && sourceSocket !== this.speculativeSource) {
-            this.noteSpeculativeFailure();
-          }
+          this.noteVerificationFailureIfOwned(sourceSocket);
           this.scheduleReconnect("事件处理失败，正在重新连接…");
         });
       return this.eventDispatch;

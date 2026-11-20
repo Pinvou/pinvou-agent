@@ -2421,6 +2421,59 @@ test("pins the server bound to within 1 KiB of the desktop bound on both sides",
   }
 });
 
+// Strip closed /* */ block comments the way the Rust-side
+// `strip_closed_block_comments` helper (platform/test_support.rs) does:
+// depth-tracked nesting (relay_client.rs nests block comments, so a
+// first-closer freeze leaves inner-comment text alive and a crafted decoy
+// can false-match a ^…$m needle), newline-count preservation (collapsing a
+// multi-line comment to one space could merge the pinned line into its
+// predecessor and silently break the match), and unterminated blocks kept
+// verbatim as compile-error territory. Round-33 review: ported from the
+// first-closer single-space variant after a nested decoy was shown to
+// survive it.
+const stripClosedBlockComments = (text) => {
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const open = text.indexOf("/*", index);
+    if (open === -1) {
+      out += text.slice(index);
+      break;
+    }
+    let depth = 1;
+    let scan = open + 2;
+    let closeEnd = -1;
+    while (depth > 0) {
+      const nextOpen = text.indexOf("/*", scan);
+      const nextClose = text.indexOf("*/", scan);
+      if (nextClose === -1) {
+        break;
+      }
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth += 1;
+        scan = nextOpen + 2;
+      } else {
+        depth -= 1;
+        if (depth === 0) {
+          closeEnd = nextClose + 2;
+        } else {
+          scan = nextClose + 2;
+        }
+      }
+    }
+    if (closeEnd === -1) {
+      out += text.slice(index, open + 2);
+      index = open + 2;
+      continue;
+    }
+    out += text.slice(index, open);
+    const inner = text.slice(open + 2, closeEnd - 2);
+    out += "\n".repeat((inner.match(/\n/g) || []).length);
+    index = closeEnd;
+  }
+  return out;
+};
+
 test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME_BYTES", async () => {
   // Round-25 review MAJOR-4: the relay_client.rs comment claims the byte
   // equality is "verified in both directions by the relay gate tests", but the
@@ -2451,28 +2504,9 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
   // pub const) mismatch, freezing spelling as strongly as the value.
   // Round-31 review: strip closed block comments first — a block-commented
   // decoy line starting at column 0 would otherwise still satisfy the ^…$m
-  // needle (JS block comments do not nest; the scan freezes at the first
-  // closer, and an unterminated block is kept verbatim as compile-error
-  // territory).
-  const stripClosedBlockComments = (text) => {
-    let out = "";
-    let index = 0;
-    while (index < text.length) {
-      const open = text.indexOf("/*", index);
-      if (open === -1) {
-        out += text.slice(index);
-        break;
-      }
-      const close = text.indexOf("*/", open + 2);
-      if (close === -1) {
-        out += text.slice(index);
-        break;
-      }
-      out += `${text.slice(index, open)} `;
-      index = close + 2;
-    }
-    return out;
-  };
+  // needle. Round-33 review: the stripper is the hoisted depth-tracking port
+  // of the Rust helper (see its definition above); the first-closer variant
+  // that stood here left nested-comment decoys alive.
   const rustCode = stripClosedBlockComments(rust)
     .split('\n')
     .filter((line) => {
@@ -2487,6 +2521,33 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
      DESKTOP_MAX_FRAME_BYTES (4 MiB - 64 KiB): the relay pre-check rejects \
      at this bound and tungstenite kills the connection one byte past it, \
      so desktop-side drift silently resurrects the round-15 reconnect flap",
+  );
+});
+
+test("strips nested block comments and preserves newlines like the Rust helper", () => {
+  // Round-33 review: this pins the stripper itself. The first-closer variant
+  // that stood here failed both assertions: a fully-commented nested block
+  // (valid Rust — block comments nest) left the decoy line alive, so a
+  // crafted decoy could satisfy the byte-equal ^…$m needle; and a stripped
+  // span collapsed to one space, so a future multi-line comment directly
+  // before the pinned line merged it into the previous line and broke the
+  // match. Both behaviors mirror platform/test_support.rs's
+  // strip_closed_block_comments, the helper the Rust-side pins rely on.
+  assert.deepEqual(
+    stripClosedBlockComments("/* outer /* inner */ DECOY */ const X = 1;"),
+    " const X = 1;",
+    "a nested closed block must strip through its outer closer, decoy included",
+  );
+  assert.equal(
+    stripClosedBlockComments("/* alpha\nbeta\ngamma */ const Y = 2;"),
+    "\n\n const Y = 2;",
+    "a multi-line comment must preserve its newline count so the pinned line \
+     keeps its own line",
+  );
+  assert.equal(
+    stripClosedBlockComments("keep /* unterminated forever"),
+    "keep /* unterminated forever",
+    "an unterminated block is kept verbatim (compile-error territory)",
   );
 });
 

@@ -214,8 +214,7 @@ test('#876 P2: A→B deferred 后 B→C queued——孤儿 A 的警告不得被 
 // UI 层断言（fix-delta follow-up P2）：queue-full 停止后设置弹窗不得自关
 // ——handleDisableWebAccess 必须检查 stop 返回的处置并在 deferred_full_queue
 // 时保持对话框打开（警告横幅是弹窗内的唯一呈现面）。
-test('#876 P2: SettingsView 的 stop 处理器在 queue-full 时保持弹窗打开', async () => {
-  const fs = await import('node:fs');
+test('#876 P2: SettingsView 的 stop 处理器在 queue-full 时保持弹窗打开', () => {
   const src = fs.readFileSync(
     path.join(here, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
     'utf8'
@@ -237,7 +236,7 @@ test('#876 P2: SettingsView 的 stop 处理器在 queue-full 时保持弹窗打�
   );
 });
 
-test('#876 P2: stop 无处置（not_needed/无旧凭据）不得留下警告', async () => {
+test('#876 P2: stop 无处置（not_needed）必须保留既有警告（更早的孤儿仍待清理）', async () => {
   const rt = loadRemoteControlFeature({ revocation_warning: 'deferred_full_queue' });
   const dDisable = rt.defer('web_access_disable');
   const pStop = rt.api.stopRemoteControl();
@@ -282,6 +281,7 @@ test('#876 P2: rotate 的 deferred_full_queue 处置落警告，queued 保持既
 test('#876 P3: 三语 i18n 都携带 revocationHints.deferred_full_queue 恢复指引', async () => {
   const { pathToFileURL } = await import('node:url');
   const i18nDir = path.join(here, '..', 'src', 'shared', 'i18n');
+  const hints = [];
   for (const loc of ['zh', 'en', 'ja']) {
     const names = { zh: 'dictZh', en: 'dictEn', ja: 'dictJa' };
     const mod = await import(pathToFileURL(path.join(i18nDir, `${loc}.js`)).href + `?v=${Date.now()}`);
@@ -289,7 +289,12 @@ test('#876 P3: 三语 i18n 都携带 revocationHints.deferred_full_queue 恢复�
     const hint = dict?.uiRemote?.revocationHints?.deferred_full_queue;
     assert.equal(typeof hint, 'string', `${loc}.uiRemote.revocationHints.deferred_full_queue 必须是字符串`);
     assert.ok(hint.length > 20, `${loc} 的恢复指引不得为占位符`);
+    hints.push(hint);
   }
+  // round-33 review: length alone cannot tell a real translation from a
+  // copy-pasted same-language string; the three entries must be pairwise
+  // distinct (the round-32 head's entries are genuine per-language copy).
+  assert.equal(new Set(hints).size, hints.length, '三语恢复指引互为复制即视为未翻译');
 });
 
 test('rotate 新鲜失败必须清除 starting', async () => {
