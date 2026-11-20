@@ -267,6 +267,19 @@ test('absorbed confirms keep their pre-absorption stacking tier', () => {
   );
 });
 
+test('the settings picker escape layer stays IME-guarded (r3 review)', () => {
+  // With the add-all confirm stacked over the endpoint picker, the picker's
+  // own window listener is what closes the confirm (the stack-aware
+  // convention). An unguarded listener would let a candidate-cancelling
+  // composition-Escape slam the confirm shut behind its own IME guard —
+  // the r3-review minor.
+  assert.match(
+    SETTINGS_VIEW,
+    /const onPickerKeyDown = e => \{\s*if \(e\.key !== 'Escape' \|\| isImeComposing\(e\)\) return;/,
+    'the settings picker Escape must decline IME composition (shared/ime-guard.mjs)',
+  );
+});
+
 test('feedback/memory confirm copy exists in zh/en/ja', () => {
   // Assert key existence only (matching the acp_providers_contract key-existence
   // pattern); freezing exact copy would red CI on normal wording tweaks.

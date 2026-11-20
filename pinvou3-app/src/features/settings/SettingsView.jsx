@@ -7,6 +7,7 @@ import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
@@ -893,13 +894,15 @@ function hasStoredCredential(record) {
       }
       // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
       // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
-      // 确认弹窗(z-120)先于 picker(z-100);批量保存在飞时不入(忙碌中
-      // 丢弃确认只会把「是否完成」变得不可见)。onClose 的清扫语义与 X
-      // 按钮一致(摘 picker + 行内添加结果)。
+      // 确认弹窗(z-[110])先于 picker(z-100);批量保存在飞时不入(忙碌中
+      // 丢弃确认只会把「是否完成」变得不可见)。IME 组合中的 Escape(取消
+      // 候选词)不关闭任何层(r3 复审补齐;若无此守卫,面板层监听会绕过确认
+      // 层自身的 IME 守卫,把叠在其上的确认弹窗一并关掉)。
+      // onClose 的清扫语义与 X 按钮一致(摘 picker + 行内添加结果)。
       useEffect(() => {
         if (!endpointPickerOpen && !addAllModelsConfirm) return;
         const onPickerKeyDown = e => {
-          if (e.key !== 'Escape') return;
+          if (e.key !== 'Escape' || isImeComposing(e)) return;
           if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
           else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
         };

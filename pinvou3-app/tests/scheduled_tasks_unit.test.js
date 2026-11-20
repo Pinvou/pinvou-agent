@@ -176,6 +176,12 @@ assert.ok(
   /refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,200}useIntervalWhen\(\(\) => \{[\s\S]{0,160}refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,40}\}, 3000, !!\(bridge && bridge\.scheduled\.refreshScheduledTaskData\)\)/.test(indexHtml),
   'the three-second fallback (shared useIntervalWhen since #817 B3) must refresh tasks, selected detail, and runs through one bridge transaction, gated on the bridge capability'
 );
+// r3 复审:创建表单的窗口级 Escape 与迁移后的确认层同视图共存,IME 组合中的
+// Escape(取消候选词)必须与全应用一致地不关闭本层(busyAction 守卫保持)。
+assert.ok(
+  /const closeOnEscape = \(event\) => \{[\s\S]{0,200}if \(event\.key === 'Escape' && !busyAction && !isImeComposing\(event\)\) setCreateForm\(null\);/.test(scheduledViewSource),
+  'the scheduled create dialog Escape must stay busy-guarded and IME-guarded (r3 review)'
+);
 assert.ok(
   /const handleSwitchSession = useCallback\(async \(id\) => \{[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'

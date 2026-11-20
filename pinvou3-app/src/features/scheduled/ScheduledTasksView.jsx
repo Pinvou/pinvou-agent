@@ -10,6 +10,7 @@ import { useConversationSecondClock } from '../../hooks/useConversationSecondClo
 import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { useIntervalWhen } from '../../hooks/useIntervalWhen.js';
 import { can } from '../../shared/platform.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
 import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
@@ -512,7 +513,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       useEffect(() => {
         if (!createForm) return;
         const closeOnEscape = (event) => {
-          if (event.key === 'Escape' && !busyAction) setCreateForm(null);
+          // 与全应用对话框一致:IME 组合中的 Escape(取消候选词)不关闭本层
+          // (r3 复审补齐;busyAction 守卫保持不变)。
+          if (event.key === 'Escape' && !busyAction && !isImeComposing(event)) setCreateForm(null);
         };
         window.addEventListener('keydown', closeOnEscape);
         return () => window.removeEventListener('keydown', closeOnEscape);
