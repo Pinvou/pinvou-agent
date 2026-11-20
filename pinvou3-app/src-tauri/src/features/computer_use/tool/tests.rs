@@ -6736,13 +6736,17 @@ fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
 }
 
 /// The ui_tree parser caps, the schema maximums, and the backends' hard
-/// ceilings must state ONE value (r6 pin): the r5 fixwave aligned the
-/// schema to 24/2000 but left the parser at 64/10000 — a schema-validating
-/// client could never exceed 24/2000 while a non-validating one was
-/// silently shrunk by the backend clamp, so a model re-requesting "larger"
-/// per the truncation footer would loop. The parser constants must equal
-/// the schema's declared maximums AND the backend ceilings (helpers.rs
-/// MAX_TREE_DEPTH/MAX_TREE_NODES = 24/2000, pinned there).
+/// ceilings must state ONE value (r6 pin; r7 extended it to actually pin
+/// the backend leg): the r5 fixwave aligned the schema to 24/2000 but left
+/// the parser at 64/10000 — a schema-validating client could never exceed
+/// 24/2000 while a non-validating one was silently shrunk by the backend
+/// clamp, so a model re-requesting "larger" per the truncation footer
+/// would loop. The parser constants must equal the schema's declared
+/// maximums AND the backend ceilings (helpers.rs MAX_TREE_DEPTH/
+/// MAX_TREE_NODES — asserted directly here since r7; before that the
+/// docstring claimed this leg was pinned while no assertion read it, so a
+/// backend drift re-silenced the exact accept-then-shrink gap this pin
+/// names).
 #[test]
 fn ui_tree_parser_caps_match_the_schema_maximums_and_backend_ceilings() {
     assert_eq!(
@@ -6753,10 +6757,27 @@ fn ui_tree_parser_caps_match_the_schema_maximums_and_backend_ceilings() {
         MAX_UI_TREE_NODES, 2000,
         "parser node cap = the backend ceiling"
     );
+    // The backend leg (r7): the shared ceilings every backend's clamp
+    // applies (`tree_budget` and its physical inlining read these exact
+    // constants). A drift here (say 20/1500) would keep parser and schema
+    // at 24/2000 while every backend silently shrank — the exact class
+    // this test names. The platform's `helpers` module is private, so the
+    // ceiling DECLARATIONS are pinned at their source instead of through a
+    // widened import.
+    let helpers = include_str!("../platform/helpers.rs");
+    assert!(
+        helpers.contains("MAX_TREE_DEPTH: u32 = 24")
+            && helpers.contains("MAX_TREE_NODES: u32 = 2000"),
+        "the backend ceilings must state the same 24/2000 the parser and \
+         schema enforce — a backend drift re-silences the \
+         accept-then-silently-shrink gap this pin names"
+    );
     let src = include_str!("../tool.rs");
     assert!(
-        src.contains("\"maximum\": 24") && src.contains("\"maximum\": 2000"),
+        src.contains("\"maximum\": 24,") && src.contains("\"maximum\": 2000,"),
         "the schema must declare the same ceilings the parser enforces — \
-         a schema/parser drift reopens the accept-then-silently-shrink gap"
+         a schema/parser drift reopens the accept-then-silently-shrink gap \
+         (the trailing comma makes the needle exact: the old prefix form \
+         also matched \"maximum\": 240)"
     );
 }

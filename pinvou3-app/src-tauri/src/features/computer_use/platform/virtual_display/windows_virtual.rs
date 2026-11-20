@@ -594,14 +594,14 @@ fn pack_mouse_lparam(x: i32, y: i32) -> isize {
 
 /// Whether the point can be encoded faithfully in a mouse-message lParam
 /// (both coordinates ride signed 16-bit fields — the encoding
-/// `GET_X_LPARAM` decodes on the receiving side). A point outside the range
-/// occurs only on a virtual screen wider/taller than 32767 px (legal
-/// multi-4K arrangements): delivering one would wrap through the u16
-/// truncation to a negative coordinate, so the hit-test probe and the post
-/// would agree with each other and BOTH disagree with reality — the action
-/// refuses instead of silently landing at `coord − 65536`. Client-side
-/// posts stay in range while the window origin lies on the same virtual
-/// screen (the normal shape). Pure; pinned.
+/// `GET_X_LPARAM` decodes on the receiving side). A point outside the
+/// −32768..=32767 range occurs only on a virtual screen wider/taller than
+/// 32767 px (legal multi-4K arrangements): delivering one would wrap
+/// through the u16 truncation to a negative coordinate, so the hit-test
+/// probe and the post would agree with each other and BOTH disagree with
+/// reality — the action refuses instead of silently landing at
+/// `coord − 65536`. Client-side posts stay in range while the window
+/// origin lies on the same virtual screen (the normal shape). Pure; pinned.
 fn mouse_point_encodable(x: i32, y: i32) -> bool {
     (i16::MIN as i32..=i16::MAX as i32).contains(&x)
         && (i16::MIN as i32..=i16::MAX as i32).contains(&y)
@@ -610,9 +610,9 @@ fn mouse_point_encodable(x: i32, y: i32) -> bool {
 /// The refusal for a point [`mouse_point_encodable`] rejects.
 fn unencodable_point_error() -> ComputerUseError {
     ComputerUseError::unavailable(
-        "the point lies beyond the ±32767 coordinates a mouse message can \
-         encode (an oversized multi-monitor virtual screen); the action was \
-         not delivered",
+        "the point lies outside the −32768..=32767 coordinates a mouse \
+         message can encode (an oversized multi-monitor virtual screen); \
+         the action was not delivered",
     )
 }
 
@@ -730,7 +730,7 @@ fn nc_press_pair(index: u8, button: MouseButton) -> (u32, u32) {
 enum NcZoneDelivery {
     /// Caption buttons (HTCLOSE/HTMINBUTTON/HTMAXBUTTON): the DOWN enters
     /// a capture + modal pump filtered to `WM_MOUSEFIRST..WM_MOUSELAST`
-    /// (0x200..0x20A) that a posted `WM_NCLBUTTONUP` (0xA2, below the
+    /// (0x200..0x20E) that a posted `WM_NCLBUTTONUP` (0xA2, below the
     /// range) can NEVER satisfy — the system command fires only when some
     /// later stranded client `WM_LBUTTONUP` arrives (a deferred close in
     /// the middle of an unrelated action). Deliver the end state directly:
@@ -759,8 +759,12 @@ enum NcZoneDelivery {
     /// reported success.
     ModalLoop,
     /// Zones DefWindowProc handles with no loop and no state
-    /// (`HTBORDER`, `HTGROWBOX`, `HTHELP`, `HTOBJECT`): the plain
+    /// (`HTBORDER`, `HTGROWBOX`, `HTOBJECT`): the plain
     /// (down, up) pair completes as a no-op, exactly like real input.
+    /// `HTHELP` rides in this family too — but not as a no-op: DefWindowProc
+    /// drives the help button from the DOWN itself (WM_APPCOMMAND), so the
+    /// posted DOWN takes the same path a real press takes and the effect IS
+    /// delivered (the "no-op" wording for HTHELP was wrong — r7).
     NoOp,
 }
 
@@ -772,9 +776,11 @@ fn nc_zone_delivery(zone: u32) -> NcZoneDelivery {
         HTMENU | HTSYSMENU => NcZoneDelivery::Menu,
         HTLEFT | HTRIGHT | HTTOP | HTBOTTOM | HTTOPLEFT | HTTOPRIGHT | HTBOTTOMLEFT
         | HTBOTTOMRIGHT | HTHSCROLL | HTVSCROLL => NcZoneDelivery::ModalLoop,
-        // HTBORDER, HTGROWBOX, HTHELP, HTOBJECT: DefWindowProc's switch has
-        // no case for these (or an explicit `break` for HTBORDER) — a
-        // no-op, like real input.
+        // HTBORDER, HTGROWBOX, HTOBJECT: DefWindowProc's switch has no case
+        // for these (or an explicit `break` for HTBORDER) — a no-op, like
+        // real input. HTHELP lands here too: its DOWN reaches the app's
+        // own WM_NCLBUTTONDOWN → DefWindowProc WM_APPCOMMAND path, the same
+        // one a real help-button press drives (r7 wording).
         _ => NcZoneDelivery::NoOp,
     }
 }
@@ -820,19 +826,48 @@ fn nc_close_command_enabled(menu_state: u32) -> bool {
     menu_state != u32::MAX && menu_state & (MF_GRAYED.0 | MF_DISABLED.0) == 0
 }
 
-/// The caption press message for press `index`, plus whether the press
-/// needs its deterministic completion: the DOWN opens the `SC_MOVE` loop
-/// (completed by a client `WM_LBUTTONUP` at the same point — the loop's
-/// own exit arm, zero movement, activation preserved), while the
-/// double-click press is loop-free. NC double-clicks are not
-/// CS_DBLCLKS-gated, so the substitution has no class gate (see
+/// What deterministically completes a caption press (r7: per button — the
+/// old shape completed EVERY button's DOWN with a client `WM_LBUTTONUP`,
+/// which is the right exit only for the LEFT press's `SC_MOVE` loop; a
+/// RIGHT caption down opens the system-menu tracking loop, which reads
+/// mouse lParams as SCREEN coordinates (the r5 menu contract), so a
+/// client-coords UP ended tracking at a decoded point near the origin):
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptionCompletion {
+    /// LEFT down: the `SC_MOVE` modal move loop — exits on a client
+    /// `WM_LBUTTONUP` at the same point (the loop's own exit arm, zero
+    /// movement, activation preserved; the loop retrieves it via
+    /// `PM_REMOVE`, so the app never sees a stray client UP).
+    MoveLoopExit,
+    /// RIGHT down: the system-menu tracking loop — a `WM_RBUTTONUP` at
+    /// the SCREEN caption point ends tracking with no item selected, the
+    /// same end state a real release produces.
+    SystemMenuRelease,
+    /// No loop opened (MIDDLE down is a DefWindowProc no-op, and every
+    /// double-click press is loop-free): nothing to complete.
+    None,
+}
+
+/// The caption press message for press `index`, plus the deterministic
+/// completion its delivery needs (see [`CaptionCompletion`]). The
+/// double-click press is loop-free for every button. NC double-clicks are
+/// not CS_DBLCLKS-gated, so the substitution has no class gate (see
 /// [`nc_multi_click_message`]). The NC `up` is deliberately omitted —
 /// below `WM_MOUSEFIRST`, no modal pump can retrieve it and on the
 /// loop-free path it is dead weight. Pure; pinned.
-fn nc_caption_press(index: u8, button: MouseButton) -> (u32, bool) {
+fn nc_caption_press(index: u8, button: MouseButton) -> (u32, CaptionCompletion) {
     let (down, double, _up) = nc_mouse_button_messages(button);
     let message = nc_multi_click_message(index, down, double);
-    (message, message == down)
+    let completion = if message != down {
+        CaptionCompletion::None
+    } else {
+        match button {
+            MouseButton::Left => CaptionCompletion::MoveLoopExit,
+            MouseButton::Right => CaptionCompletion::SystemMenuRelease,
+            MouseButton::Middle => CaptionCompletion::None,
+        }
+    };
+    (message, completion)
 }
 
 /// A menu popup's window class. Its tracking loop reads mouse-message
@@ -857,19 +892,28 @@ fn zone_is_transparent(zone: u32) -> bool {
     zone == HTTRANSPARENT as u32
 }
 
+/// The full set of hit-test answers with no honest WM_NC* sequence:
+/// HTTRANSPARENT ([`zone_is_transparent`]), HTNOWHERE (nothing under the
+/// point), and HTERROR (the hit-test itself failed). All three get the
+/// pre-routing client posts AND the swallowed-click receipt warning (r7:
+/// HTNOWHERE/HTERROR used to degrade silently — the same lost-click family
+/// the r4 HTTRANSPARENT warning discloses). Pure; pinned.
+fn zone_is_bypassed(zone: u32) -> bool {
+    zone_is_transparent(zone) || zone == HTNOWHERE || zone == HTERROR as u32
+}
+
 /// Whether the hit-test code routes to the CLIENT message path (the message
 /// route this backend drove exclusively before non-client routing existed).
 /// `WM_NCHITTEST` answers HTCLIENT for client space and one of the HT* zone
 /// codes (HTCAPTION, HTMINBUTTON, HTMENU, ...) for everything else — EXCEPT
-/// the undrivable zones: HTTRANSPARENT ([`zone_is_transparent`]), HTNOWHERE,
-/// and HTERROR have no WM_NC* sequence this stack could honestly post, so
-/// they degrade to the pre-routing client posts instead of an NC message
-/// with a meaningless zone code that DefWindowProc would silently drop. A
-/// query that failed or timed out answers "client" too (`nc_zone_of`), so
-/// an unresponsive target degrades to the message posts that always worked
-/// instead of failing the action. Pure; pinned.
+/// the undrivable zones ([`zone_is_bypassed`]), which degrade to the
+/// pre-routing client posts instead of an NC message with a meaningless
+/// zone code that DefWindowProc would silently drop. A query that failed or
+/// timed out answers "client" too (`nc_zone_of`), so an unresponsive target
+/// degrades to the message posts that always worked instead of failing the
+/// action. Pure; pinned.
 fn zone_is_client(zone: u32) -> bool {
-    matches!(zone, HTCLIENT | HTNOWHERE) || zone_is_transparent(zone) || zone == HTERROR as u32
+    matches!(zone, HTCLIENT) || zone_is_bypassed(zone)
 }
 
 /// Bound on the `WM_NCHITTEST` round-trip (a SendMessageTimeoutW to the
@@ -3304,6 +3348,19 @@ impl WindowsVirtualDesktopBackend {
         // SAFETY: style + system-menu state reads on the hit-tested desktop
         // window (server-side queries; neither pumps the target thread).
         let style = unsafe { GetWindowLongPtrW(target, GWL_STYLE) };
+        // Real input is ignored on a disabled window ENTIRELY — the OS
+        // routes no click to it, so no NC delivery may be synthesized here.
+        // Least of all a system command: a posted `SC_CLOSE` would close a
+        // window no real click could touch (the same over-delivery class
+        // the chrome style gates close; r7). The hit-test walk skips
+        // disabled CHILDREN but `WindowFromPoint` still answers a disabled
+        // top-level, so this gate is reachable.
+        if style & WS_DISABLED.0 as isize != 0 {
+            return Err(ComputerUseError::unavailable(
+                "the window is disabled; the OS routes no real input to it, \
+                 so the action was not delivered",
+            ));
+        }
         if matches!(nc_zone_delivery(zone), NcZoneDelivery::ChromeButton) && zone == HTCLOSE {
             let menu = unsafe { GetSystemMenu(target, false) };
             let close_enabled = !menu.is_invalid()
@@ -3368,9 +3425,9 @@ impl WindowsVirtualDesktopBackend {
                     }
                 }
                 NcZoneDelivery::Caption => {
-                    let (message, needs_completion) = nc_caption_press(index, button);
+                    let (message, completion) = nc_caption_press(index, button);
                     self.post(target, message, zone as usize, lparam)?;
-                    if needs_completion {
+                    if let CaptionCompletion::MoveLoopExit = completion {
                         // Deterministic completion of the `SC_MOVE` loop
                         // the DOWN opened: a client `WM_LBUTTONUP` at the
                         // same point — the loop's own exit arm — ends the
@@ -3386,6 +3443,21 @@ impl WindowsVirtualDesktopBackend {
                         // the hit-tested desktop window.
                         let _ = unsafe { ScreenToClient(target, &mut point) };
                         self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(point.x, point.y))?;
+                    }
+                    if let CaptionCompletion::SystemMenuRelease = completion {
+                        // The system-menu tracker reads mouse lParams as
+                        // SCREEN coordinates (the r5 menu contract): a
+                        // client-translated UP would end tracking at a
+                        // decoded point near the screen origin. A release
+                        // over the caption point ends tracking with no
+                        // item selected — the same end state a real
+                        // release produces.
+                        self.post(
+                            target,
+                            WM_RBUTTONUP,
+                            0,
+                            pack_mouse_lparam(screen_x, screen_y),
+                        )?;
                     }
                 }
                 _ => {
@@ -3730,7 +3802,9 @@ fn capability_notes() -> String {
      scroll loop posted messages cannot complete); zones that ask the OS \
      to pass input through them (transparent static labels and group \
      boxes) and points whose hit-test cannot be classified fall back to \
-     the plain client-area posts instead of non-client messages; but a \
+     the plain client-area posts instead of non-client messages, and the \
+     receipt warns that such a click may be swallowed (verify with a \
+     screenshot); but a \
      window cannot be moved \
      by dragging its title bar or resized by dragging a border (those \
      need a live pointer stream this injection cannot provide) and the \
@@ -3749,10 +3823,14 @@ fn capability_notes() -> String {
      unavailable, and the fallback's only secure-field signal is the \
      classic edit-family ES_PASSWORD style (UIA-only password fields \
      answer secure=false); hidden panes appear flagged 'hidden' \
-     rather than as clickable rows; shell windows are excluded and the \
+     rather than as clickable rows; shell windows are excluded (from \
+     trees and from the keyboard-target fallback) and the \
      top level is capped, with a cap-bound walk disclosed in its \
      footer — Windows 11's shell XAML hosts may still appear as noise \
-     roots; the fallback's screening verdict runs on the raw caption \
+     roots, and the same-class caveat cuts the other way too: a \
+     same-desktop app can name its window class like a shell window \
+     and vanish from trees and keyboard-target selection that way; \
+     the fallback's screening verdict runs on the raw caption \
      bounded at 4096 UTF-16 units (a caption past that bound is screened \
      on its first 4096 units — the bound exists so a hostile app cannot \
      make the walk allocate unboundedly, and any real caption is far \
@@ -3920,17 +3998,19 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         if !zone_is_client(zone) {
             return self.nc_click(target, button, count, zone, x, y);
         }
-        if zone_is_transparent(zone) {
-            // The window asked the OS to pass input through to whatever is
-            // underneath; the client posts below land on IT and are usually
-            // swallowed (the hit-test walk has no transparent skip). Real
-            // input would reach the sibling beneath — attach the receipt so
-            // a silently-lost click is a told-to-the-model fact instead of
-            // a bare success (r4).
+        if zone_is_bypassed(zone) {
+            // No honest NC sequence exists for this answer: the window
+            // asked the OS to pass input through (HTTRANSPARENT), or the
+            // point answered nowhere/error. The client posts below land on
+            // THIS window and are usually swallowed (the hit-test walk has
+            // no transparent skip) — attach the receipt so a silently-lost
+            // click is a told-to-the-model fact instead of a bare success
+            // (r4; r7 extended the warning to HTNOWHERE/HTERROR, which
+            // used to degrade silently).
             self.warnings.push(
-                "the click target marks itself transparent to input \
-                 (HTTRANSPARENT); the posted client click may be swallowed \
-                 by that window — verify with a follow-up screenshot"
+                "the click routed to the client messages without a drivable \
+                 zone (transparent, nowhere, or error); the posted client \
+                 click may be swallowed — verify with a follow-up screenshot"
                     .to_string(),
             );
         }
@@ -4125,12 +4205,23 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             }
             other => self.held_press = other,
         }
-        self.post(
-            target,
-            WM_LBUTTONDOWN,
-            MK_LBUTTON,
-            pack_mouse_lparam(client_x, client_y),
-        )?;
+        // A menu popup's client space IS screen space for its tracking loop
+        // (the same contract the click and hover routes honor — r7 closed
+        // the drag route's omission): all three legs (press, waypoints,
+        // release) post SCREEN coordinates for a #32768 target and
+        // client-translated ones otherwise. The popup answers HTCLIENT, so
+        // the NC-start warning above does not fire — the coordinates are
+        // what keeps the delivery honest here.
+        //
+        // SAFETY: class-name query on the hit-tested desktop window.
+        let popup_screen_coords =
+            menu_popup_needs_screen_coords(&unsafe { window_class_name(target) });
+        let press_lparam = if popup_screen_coords {
+            pack_mouse_lparam(start_x, start_y)
+        } else {
+            pack_mouse_lparam(client_x, client_y)
+        };
+        self.post(target, WM_LBUTTONDOWN, MK_LBUTTON, press_lparam)?;
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         // Real drag input is CAPTURED by the window that received the press
         // (SetCapture semantics): moves and the button-up keep going to the
@@ -4153,8 +4244,13 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                 // move — see the `pointer` field doc).
                 self.pointer = (x, y);
                 // SAFETY: coordinate translation on a desktop window from
-                // the attached worker.
-                let (move_x, move_y) = unsafe { Self::client_of(target, x, y) };
+                // the attached worker (skipped for a menu popup, whose
+                // tracking loop reads screen coordinates directly — r7).
+                let (move_x, move_y) = if popup_screen_coords {
+                    (x, y)
+                } else {
+                    unsafe { Self::client_of(target, x, y) }
+                };
                 // A held-button move carries the pressed mark, exactly like
                 // real input.
                 self.post(
@@ -4173,9 +4269,14 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // where the up is delivered: state and messages must agree on where
         // the drop landed.
         self.pointer = drop_point;
-        // SAFETY: coordinate translation on a desktop window from the
-        // attached worker.
-        let (up_x, up_y) = unsafe { Self::client_of(target, drop_point.0, drop_point.1) };
+        // SAFETY: coordinate translation on a desktop window from
+        // the attached worker (skipped for a menu popup — screen coords,
+        // same contract as the press and the waypoints above, r7).
+        let (up_x, up_y) = if popup_screen_coords {
+            drop_point
+        } else {
+            unsafe { Self::client_of(target, drop_point.0, drop_point.1) }
+        };
         let release = self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(up_x, up_y));
         combine_drag_errors(move_result, release)
     }
@@ -4334,7 +4435,13 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                 is_shell_window_class(&window_class_name(hwnd))
             })
         };
-        for root in roots {
+        // The walk returns painter order (bottom→top, the capture
+        // composite's direction); the TREE iterates the reverse so the
+        // topmost windows — the ones a screenshot is for — render first
+        // (r7): a node-budget cut then removes the bottom-most roots,
+        // consistent with the cap footer's own direction claim, instead of
+        // silently dropping the active windows first.
+        for root in roots.into_iter().rev() {
             // SAFETY: see write_class_tree_node.
             unsafe {
                 write_class_tree_node(
@@ -5417,6 +5524,27 @@ mod tests {
             "the menu tracking loop's click consumption and Escape \
              dismissal must be disclosed"
         );
+        // r7: the swallowed-click receipt covers the whole unroutable
+        // family (not just HTTRANSPARENT), and the shell exclusion's two
+        // cross-surface directions must be stated — keyboard-target
+        // selection consumes the same predicate, and a same-desktop app
+        // can name itself into the exclusion (the hiding direction of the
+        // same-class caveat the XAML-host sentence already discloses).
+        assert!(
+            notes.contains("may be swallowed"),
+            "the unroutable-zone degrade must carry the swallowed-click \
+             warning in the disclosure too"
+        );
+        assert!(
+            notes.contains("keyboard-target fallback")
+                && notes.contains(
+                    "vanish from trees and keyboard-target \
+                   selection"
+                ),
+            "the shell exclusion's keyboard-target consumer AND its \
+             spoofing direction must be disclosed, not just the tree-noise \
+             direction"
+        );
     }
 
     /// The virtual pointer's geometry helpers: center placement (the
@@ -5603,12 +5731,13 @@ mod tests {
         );
         assert_eq!(
             src.matches("drop_point").count(),
-            7,
+            8,
             "the drag's clamped drop wiring — the binding, the encodability \
              guard's two coordinates (r6: the guard fires BEFORE the press, \
              refusing past-drop rather than stranding a pressed button), \
              the waypoint endpoint, the pointer's final write, and the \
-             delivered button-up's two coordinates: reverting the drop or \
+             delivered button-up's coordinates (two in the client branch + \
+             the menu-popup arm's direct drop, r7): reverting the drop or \
              its up to a raw endpoint drops the count and fails here"
         );
         assert_eq!(
@@ -5802,19 +5931,40 @@ mod tests {
         );
         assert_eq!(
             src.matches("menu_popup_needs_screen_coords(").count(),
-            3,
-            "definition + the click route + the hover route (r6): a menu \
-             popup's items must be driven with SCREEN coordinates (the \
-             tracking loop reads mouse lParams as screen points — \
-             client-translated posts land on the wrong item; the hover \
-             had the same defect as a wrong-item highlight) (r5/r6)"
+            4,
+            "definition + the click route + the hover route (r6) + the drag \
+             route (r7): a menu popup's items must be driven with SCREEN \
+             coordinates (the tracking loop reads mouse lParams as screen \
+             points — client-translated posts land on the wrong item; the \
+             hover had the same defect as a wrong-item highlight and the \
+             drag route delivered its whole press/move/release assembly at \
+             the wrong screen points) (r5/r6/r7)"
         );
         assert_eq!(
             src.matches("zone_is_transparent(").count(),
+            2,
+            "definition + the bypassed-family judgment: the transparent \
+             classification feeds the degraded-route warning through \
+             zone_is_bypassed"
+        );
+        assert_eq!(
+            src.matches("zone_is_bypassed(").count(),
             3,
             "definition + the client-route judgment + the click receipt \
-             warning: a transparent window's swallowed client click must \
-             stay a told-to-the-model fact (r4), not a bare success"
+             warning: every unroutable zone answer (HTTRANSPARENT, \
+             HTNOWHERE, HTERROR) must degrade to client posts WITH the \
+             swallowed-click warning — a silent degradation is a bare \
+             success on a click that was likely lost (r4 transparent; r7 \
+             extended to HTNOWHERE/HTERROR)"
+        );
+        assert_eq!(
+            src.matches("WS_DISABLED.0 as isize != 0").count(),
+            1,
+            "the nc_click disabled-window gate (r7): the OS routes no real \
+             input to a disabled window, so no NC delivery — least of all \
+             an SC_CLOSE — may be synthesized on one (effective_disabled's \
+             parenthesized form is the OTHER occurrence and is not counted \
+             by this exact needle)"
         );
         // The probe's bounded wait, pinned at the CALL SHAPE (r5: the old
         // prose-count anchor counted doc comments and the import, and its
@@ -6208,28 +6358,43 @@ mod tests {
         assert!(!nc_close_command_enabled(MF_GRAYED.0), "grayed refuses");
         assert!(!nc_close_command_enabled(MF_DISABLED.0), "disabled refuses");
 
-        // Caption presses: DOWN needs its client-UP completion (the SC_MOVE
-        // loop it opens exits on a client button-up), the DBLCLK press is
-        // loop-free, and the parity substitution has no class gate.
+        // Caption presses: the LEFT DOWN needs its client-UP completion (the
+        // SC_MOVE loop it opens exits on a client button-up), the RIGHT DOWN
+        // needs a SCREEN-coords right-button release (the system-menu
+        // tracker reads screen points — r7), MIDDLE opens nothing, the
+        // DBLCLK press is loop-free, and the parity substitution has no
+        // class gate.
         assert_eq!(
             nc_caption_press(0, MouseButton::Left),
-            (WM_NCLBUTTONDOWN, true),
+            (WM_NCLBUTTONDOWN, CaptionCompletion::MoveLoopExit),
             "press 1: DOWN, completed by a client UP"
         );
         assert_eq!(
             nc_caption_press(1, MouseButton::Left),
-            (WM_NCLBUTTONDBLCLK, false),
+            (WM_NCLBUTTONDBLCLK, CaptionCompletion::None),
             "press 2: loop-free DBLCLK (the SC fires directly)"
         );
         assert_eq!(
             nc_caption_press(2, MouseButton::Left),
-            (WM_NCLBUTTONDOWN, true),
+            (WM_NCLBUTTONDOWN, CaptionCompletion::MoveLoopExit),
             "press 3 re-arms as a plain DOWN"
         );
         assert_eq!(
             nc_caption_press(0, MouseButton::Right),
-            (WM_NCRBUTTONDOWN, true),
-            "the right-button caption triple must be wired, not aliased"
+            (WM_NCRBUTTONDOWN, CaptionCompletion::SystemMenuRelease),
+            "the right-button caption triple must be wired, not aliased, and \
+             its menu-tracking loop needs the screen-coords right release"
+        );
+        assert_eq!(
+            nc_caption_press(1, MouseButton::Right),
+            (WM_NCRBUTTONDBLCLK, CaptionCompletion::None),
+            "the right dblclk is loop-free (r7)"
+        );
+        assert_eq!(
+            nc_caption_press(0, MouseButton::Middle),
+            (WM_NCMBUTTONDOWN, CaptionCompletion::None),
+            "middle caption opens no loop (DefWindowProc no-op) — nothing to \
+             complete (r7: the old shape completed it with a stray LEFT up)"
         );
 
         // Menu popups take screen coordinates.
@@ -6269,9 +6434,11 @@ mod tests {
         );
     }
 
-    /// The transparent-zone receipt predicate: exactly HTTRANSPARENT (with
-    /// its sign-extended u32 encoding) decides whether a click carries the
-    /// swallowed-click warning. Pure (r4).
+    /// The receipt predicates: HTTRANSPARENT alone decides the transparent
+    /// classification (sign-extended u32 encoding), and the bypassed family
+    /// — the zones degraded to client posts WITH the swallowed-click
+    /// warning — is exactly {HTTRANSPARENT, HTNOWHERE, HTERROR} (r7
+    /// extended the warning to the latter two). Pure (r4/r7).
     #[test]
     fn transparent_zone_receipt_predicate_matches_the_zone_only() {
         assert!(zone_is_transparent(HTTRANSPARENT as u32));
@@ -6282,6 +6449,23 @@ mod tests {
         assert!(
             !zone_is_transparent(u32::MAX - 1),
             "HTERROR is its own case"
+        );
+        // The bypassed family: all three unroutable codes warn, nothing
+        // else does.
+        assert!(zone_is_bypassed(HTTRANSPARENT as u32));
+        assert!(zone_is_bypassed(u32::MAX), "HTTRANSPARENT sign-extended");
+        assert!(
+            zone_is_bypassed(HTNOWHERE),
+            "HTNOWHERE degrades with a warning"
+        );
+        assert!(zone_is_bypassed(u32::MAX - 1), "HTERROR sign-extended");
+        assert!(
+            !zone_is_bypassed(HTCLIENT),
+            "a true client answer is the normal route, no warning"
+        );
+        assert!(
+            !zone_is_bypassed(HTCAPTION) && !zone_is_bypassed(HTCLOSE),
+            "routable NC zones are not bypassed"
         );
     }
 
@@ -6356,21 +6540,38 @@ mod tests {
              helpers.rs) (r5)"
         );
         assert_eq!(
-            src.matches("needs_completion {").count(),
-            1,
-            "the caption arm's completion gate must stay wired: without the \
-             deterministic client button-up after a caption DOWN, the target \
-             stays captured in the SC_MOVE modal loop behind a reported \
-             success (r5, mutation-proven unpinned)"
+            src.matches("CaptionCompletion::MoveLoopExit").count(),
+            2,
+            "the caption arm's LEFT completion (planner + executor): without \
+             the deterministic client button-up after a LEFT caption DOWN, \
+             the target stays captured in the SC_MOVE modal loop behind a \
+             reported success (r5, mutation-proven unpinned; r7 typed the \
+             completion per button)"
+        );
+        assert_eq!(
+            src.matches("CaptionCompletion::SystemMenuRelease").count(),
+            2,
+            "the caption arm's RIGHT completion (planner + executor): the \
+             system-menu tracking loop reads SCREEN coordinates, so the \
+             release rides at the screen caption point — the old shape \
+             completed a right press with a client-coords LEFT up, ending \
+             tracking at a decoded point near the origin (r7)"
         );
         assert_eq!(
             src.matches("self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(point.x, point.y))?")
                 .count(),
             1,
-            "the completion post itself (a client WM_LBUTTONUP with no \
+            "the LEFT completion post itself (a client WM_LBUTTONUP with no \
              button mark at the caption point) — deleting the post while \
              keeping the gate compiles and wedges caption presses in the \
              OS's move loop"
+        );
+        assert_eq!(
+            src.matches("pack_mouse_lparam(screen_x, screen_y)").count(),
+            2,
+            "the SCREEN-coords posts: the NC lparam binding + the \
+             system-menu release (r7) — a client-translated release in the \
+             menu tracker decodes to a point near the screen origin"
         );
         assert_eq!(
             src.matches("GetWindowTextLengthW").count(),
