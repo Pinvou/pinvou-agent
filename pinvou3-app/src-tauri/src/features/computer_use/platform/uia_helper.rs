@@ -92,17 +92,25 @@ const HELPER_ELEMENT_TIMEOUT_MS: u64 = 5_000;
 /// doc's residual note).
 const HELPER_TREE_WALK_CANCEL: Option<&std::sync::atomic::AtomicBool> = None;
 /// Framing containment on the NDJSON pipe, BOTH directions: one line is
-/// bounded by [`MAX_LINE_BYTES`]. The honest bound math: a worst-case tree
-/// row is ~0.4 KiB (depth indent + index + quoted 80-CHAR name — up to ~240
-/// UTF-8 bytes for CJK — plus rect and flags), so the 2000-node ceiling
-/// produces at most ~0.8 MiB and 1 MiB leaves ~20% headroom. A longer (or
-/// delimiter-less) line means the framing is corrupt or hostile: the reader
-/// stops and the client is torn down as a transport failure instead of
-/// streaming an unbounded allocation into memory. The limit re-arms PER
-/// LINE (a fresh `Take` per read, r6): `io::Take` bounds the TOTAL bytes
-/// across the reader it wraps, so a reader-lifetime `take` would kill a
-/// healthy helper once ~1 MiB of responses had crossed the pipe — several
-/// full-budget trees into a session.
+/// bounded by [`MAX_LINE_BYTES`]. The honest bound math (r7 correction —
+/// the old "~0.8 MiB / ~20%" assumed 3-byte CJK chars and no escaping): a
+/// worst-case tree row is ~480 bytes — depth-24 indent (48) + index (7) +
+/// quoted name where `sanitize_name`'s 80-CHAR cap admits up to 320 UTF-8
+/// bytes (4-byte astral chars) + Debug control-type (~15) + rect (~45) +
+/// flags (~36) — and JSON escaping can grow a row further (backslashes
+/// double; newlines fold). At the 2000-node ceiling that is ~0.9–0.96 MiB:
+/// the honest tree still fits under 1 MiB, but the headroom is
+/// single-digit percent, so raising `MAX_NAME_CHARS`, the depth cap, or
+/// the node cap REQUIRES re-deriving this bound (a silent bump starts
+/// classifying healthy helpers as framing corruption — kill + cooldown +
+/// degrade). A longer (or delimiter-less) line means the framing is
+/// corrupt or hostile: the reader stops and the client is torn down as a
+/// transport failure instead of streaming an unbounded allocation into
+/// memory. The limit re-arms PER LINE (a fresh `Take` per read, r6):
+/// `io::Take` bounds the TOTAL bytes across the reader it wraps, so a
+/// reader-lifetime `take` would kill a healthy helper once ~1 MiB of
+/// responses had crossed the pipe — several full-budget trees into a
+/// session.
 const MAX_LINE_BYTES: u64 = 1 << 20;
 
 // ── helper-side loop (runs in the re-spawned process on the hidden desktop) ──
@@ -113,9 +121,18 @@ const MAX_LINE_BYTES: u64 = 1 << 20;
 /// space is DPI-virtualized while the parent's is physical: element_at_point
 /// points and tree rects would diverge from click coordinates on any
 /// display scaled ≠ 100% (the r4 review's coordinate-desync finding).
-/// PMv2 (Win10 1703+, the Tauri floor) with tao's PMv1 fallback via
-/// shcore; on a system old enough to fail both, the process stays unaware
-/// and the real-machine retest list covers scaled displays.
+/// PMv2 first (Win10 1703+, the Tauri floor — where tao's call already
+/// succeeded in the parent, so the fallback below is not reached in the
+/// shipped shape). The fallback is shcore `SetProcessDpiAwareness`
+/// (PROCESS_PER_MONITOR_DPI_AWARE): tao's own order (dpi.rs) retries
+/// PMv1 through the user32 context API first and only reaches shcore when
+/// that entry point is absent entirely (pre-1607) — this helper skips the
+/// user32-PMv1 rung, which lands on the SAME Per-Monitor-V1 awareness
+/// level through the older API generation, so the physical-pixel
+/// coordinate contract holds in every reachable case (r7 wording; the old
+/// comment called this "tao's PMv1 fallback via shcore", which misstates
+/// tao's order). On a system old enough to fail both, the process stays
+/// unaware and the real-machine retest list covers scaled displays.
 fn become_dpi_aware_for_helper() {
     // SAFETY: process-wide awareness setting before any coordinate query in
     // this process; no handles or windows are involved.
@@ -123,7 +140,8 @@ fn become_dpi_aware_for_helper() {
     {
         return;
     }
-    // SAFETY: see the fn contract (PMv1 is tao's documented fallback).
+    // SAFETY: see the fn contract (the shcore PMv1 rung is tao's
+    // pre-1607 fallback; the equivalent awareness level is what matters).
     let _ = unsafe { SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) };
 }
 
@@ -254,7 +272,12 @@ fn helper_tree(
         truncated_by_depth: false,
     };
     let mut out = String::new();
-    for root in roots {
+    // The walk returns painter order (bottom→top); the TREE iterates the
+    // reverse so the topmost windows render first (r7) — a node-budget cut
+    // then removes the bottom-most roots, consistent with the cap footer's
+    // direction and identical to the fallback walk's order (the two
+    // answers must describe the same desktop, order included).
+    for root in roots.into_iter().rev() {
         // A root that died between the Z-order enumeration and the handle
         // bind is branch-end churn (the physical writer's rule): skip it
         // instead of failing the whole query — the walk fans in over up to
@@ -953,6 +976,24 @@ mod tests {
             1,
             "the helper tree must emit its truncation footers through the \
              shared builder — one format across the three stacks"
+        );
+        // The focus "never fake None" invariant arm (r7 pin): the
+        // ok:true-without-element response must stay a transport-corrupt
+        // verdict. Collapsing the arm into the at_point-style mapping
+        // compiles, keeps every other count (Soft arms, transport arms,
+        // dispatch), and passes every behavioral test the tool layer runs
+        // (those use a mock) — and a confirmed "nothing holds focus"
+        // would clear the uncertain-focus mask and let an unreadable
+        // target type unmasked. The arm's distinct rejection message is
+        // the single-line anchor.
+        assert_eq!(
+            production
+                .matches("focus response carried no element despite ok")
+                .count(),
+            1,
+            "the focus ok-without-element arm must refuse to answer \
+             Ok(None) — deleting it greens a regression that unmasks \
+             typing over an unreadable target"
         );
     }
 }

@@ -566,8 +566,13 @@ fn format_tree_line(
         indent = "  ".repeat(depth as usize),
         x = rect.get_left(),
         y = rect.get_top(),
-        w = (rect.get_right() - rect.get_left()).max(0),
-        h = (rect.get_bottom() - rect.get_top()).max(0),
+        // Saturating, not plain subtraction (r7): the rect comes from a
+        // cross-process UIA provider, and a hostile one can answer
+        // left = i32::MIN, right = i32::MAX — the plain difference
+        // overflows (debug panic; release wraps negative, clamped to a
+        // bogus 0-size row).
+        w = rect.get_right().saturating_sub(rect.get_left()).max(0),
+        h = rect.get_bottom().saturating_sub(rect.get_top()).max(0),
     );
     Ok(line)
 }
@@ -613,8 +618,10 @@ pub(crate) fn element_info_from_cache(
         name: display_name,
         x: rect.get_left(),
         y: rect.get_top(),
-        width: (rect.get_right() - rect.get_left()).max(0),
-        height: (rect.get_bottom() - rect.get_top()).max(0),
+        // Saturating like format_tree_line (r7): a hostile provider's
+        // extreme rect must not overflow the width/height subtraction.
+        width: rect.get_right().saturating_sub(rect.get_left()).max(0),
+        height: rect.get_bottom().saturating_sub(rect.get_top()).max(0),
         secure,
     })
 }
@@ -762,8 +769,10 @@ impl WindowsComputerUseBackend {
             ComputerUseError::unavailable(format!("cannot initialize SendInput backend: {err}"))
         })?;
         // Initialize COM as MTA on the worker thread (UIAutomation::new includes
-        // CoInitializeEx), then drop the client; the apartment lives until thread end
-        // (the crate does not CoUninitialize).
+        // CoInitializeEx), then drop the client; an MTA apartment is
+        // process-wide — it lives until CoUninitialize balances the init or
+        // the process exits, not until this thread ends (the crate does not
+        // CoUninitialize; r7 wording).
         let _com_mta_init = UIAutomation::new().map_err(|err| {
             ComputerUseError::unavailable(format!(
                 "cannot initialize UI Automation (COM MTA): {err}"
@@ -1514,6 +1523,34 @@ mod tests {
             "the physical ui_tree must emit its truncation footers through \
              the shared builder (cap_bounded=false) — an inline-literal \
              revert forks the payload format across stacks"
+        );
+    }
+
+    /// The UIA rect extremes are hostiles-controlled (a provider answers
+    /// left = i32::MIN, right = i32::MAX): the width/height subtraction in
+    /// both serializers must saturate — a plain difference overflows
+    /// (debug panic; release wraps negative and clamps to a bogus 0-size
+    /// row/geometry). No runtime seam (Windows-only file), so the two
+    /// serializer sites are source-counted (r7).
+    #[test]
+    fn uia_rect_width_subtraction_stays_saturated() {
+        let src = include_str!("windows.rs");
+        let production = src.split("mod tests {").next().unwrap_or("");
+        assert_eq!(
+            production
+                .matches("rect.get_right().saturating_sub(rect.get_left())")
+                .count(),
+            2,
+            "both UIA rect consumers (the tree row writer and \
+             element_info_from_cache) must saturate the width subtraction — \
+             reverting either to plain `-` reopens the hostile-provider \
+             overflow"
+        );
+        assert_eq!(
+            production.matches("saturating_sub").count(),
+            4,
+            "the height subtractions (get_bottom/get_top) saturate too — \
+             four saturating sites total across the two consumers"
         );
     }
 }
