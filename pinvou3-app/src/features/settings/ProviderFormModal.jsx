@@ -3,7 +3,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { bridge } from '../../hooks/useBridge.js';
 import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
@@ -220,12 +222,17 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
 
   useEffect(() => {
     const onKey = event => {
-      // Escape 逐层关闭(复审 ACP minor):候选面板打开时只关面板,其次二级
-      // 确认弹窗(打开时只关确认层),最后才是整个表单——上层浮层绝不连带
-      // 下层一起消失。
-      if (event.key === 'Escape') {
-        if (endpointPickerOpen) setEndpointPickerOpen(false);
-        else if (confirmStep) setConfirmStep(null);
+      // Escape 逐层关闭(复审 ACP minor;r3 复审修正层级顺序):二级确认弹窗
+      // 打开时只关确认层(视觉顶层,z-[120]),其次候选面板(z-[100]),最后才是
+      // 整个表单——上层浮层绝不连带下层一起消失。旧顺序「面板优先」在键盘
+      // 路径下面板+确认层可同时打开(面板无焦点圈禁,Tab 可达面板底下的保存
+      // 键),一次 Escape 曾连关两层;确认层自身的 ModalShell 监听也只关确认
+      // 层,与本处理器幂等。行为级回归钉:acp_providers_ui_smoke ⑥.18e/f。
+      // 与全应用对话框一致,IME 组合中的 Escape(取消候选词)不关闭任何层
+      // (shared/ime-guard.mjs)。
+      if (event.key === 'Escape' && !isImeComposing(event)) {
+        if (confirmStep) setConfirmStep(null);
+        else if (endpointPickerOpen) setEndpointPickerOpen(false);
         else onClose();
       }
     };
@@ -467,6 +474,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
+      {/* 这层 stopPropagation 仍承载作用：二级确认弹层虽已 portal 到 body，
+          但 React 合成事件沿 React 树冒泡——删掉它，确认弹层的背景点击就会
+          一路冒到表单根节点的 onClose，连带关掉整个表单（#817 B1 复审钉回）。 */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
       <div
@@ -690,53 +700,28 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
           {copy.thirdPartyWarning}
         </div>
 
-        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹，应用内
-            自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
-            z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
+        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹）：新建/无密钥
+            编辑 + 空 key、编辑清空已存密钥。z-[120] 压在整个表单弹窗（z-[110]）
+            之上；#817 B1 起统一走 components/ConfirmDialog（portal 到 body，
+            自带 Esc/IME/busy 守卫，背景点击只关确认层——不再冒泡到表单） */}
         {confirmStep && (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the real buttons inside the confirm layer
-          // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
-          <div
-            data-testid="acp-provider-form-confirm"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-            onClick={event => {
-              event.stopPropagation();
+          <ConfirmDialog
+            testid="acp-provider-form-confirm"
+            confirmTestId="acp-provider-form-confirm-ok"
+            zIndexClass="z-[120]"
+            description={confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
+            destructive={confirmStep === 'deleteKey'}
+            busy={saving}
+            confirmLabel={confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
+            cancelLabel={copy.cancel}
+            onConfirm={() => {
+              const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
+              const key = String(apiKey || '').trim();
               setConfirmStep(null);
+              doSave(action, key);
             }}
-          >
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
-            <div
-              onClick={event => event.stopPropagation()}
-              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-            >
-              <p className="text-[13px] leading-relaxed opacity-85">
-                {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
-              </p>
-              <div className="mt-6 flex justify-end gap-2">
-                <button type="button"
-                  onClick={() => setConfirmStep(null)}
-                  disabled={saving}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
-                >
-                  {copy.cancel}
-                </button>
-                <button type="button"
-                  data-testid="acp-provider-form-confirm-ok"
-                  onClick={() => {
-                    const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
-                    const key = String(apiKey || '').trim();
-                    setConfirmStep(null);
-                    doSave(action, key);
-                  }}
-                  disabled={saving}
-                  className={`h-9 px-4 rounded-full text-white text-[13px] font-semibold disabled:opacity-50 ${confirmStep === 'emptyKey' ? 'bg-[#007AFF]' : 'bg-red-500'}`}
-                >
-                  {confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
-                </button>
-              </div>
-            </div>
-          </div>
+            onCancel={() => setConfirmStep(null)}
+          />
         )}
 
         <div className="mt-6 flex justify-end gap-2">

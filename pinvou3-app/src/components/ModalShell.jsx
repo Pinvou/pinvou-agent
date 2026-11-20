@@ -9,29 +9,16 @@
 // branch-switch dialog uses only the shell + its own panel, and the settings provider
 // delete/uninstall/transfer dialogs keep their local wrappers on top of it. Promoted out of
 // features/codex/ModalDialogShell.jsx per the 2026-10 reuse audit (its header already said it
-// was meant to be shared); keep the prop surface minimal until a second shape actually needs it.
+// was meant to be shared); the prop surface grew only when a second shape actually needed it:
+// `role` (ConfirmDialog renders role=alertdialog — destructive-confirm semantics per the
+// ArchiveConfirmDialog reference), `describedBy` (descriptions announced alongside the
+// title, scheduled-delete confirm) and `ariaLabel` (last-resort accessible name for
+// role-bearing shells whose callers pass no title/description).
 
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogFocusRestore } from '../hooks/useDialogFocusRestore.js';
-import { isImeComposing } from '../shared/ime-guard.mjs';
-
-// Escape to close (disabled while busy, and ignored during IME composition —
-// that Escape cancels the candidate window and must not close the dialog;
-// shared/ime-guard.mjs has the macOS WKWebView details). Shared by the confirm
-// dialogs built on ModalShell and CodexAcpView's branch-switch dialog.
-function useDialogEscapeKey(busy, onCancel) {
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy && !isImeComposing(event)) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onCancel]);
-}
+import { useDialogEscapeKey } from '../hooks/useDialogEscapeKey.js';
 
 export function ModalShell({
   testid,
@@ -42,6 +29,9 @@ export function ModalShell({
   busy = false,
   initialFocusRef,
   labelledBy,
+  describedBy,
+  ariaLabel,
+  role = 'dialog',
   title = null,
   error = null,
   footer = null,
@@ -57,16 +47,30 @@ export function ModalShell({
         type="button"
         aria-label={backdropLabel}
         className={backdropClass}
+        // Pointer-only affordance (click = cancel): kept out of Tab order so
+        // keyboard users walk the real controls instead of landing on a
+        // full-viewport invisible button or escaping the modal through it.
+        tabIndex={-1}
         disabled={busy}
         onClick={onCancel}
       />
       <div
         ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelledBy}
+        role={role}
         tabIndex={-1}
         className={`relative ${panelClass}`}
+        // The aria attributes ride a conditional spread rather than static JSX
+        // attributes: `role` is a prop, so Biome's useAriaPropsSupportedByRole
+        // cannot tie static aria-* to a statically-known role and flags them
+        // against the div's implicit `generic` role. `dialog` and `alertdialog`
+        // support all three; any other role gets none. Undefined labelledBy/
+        // describedBy values are omitted by React, so the rendered DOM is
+        // identical to static attributes for every consumer.
+        {...(role === 'dialog' || role === 'alertdialog'
+          // The aria-label arm is the last-resort name (aria-labelledby always
+          // wins when present): role-bearing shells must never render unnamed.
+          ? { 'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy, ...(ariaLabel ? { 'aria-label': ariaLabel } : {}) }
+          : {})}
       >
         {title}
         {children}

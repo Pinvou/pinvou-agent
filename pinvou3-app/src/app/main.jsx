@@ -3776,7 +3776,6 @@ const App = () => {
             <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
                 <LazyArchiveConfirmDialog
-                  theme={activeTheme}
                   t={t}
                   onCancel={() => setArchiveConfirm(null)}
                   onConfirm={confirmArchiveSession}
@@ -4612,7 +4611,6 @@ const App = () => {
                 <Suspense fallback={null}>
                   <LazySavedPersonaConfirmDialog
                     savedConfirm={savedConfirm}
-                    theme={activeTheme}
                     t={t}
                     onClose={() => setSavedConfirm(null)}
                     onView={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }}

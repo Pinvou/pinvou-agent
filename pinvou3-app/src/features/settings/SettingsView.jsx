@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
@@ -464,7 +466,7 @@ function hasStoredCredential(record) {
       // 挡同一 tick 的双击(异步 setState 在下一次渲染才可见,挡不住连击)。
       const [pickSavingModel, setPickSavingModel] = useState(false);
       const pickInFlightRef = useRef(false);
-      // 「全部添加」挂起批次(应用内 SheetConfirmDialog 确认闸门的数据):先记
+      // 「全部添加」挂起批次(应用内 ConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
       const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
       // 最新表单字段镜像(复审 M6):「测试连接」是异步探测,resolve 时空字段
@@ -892,13 +894,15 @@ function hasStoredCredential(record) {
       }
       // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
       // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
-      // 确认弹窗(z-120)先于 picker(z-100);批量保存在飞时不入(忙碌中
-      // 丢弃确认只会把「是否完成」变得不可见)。onClose 的清扫语义与 X
-      // 按钮一致(摘 picker + 行内添加结果)。
+      // 确认弹窗(z-[110])先于 picker(z-100);批量保存在飞时不入(忙碌中
+      // 丢弃确认只会把「是否完成」变得不可见)。IME 组合中的 Escape(取消
+      // 候选词)不关闭任何层(r3 复审补齐;若无此守卫,面板层监听会绕过确认
+      // 层自身的 IME 守卫,把叠在其上的确认弹窗一并关掉)。
+      // onClose 的清扫语义与 X 按钮一致(摘 picker + 行内添加结果)。
       useEffect(() => {
         if (!endpointPickerOpen && !addAllModelsConfirm) return;
         const onPickerKeyDown = e => {
-          if (e.key !== 'Escape') return;
+          if (e.key !== 'Escape' || isImeComposing(e)) return;
           if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
           else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
         };
@@ -1927,15 +1931,17 @@ function hasStoredCredential(record) {
             t={t}
           />
           {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与
-              MemoryDeleteDialog 同一 SheetConfirmDialog 配方,z-[110] 压过
+              MemoryDeleteDialog 同一 ConfirmDialog stacked 配方,z-[110] 压过
               picker 的 z-[100]):标题=数量+与已保存模型去重说明,截断时 desc
               追加提示;确认前不落库,取消不动任何状态。 */}
           {addAllModelsConfirm && (
-            <SheetConfirmDialog
+            <ConfirmDialog
+              layout="stacked"
+              destructive
               testid="add-all-models-confirm"
               confirmTestId="add-all-models-confirm-ok"
               title={settingsCopy.addAllConfirm(addAllModelsConfirm.addable.length)}
-              desc={addAllModelsConfirm.truncated ? settingsCopy.addAllTruncated(ADD_ALL_BATCH_LIMIT) : undefined}
+              description={addAllModelsConfirm.truncated ? settingsCopy.addAllTruncated(ADD_ALL_BATCH_LIMIT) : undefined}
               confirmLabel={addingAllModels ? settingsCopy.saving : settingsCopy.addAllModels}
               cancelLabel={settingsCopy.cancel}
               onConfirm={confirmAddAllEndpointModels}
@@ -2101,29 +2107,17 @@ function hasStoredCredential(record) {
         </div>
       </div>
     );
-    // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
-    // Four isomorphic sites: model delete / search source delete / memory delete / feedback close; RestartDialog (two-column grid, wider) is not one of them.
-    // Optional testid/confirmTestId mount the test pins the memory-delete and feedback-close dialogs need; desc is omitted where the dialog carries no description row.
-    // Optional busy disables both buttons so an in-flight batch (add-all) cannot be double-submitted or dismissed mid-loop.
-    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId, busy = false }) => (
-      <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-          <div className="px-5 pt-5 pb-4 text-center">
-            <h3 className="text-[17px] leading-6 font-semibold">{title}</h3>
-            {desc && <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>}
-          </div>
-          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={busy} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12] disabled:opacity-45`}>{confirmLabel}</button>
-            <button type="button" onClick={onCancel} disabled={busy} className="w-full h-12 text-[17px] font-semibold text-[#007AFF] disabled:opacity-45">{cancelLabel}</button>
-          </div>
-        </div>
-      </div>
-    );
+    // The stacked-confirm idiom (red destructive action on top, cancel below)
+    // lives on components/ConfirmDialog.jsx since #817 B1 — SheetConfirmDialog
+    // was the last hand-rolled copy of it. RestartDialog (two-column grid,
+    // wider, save-then-confirm semantics) is deliberately not folded in.
     /** @param {{ model: SettingsModelEntry, settingsCopy: { deleteModelTitle: string, deleteModelDesc: string, deleteModel: string, cancel: string }, onDeleteModel: (model: SettingsModelEntry) => void, setModelDeleteConfirm: (next: SettingsModelEntry | null) => void }} props - Delete-model confirm state and actions. */
     const ModelDeleteDialog = ({ model, settingsCopy, onDeleteModel, setModelDeleteConfirm }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         title={settingsCopy.deleteModelTitle}
-        desc={settingsCopy.deleteModelDesc}
+        description={settingsCopy.deleteModelDesc}
         confirmLabel={settingsCopy.deleteModel}
         cancelLabel={settingsCopy.cancel}
         onConfirm={() => { onDeleteModel(model); setModelDeleteConfirm(null); }}
@@ -2132,9 +2126,11 @@ function hasStoredCredential(record) {
     );
     /** @param {{ source: { key: string, label: string }, settingsCopy: { deleteSearchTitle: string, deleteSearchDesc: (label: string) => string, deleteSearch: string, cancel: string }, onDeleteSearchProvider?: (key: string) => void, setSearchDeleteConfirm: (next: { key: string, label: string } | null) => void, setRestartDialog: (next: string | null) => void }} props - Delete-search confirm state and actions. */
     const SearchDeleteDialog = ({ source, settingsCopy, onDeleteSearchProvider, setSearchDeleteConfirm, setRestartDialog }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         title={settingsCopy.deleteSearchTitle}
-        desc={settingsCopy.deleteSearchDesc(source.label)}
+        description={settingsCopy.deleteSearchDesc(source.label)}
         confirmLabel={settingsCopy.deleteSearch}
         cancelLabel={settingsCopy.cancel}
         onConfirm={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }}
@@ -2143,7 +2139,9 @@ function hasStoredCredential(record) {
     );
     /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. The native window.confirm does not render in Tauri WebView2, so this uses the same in-app confirm dialog as the model/search deletes. */
     const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         testid="memory-delete-confirm"
         confirmTestId="memory-delete-confirm-ok"
         title={copy.memoryDeleteConfirm}
@@ -3774,7 +3772,7 @@ function hasStoredCredential(record) {
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
-          {/* Delete confirm: same iOS dialog recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click does not close) */}
+          {/* Delete confirm: same ConfirmDialog stacked recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click closes, same as Cancel) */}
           {memoryDeleteConfirm && (
             <MemoryDeleteDialog
               item={memoryDeleteConfirm}
@@ -3960,9 +3958,11 @@ function hasStoredCredential(record) {
               </div>
             </div>
           )}
-          {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same recipe as MemoryDeleteDialog (backdrop click does not close) */}
+          {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same ConfirmDialog stacked recipe as MemoryDeleteDialog */}
           {feedbackOpen && feedbackCloseConfirm && (
-            <SheetConfirmDialog
+            <ConfirmDialog
+              layout="stacked"
+              destructive
               testid="feedback-close-confirm"
               confirmTestId="feedback-close-confirm-ok"
               title={t.feedbackCloseConfirm}

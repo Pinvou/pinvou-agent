@@ -532,7 +532,7 @@ assert.match(
   /context_window_tokens: runtimeProbedLane \? null : row\.contextWindowTokens,/,
   'picker rows on ollama/lm_studio must persist a null context declaration (the row still DISPLAYS the probed value; only persistence is gated) so it cannot min-clamp later probes',
 );
-// 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
+// 批量「全部添加」:应用内 ConfirmDialog 是硬闸门(规格决策 1;原生
 // window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
 // 必须先记录挂起批次、确认后才进入逐行保存循环;同时钉去重截断文案来源
 // (splitBatchAdd/addAllTruncated)。
@@ -591,12 +591,12 @@ assert.match(
   /busy=\{addingAllModels\}/,
   'the add-all confirm must disable both buttons while the batch saves',
 );
-// 确认弹窗本体:同一 SheetConfirmDialog 配方,testid 供 smoke 驱动;标题/描述
+// 确认弹窗本体:同一 ConfirmDialog stacked 配方(#817 B1),testid 供 smoke 驱动;标题/描述
 // 仍表达规格语义(数量、去重、截断)。
 const addAllDialogIndex = settingsViewSource.indexOf('testid="add-all-models-confirm"');
 assert.ok(addAllDialogIndex !== -1, 'the add-all confirm dialog must exist');
 const addAllDialogSource = settingsViewSource.slice(Math.max(0, addAllDialogIndex - 400), addAllDialogIndex + 700);
-assert.match(addAllDialogSource, /<SheetConfirmDialog/, 'the add-all confirm must reuse the shared SheetConfirmDialog');
+assert.match(addAllDialogSource, /<ConfirmDialog/, 'the add-all confirm must reuse the shared ConfirmDialog (#817 B1)');
 assert.match(addAllDialogSource, /addAllConfirm\(/, 'the dialog title must carry the deduped count and dedup notice');
 assert.match(addAllDialogSource, /addAllTruncated\(/, 'oversized listings must surface the truncation notice in the confirm');
 assert.match(addAllDialogSource, /onConfirm=\{confirmAddAllEndpointModels\}/, 'the dialog OK button must route into the confirmed batch handler');
@@ -904,12 +904,23 @@ assert.doesNotMatch(
   /savedKeys=/,
   'the ACP line must omit savedKeys so picker rows stay addable (providers have no saved-model dedup)',
 );
-// 复审 ACP minor(Escape 逐层关闭):候选面板打开时 Escape 只关面板,其次二级
-// 确认层,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+// 复审 ACP minor(Escape 逐层关闭):确认层打开时 Escape 只关确认层,其次候选
+// 面板,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+// r3 复审修正层级顺序:旧顺序「面板优先」在键盘路径下面板+确认层可同时打开
+// (面板无焦点圈禁,Tab 可达面板底下的保存键),一次 Escape 曾连关两层。
+// IME 守卫随 #817 B1 复审补齐:组合词窗口中的 Escape(取消候选词)不得关闭任何层。
 assert.match(
   providerFormModalSource,
-  /if \(event\.key === 'Escape'\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
-  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only)',
+  /if \(event\.key === 'Escape' && !isImeComposing\(event\)\) \{\s*if \(confirmStep\) setConfirmStep\(null\);\s*else if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else onClose\(\);/,
+  'Escape must close the confirm layer first (the visual top), then the endpoint picker, then the whole form — one layer per press even when the picker and the confirm co-open (r3 review), IME-guarded',
+);
+// 复审 2026-11-20:确认层 portal 到 body 后,表单卡片的 stopPropagation 仍是
+// 承载层——React 合成事件沿 React 树冒泡,删掉它确认弹层的背景点击会一路
+// 冒到表单根节点的 onClose,连带关掉整个表单。
+assert.match(
+  providerFormModalSource,
+  /data-testid="acp-provider-form-dialog"[\s\S]{0,1000}onClick=\{event => event\.stopPropagation\(\)\}/,
+  'the form card must keep its stopPropagation shield (anchored between the form dialog root and the card): the confirm layer portals to body, but React synthetic events still bubble through the React tree to the form root onClose',
 );
 // 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
 assert.match(

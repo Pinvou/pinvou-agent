@@ -252,8 +252,8 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.match(toolStore, /z-\[210\] flex items-center justify-center bg-black\/40 p-4 backdrop-blur-sm/,
     'the TsAlert backdrop must pad its card away from the viewport edge too');
   assert.match(toolStore, /w-\[280px\] max-w-full rounded-\[20px\]/, 'the TsAlert card must carry the same max-width guard');
-  assert.ok(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g) >= 4,
-    'the 300px dialog cards must carry max-w-full');
+  assert.ok(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g) >= 3,
+    'the 300px dialog cards must carry max-w-full (SheetRowConfirm moved to the shared ConfirmDialog in #817 B1, dropping one 300px card)');
   // String-bound (not adjacency-bound): an unguarded card written
   // w-[300px] shadow-2xl rounded-[20px] must fail here too. Raw source, so
   // no comment mention can satisfy it either.

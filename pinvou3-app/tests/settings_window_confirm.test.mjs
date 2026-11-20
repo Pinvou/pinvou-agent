@@ -24,6 +24,37 @@ const SETTINGS_VIEW = fs.readFileSync(
   path.join(appRoot, 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
+// #817 B1: the stacked confirm skeleton moved out of SettingsView into the
+// shared components/ConfirmDialog.jsx (SheetConfirmDialog was absorbed); the
+// prop pass-through and stacking invariants live there now.
+const CONFIRM_DIALOG = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ConfirmDialog.jsx'),
+  'utf8',
+);
+// ModalShell is the shell ConfirmDialog renders on; its aria wiring is part of
+// the confirm contract (the alertdialog semantics came from the absorbed shell).
+const MODAL_SHELL = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ModalShell.jsx'),
+  'utf8',
+);
+// The shell's Escape guard lives in its own hook (extracted from ModalShell in
+// the 2026-11-20 round so it can be pinned behaviorally — see
+// tests/use_dialog_escape_key.test.mjs); this file pins the guard expression
+// and ModalShell's wiring to both hooks.
+const DIALOG_ESCAPE_KEY = fs.readFileSync(
+  path.join(appRoot, 'src', 'hooks', 'useDialogEscapeKey.js'),
+  'utf8',
+);
+// Absorbed confirms that must keep their pre-absorption stacking tier (they
+// used to ride the z-[200] ConfirmDialogShell / ModalBackdrop band).
+const ARCHIVE_CONFIRM = fs.readFileSync(
+  path.join(appRoot, 'src', 'components', 'ArchiveConfirmDialog.jsx'),
+  'utf8',
+);
+const TOOL_STORE_VIEW = fs.readFileSync(
+  path.join(appRoot, 'src', 'features', 'tools', 'ToolStoreView.jsx'),
+  'utf8',
+);
 const SMOKE = fs.readFileSync(
   path.join(appRoot, 'tests', 'settings_ui_smoke.js'),
   'utf8',
@@ -48,12 +79,13 @@ test('SettingsView no longer calls native window.confirm', () => {
 
 test('memory delete routes through the in-app confirm dialog', () => {
   // The in-app confirm dialog must exist, with a stable testid on the OK button.
-  // MemoryDeleteDialog renders through SheetConfirmDialog, which turns the
-  // testid/confirmTestId props into data-testid attributes.
+  // MemoryDeleteDialog renders through the shared ConfirmDialog (stacked
+  // layout), which turns the testid/confirmTestId props into data-testid
+  // attributes.
   assert.match(SETTINGS_VIEW, /testid="memory-delete-confirm"/, 'memory delete confirm dialog must exist');
   assert.match(SETTINGS_VIEW, /confirmTestId="memory-delete-confirm-ok"/, 'memory delete confirm button must carry a testid');
-  assert.match(SETTINGS_VIEW, /data-testid=\{testid\}/, 'SheetConfirmDialog must render data-testid from its props');
-  assert.match(SETTINGS_VIEW, /data-testid=\{confirmTestId\}/, 'SheetConfirmDialog must render the confirm testid from its props');
+  assert.match(CONFIRM_DIALOG, /testid=\{testid\}/, 'ConfirmDialog must pass the backdrop testid through to ModalShell');
+  assert.match(CONFIRM_DIALOG, /data-testid=\{confirmTestId\}/, 'ConfirmDialog must render the confirm testid from its props');
 
   // The delete entry point must be a row-level action of the memory section (the row delete button routes into deleteItem)
   assert.match(
@@ -121,16 +153,17 @@ test('feedback close routes through the in-app confirm layer', () => {
   );
   assert.match(
     SETTINGS_VIEW,
-    /<SheetConfirmDialog\s+testid="feedback-close-confirm"/,
-    'the confirm layer must be the shared SheetConfirmDialog',
+    /<ConfirmDialog[\s\S]{0,120}?testid="feedback-close-confirm"/,
+    'the confirm layer must be the shared ConfirmDialog',
   );
   // The stacking order is the real invariant: if the shared dialog ever drops below the
   // feedback panel (z-[100]) the confirm becomes unclickable and the panel locks. Pin it
-  // on the component itself now that the inline layer was folded into SheetConfirmDialog —
-  // asserting only the call site leaves the z-index claim living in a message string.
+  // on the shared component itself (#817 B1 folded SheetConfirmDialog into
+  // ConfirmDialog) — asserting only the call site leaves the z-index claim
+  // living in a message string.
   assert.match(
-    SETTINGS_VIEW,
-    /const SheetConfirmDialog[\s\S]{0,400}?className="fixed inset-0 z-\[110\]/,
+    CONFIRM_DIALOG,
+    /zIndexClass = 'z-\[110\]'/,
     'the shared confirm dialog must stack above the feedback panel (z-[100])',
   );
 
@@ -147,6 +180,139 @@ test('the settings smoke no longer stubs native confirm', () => {
     SMOKE,
     /window\.confirm\s*=/,
     'settings smoke must not stub window.confirm again (a reintroduced native confirm must fail loudly)',
+  );
+});
+
+test('the shared confirm keeps its alertdialog semantics on the shared shell', () => {
+  // ConfirmDialog must render as an alertdialog (destructive-confirm semantics
+  // per the absorbed reference shell); a dropped role would silently regress
+  // every absorbed confirm to a generic dialog.
+  assert.match(
+    CONFIRM_DIALOG,
+    /role="alertdialog"/,
+    'ConfirmDialog must render role=alertdialog',
+  );
+  // ModalShell can only emit aria-* for roles that support them; `role` is a
+  // prop, so the attributes must ride a conditional spread gated on the
+  // dialog/alertdialog roles (static aria-modal/labelledby/describedby next to
+  // role={role} fails Biome's useAriaPropsSupportedByRole and would red CI —
+  // the 2026-11-19 round).
+  assert.match(
+    MODAL_SHELL,
+    /\{\.\.\.\(role === 'dialog' \|\| role === 'alertdialog'[\s\S]{0,240}'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy[\s\S]{0,160}:\s*\{\}\)\}/,
+    'ModalShell must gate its aria attributes on the dialog/alertdialog roles via a conditional spread',
+  );
+  // No static aria-* on the panel — and the gate must hold in every form the
+  // lint cannot catch: a static string literal OR a brace expression
+  // (aria-modal={true}) would both trip useAriaPropsSupportedByRole.
+  assert.doesNotMatch(
+    MODAL_SHELL,
+    /aria-modal="true"|aria-modal=\{|aria-labelledby=\{|aria-describedby=\{/,
+    'the shell panel must carry no static aria-* attributes (they would fail useAriaPropsSupportedByRole against the implicit generic role)',
+  );
+  // A caller passing neither title nor description would otherwise render an
+  // unnamed alertdialog — the exact gap the audit flagged. No live site hits
+  // this (every site passes title or description), but the component must not
+  // offer the footgun to future callers: the confirm label is the last-resort
+  // accessible name (aria-labelledby still wins whenever it is present).
+  assert.match(
+    CONFIRM_DIALOG,
+    /ariaLabel=\{title \|\| description \? undefined : confirmLabel\}/,
+    'ConfirmDialog must fall back to the confirm label when title and description are both absent',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /\.\.\.\(ariaLabel \? \{ 'aria-label': ariaLabel \} : \{\}\)/,
+    'ModalShell must forward the last-resort aria-label through the gated spread',
+  );
+  // The cancel testid must exist in BOTH layouts — a stacked-only gap would
+  // silently break smoke drivers that target the cancel button of a stacked confirm.
+  assert.strictEqual(
+    (CONFIRM_DIALOG.match(/data-testid=\{cancelTestId\}/g) || []).length,
+    2,
+    'cancelTestId must be rendered in both the stacked and grid layouts',
+  );
+  assert.strictEqual(
+    (CONFIRM_DIALOG.match(/data-testid=\{confirmTestId\}/g) || []).length,
+    2,
+    'confirmTestId must be rendered in both the stacked and grid layouts (a layout-only loss would silently break that layout\'s smoke driver)',
+  );
+  // The backdrop button is a pointer-only affordance: tabIndex={-1} keeps it
+  // out of Tab order so keyboard users cannot land on a full-viewport invisible
+  // "Cancel" or escape the modal through it (the 2026-11-20 round). Anchored to
+  // the button's own attribute order — the panel div also carries tabIndex={-1}
+  // and must not satisfy this pin.
+  assert.match(
+    MODAL_SHELL,
+    /aria-label=\{backdropLabel\}[\s\S]{0,500}tabIndex=\{-1\}[\s\S]{0,60}disabled=\{busy\}[\s\S]{0,30}onClick=\{onCancel\}/,
+    'the ModalShell backdrop button must stay out of Tab order (tabIndex={-1} between its label and handlers)',
+  );
+  // The shell hardening is load-bearing for every absorbed confirm: Escape is
+  // IME-guarded (candidate-cancelling Escape must not close anything) and
+  // busy-guarded (an in-flight confirmation cannot be dismissed), and the
+  // dialog takes focus on open and restores it on close. The guard behavior is
+  // pinned behaviorally in tests/use_dialog_escape_key.test.mjs and
+  // tests/use_dialog_focus_restore.test.mjs; these pins keep ModalShell wired
+  // to both hooks (dropping a call would silently unguard all 12 confirms —
+  // the r3-review mutations that survived).
+  assert.match(
+    DIALOG_ESCAPE_KEY,
+    /event\.key === 'Escape' && !busy && !isImeComposing\(event\)/,
+    'the shared dialog Escape must stay busy-guarded and IME-guarded (behavioral pins: use_dialog_escape_key.test.mjs)',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /useDialogEscapeKey\(busy, onCancel\)/,
+    'ModalShell must keep its window-level Escape wired to useDialogEscapeKey',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /useDialogFocusRestore\(dialogRef, initialFocusRef\)/,
+    'ModalShell must keep focus capture/restore wired to useDialogFocusRestore',
+  );
+});
+
+test('absorbed confirms keep their pre-absorption stacking tier', () => {
+  // ArchiveConfirmDialog/ArchivedDeleteConfirmDialog used to ride the
+  // z-[200] ConfirmDialogShell; dropping to ConfirmDialog's z-[110] default
+  // would let blocking z-[200] overlays (e.g. WebConnectionStatus) cover them.
+  assert.strictEqual(
+    (ARCHIVE_CONFIRM.match(/zIndexClass="z-\[200\]"/g) || []).length,
+    2,
+    'both archive confirms must explicitly keep the z-[200] tier',
+  );
+  // The two SheetRowConfirm sites (skill update, recycle purge) rode the
+  // z-[200] ModalBackdrop before absorption — same tier preservation.
+  assert.strictEqual(
+    (TOOL_STORE_VIEW.match(/zIndexClass="z-\[200\]"/g) || []).length,
+    2,
+    'both tool-store confirms must explicitly keep the z-[200] tier',
+  );
+});
+
+test('the settings picker escape layer stays IME-guarded (r3 review)', () => {
+  // With the add-all confirm stacked over the endpoint picker, the picker's
+  // own window listener is what closes the confirm (the stack-aware
+  // convention). An unguarded listener would let a candidate-cancelling
+  // composition-Escape slam the confirm shut behind its own IME guard —
+  // the r3-review minor.
+  assert.match(
+    SETTINGS_VIEW,
+    /const onPickerKeyDown = e => \{\s*if \(e\.key !== 'Escape' \|\| isImeComposing\(e\)\) return;/,
+    'the settings picker Escape must decline IME composition (shared/ime-guard.mjs)',
+  );
+});
+
+test('the settings picker stack closes confirm-first (r4 review)', () => {
+  // The settings twin of the ACP layered handler: with the add-all confirm
+  // stacked over the endpoint picker, one Escape press must close exactly the
+  // visual top (the confirm) — the r4 review found this branch order pinned
+  // on the ACP side (source pin + ⑥.18e–g) but not here, so an order flip
+  // (picker closing first) survived every suite.
+  assert.match(
+    SETTINGS_VIEW,
+    /if \(addAllModelsConfirm && !addingAllModels\) setAddAllModelsConfirm\(null\);\s*else if \(endpointPickerOpen\)/,
+    'the stacked confirm branch must stay ahead of the picker branch (confirm-first)',
   );
 });
 
