@@ -47,10 +47,14 @@
 //!
 //! `spawn` first canonicalizes every root (failure warns and skips that root;
 //! duplicate spellings of one entity register once; non-UTF-8 roots are
-//! likewise rejected — fsevent's registration internally does
-//! `to_str().unwrap()` and a non-UTF-8 root would panic the whole watcher
-//! thread, and under the `to_str` gate such roots can never produce a row, so
-//! skipping loses nothing). Watch registration and event attribution both use
+//! likewise rejected — notify ≤8.2.0's fsevent registration did
+//! `to_str().unwrap()` there and a non-UTF-8 root would have panicked the
+//! backend thread at registration; 8.2.2 converts the root through CFURL
+//! (raw filesystem bytes, no UTF-8 gate), so such a root would now register
+//! and the panic would land later, on event delivery at the callback's
+//! `to_str().expect()`. Under the wiring's `to_str` gate such roots can
+//! never produce a row, so skipping loses nothing and keeps the callback
+//! panic unreachable from roots). Watch registration and event attribution both use
 //! the canonical spelling — macOS fsevent delivers canonicalized event paths
 //! and Linux inotify absolutizes relative roots, so attributing by the
 //! caller's original spelling would be pierced by spelling drift (a whole
@@ -95,7 +99,13 @@
 //!   mode-000 directory, ENOENT after instant recreation) are swallowed
 //!   inside notify with no channel `Err`, leaving that branch unwatched for
 //!   the run; the lazy rescan covers both. Large root
-//!   sets fall back to the lazy-triggered rescan.
+//!   sets fall back to the lazy-triggered rescan. notify 8.2.1/8.2.2's
+//!   inotify rework (#720) also made DELETE/DELETE_SELF bookkeeping
+//!   non-fatal: watch-descriptor removal failures during event-loop cleanup
+//!   are now logged (info) and the recursive map cleanup completes, where
+//!   8.2.0 aborted the removal pass mid-way on the first failure; this
+//!   wiring never calls `unwatch()` and the loop's own cleanup already
+//!   swallowed the error (`.ok()`), so the visible delta is log lines only.
 //! - A root dropped before registration stays unwatched for the watcher
 //!   thread's entire lifetime: `prepare_roots` skips roots whose
 //!   canonicalize fails or whose spelling is non-UTF-8 (warn + skip), and
@@ -118,31 +128,49 @@
 //!   (visible only when a logger is installed) and root deletion is
 //!   completely silent; both silently stop the watch (no events and no
 //!   channel Err). On Windows the lazy-triggered rescan is the only backstop.
-//!   Also not watchable at all: **non-local volumes** — fsevent ignores
-//!   `FSEventStreamStart`'s return on network mounts (FSEvents does not
-//!   support them), Linux inotify sees only same-host changes on NFS, and
-//!   Windows RDCW on SMB shares is best-effort — every case reports
-//!   "watching N/N" and silently delivers nothing, so the lazy rescan is
-//!   the only coverage there too.
-//! - macOS fsevent's backend-thread death is equally unobservable: an event
-//!   callback panic at the extern "C" boundary aborts the whole process
-//!   (e.g. a delivered path containing non-UTF-8 — possible on exFAT/SMB
-//!   mounts, notify's internal `to_str().expect()`), rather than unwinding
-//!   the thread; even when the backend thread dies without panicking, the
-//!   user-side tx is retained by the `FsEventWatcher` struct and never drops,
-//!   so `rx` hangs forever (the channel-closed warning never fires, the
-//!   guard never unlocks). On macOS the lazy-triggered rescan is the only
-//!   backstop; the wiring side must not assume macOS is observable or
-//!   retryable. Two further macOS-specific infidelities (stated against
-//!   notify 8.2.0; 8.2.1 started propagating FSEvents startup errors —
-//!   re-derive these bullets on any lockfile bump): fsevent's `watch()`
-//!   still returns Ok when the runloop thread spawn fails or
-//!   `FSEventStreamStart` fails (notify ignores both return values), so the
-//!   startup line reports "watched" while the backend is already dead — the
-//!   success log is not trustworthy on macOS; and multi-root registration
-//!   restarts the whole stream per root (stop+run, sinceWhen=SinceNow), so
-//!   events for earlier-registered roots inside the registration window are
-//!   lost (startup only, covered by the first scan). The opposite direction
+//!   Also not watchable at all: **non-local volumes** — FSEvents does not
+//!   support network mounts and `FSEventStreamStart` fails there (notify
+//!   ≤8.2.0 ignored that return, so macOS reported the root watched while
+//!   silently delivering nothing; 8.2.2 propagates the failure, so this
+//!   case now surfaces as a registration `Err` — warn + root excluded —
+//!   instead of a silent watch), Linux inotify sees only same-host changes
+//!   on NFS, and Windows RDCW on SMB shares is best-effort — the Linux and
+//!   Windows cases still report "watching N/N" and silently deliver
+//!   nothing, so the lazy rescan is the only coverage there too.
+//! - macOS fsevent's failure modes, re-derived against notify 8.2.2
+//!   (fsevent.rs is the evidence; re-derive again on any lockfile bump). A
+//!   callback panic is no longer a process abort by construction: 8.2.2
+//!   compiles the callback `extern "C-unwind"` (≤8.2.0 was plain `extern
+//!   "C"`, where a panic aborted the whole process), so a delivered path
+//!   containing non-UTF-8 (possible on exFAT/SMB mounts; the callback still
+//!   does `to_str().expect()`) unwinds by specification, and whether it
+//!   traverses the foreign runloop frames back into the spawning Rust
+//!   thread (backend thread dies, process survives) or aborts mid-foreign
+//!   frame is implementation-defined — do not rely on either outcome. A
+//!   thread that dies that way skips the in-thread stream release, so the
+//!   stream context holding the handler `Arc` leaks, the tx never drops,
+//!   `rx` hangs forever (the channel-closed warning never fires, the guard
+//!   never unlocks), and a later restart's `stop()` panics at its
+//!   `join().expect()` — during registration that lands inside this file's
+//!   catch_unwind, and the wiring `forget`s the watcher instead of dropping
+//!   it at thread end. Startup failures, by contrast, are now observable
+//!   per root: 8.2.2's `watch_inner` is `stop(); append_path(); run()?`
+//!   (≤8.2.0 discarded `run()`'s result with `let _ =`), and `run()`
+//!   propagates thread-spawn failure and surfaces `FSEventStreamStart`
+//!   failure as an `Err` ("unable to start FSEvent stream") through the
+//!   startup channel — a failed start now returns `Err` from that root's
+//!   `watch()` instead of reporting "watched" while the backend is already
+//!   dead. Two consequences remain: every `watch()` first stops the live
+//!   stream covering all previously registered roots, so a failed start
+//!   leaves those roots stream-less until a later `watch()` succeeds over
+//!   the accumulated path set (the per-root success log is only
+//!   trustworthy after the last registration); and the restart mechanism
+//!   itself is unchanged (stop+run per root, `sinceWhen=SinceNow` fixed at
+//!   construction), so events for earlier-registered roots inside the
+//!   registration window are still lost (startup only, covered by the
+//!   first scan). On macOS the lazy-triggered rescan is the only backstop;
+//!   the wiring side must not assume macOS is observable or retryable.
+//!   The opposite direction
 //!   also happens: fsevent can **replay writes made before `spawn`** when
 //!   registration lands after them (observed live: rows for pre-spawn files
 //!   appearing at startup in some processes) — benign for indexing
@@ -436,11 +464,14 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) -> SpawnOutcome {
 /// and skips), dedupe duplicate spellings of one entity, reject non-UTF-8.
 /// Factored out of `run_watcher` as a pure, unit-testable function.
 ///
-/// Non-UTF-8 roots must be rejected: fsevent (the macOS default backend)
-/// does `to_str().unwrap()` inside its registration path, so a non-UTF-8
-/// root would panic the whole watcher thread (after catch_unwind contains
-/// it, the remaining roots die with it). The rejection loses no coverage on
-/// any platform — `record_from_parts`'s `to_str` gate means event paths
+/// Non-UTF-8 roots must be rejected: notify ≤8.2.0's fsevent registration
+/// did `to_str().unwrap()` there, so a non-UTF-8 root would panic the whole
+/// watcher thread (after catch_unwind contains it, the remaining roots die
+/// with it). 8.2.2 converts through CFURL instead — raw filesystem bytes,
+/// no UTF-8 gate — so the root would register and the panic would move to
+/// event delivery at the callback's `to_str().expect()`, which is exactly
+/// why the upstream gate stays. The rejection loses no coverage on any
+/// platform — `record_from_parts`'s `to_str` gate means event paths
 /// under such a root can never assemble a row, so watching it would only
 /// ever produce no-ops.
 fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -507,8 +538,9 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // held by the dead event loop and was closed during its unwind); the
     // thread exits as an ordinary failure, the guard is released at closure
     // end, and a later spawn can re-arm. This path cannot be unit-tested
-    // (it needs a real backend death); the notify 8.2.0 sources are the
-    // evidence (inotify.rs's watch_inner and Drop unwraps).
+    // (it needs a real backend death); the notify 8.2.2 sources are the
+    // evidence (inotify.rs's watch_inner and Drop unwraps; fsevent.rs's
+    // startup `rl_rx.recv().unwrap()` is the macOS counterpart).
     let registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for canonical in &prepared {
             match watcher.watch(canonical, RecursiveMode::Recursive) {
@@ -596,8 +628,9 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // avoids it (the backend is dead and Drop has nothing to clean up: on
     // Windows the graceful Drop against a dead server is already a no-op and
     // on inotify the fd is held by the dead event loop — stated against
-    // notify 8.2.0; 8.2.2 hardened Windows shutdown against closed handles,
-    // re-derive on any lockfile bump). Today's reachable
+    // notify 8.2.2, whose inotify watcher Drop and event-loop ownership are
+    // unchanged from 8.2.0 (8.2.2 hardened Windows shutdown against closed
+    // handles; re-derive on any lockfile bump). Today's reachable
     // scenario for this warning: a Linux backend thread dying mid-run (the
     // event loop unwinds, dropping the tx with it). Backend thread-spawn
     // failures never reach loop end — on Linux they surface through the
@@ -607,12 +640,14 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // reachable panic path today; if upstream introduces one, the in-flight
     // request's handler Arc would keep the tx alive and rx would never close —
     // the warning would then not fire either (same shape as macOS; the lazy
-    // rescan is the backstop). macOS fsevent has always been this way: a
-    // callback panic aborts the process at the extern "C" boundary, and the
-    // handler Arc is held by the FsEventWatcher struct itself, so the tx does
-    // not drop even when the backend thread dies — rx hangs forever, this
-    // warning never fires, and the guard stays locked. On macOS the only
-    // backstop is the lazy rescan (see the module doc's known limits). The
+    // rescan is the backstop). macOS fsevent is close to this shape:
+    // ≤8.2.0 a callback panic aborted the process at the extern "C"
+    // boundary; 8.2.2 compiles the callback `extern "C-unwind"`, so the
+    // panic may instead kill only the backend thread — the stream context
+    // holding the handler Arc then leaks without release, so the tx still
+    // does not drop, rx still hangs forever, this warning still never
+    // fires, and the guard stays locked (either way the lazy rescan is the
+    // only backstop; see the module doc's known limits). The
     // guard is released at the calling closure's end (one step after this
     // log), after which a spawn can re-arm.
     std::mem::forget(watcher);
