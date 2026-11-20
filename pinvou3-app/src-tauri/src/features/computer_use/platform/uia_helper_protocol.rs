@@ -30,6 +30,20 @@ pub const HELPER_ARG: &str = "--pinvou-computer-use-uia-helper";
 /// (bounded) instead of racing the first request against UIA initialization.
 pub const READY_LINE: &str = "{\"ready\":true}";
 
+/// Decode one NDJSON line the way std's `BufRead::read_line` delivered it:
+/// the buffer INCLUDES the delimiter, so a well-framed line ends with `\n`
+/// and a chunk without one is mid-line framing corruption (a per-line cap
+/// hit or a helper dying mid-line). The delimiter and a preceding `\r` are
+/// stripped exactly once, so callers compare against bare constants
+/// ([`READY_LINE`]) and parse JSON without trailing-whitespace caveats —
+/// the r6 ready-handshake failure was exactly this: the reader forwarded
+/// the newline and an exact `==` against the bare constant failed forever.
+/// Returns `None` for anything not ending in `\n`. Pure; pinned.
+pub fn decode_line(raw: &str) -> Option<String> {
+    raw.strip_suffix('\n')
+        .map(|stripped| stripped.strip_suffix('\r').unwrap_or(stripped).to_string())
+}
+
 /// One query from the backend. `id` is echoed verbatim; the protocol is
 /// strictly serial (one outstanding request), so the id is a sanity check,
 /// not a demux key.
@@ -154,6 +168,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The framing contract the ready handshake rides on (r6): std's
+    /// `read_line` delivers the line WITH its delimiter, so a comparison
+    /// against the bare [`READY_LINE`] constant fails forever unless the
+    /// decode strips it. This test IS the handshake regression's pin —
+    /// uia_helper.rs is Windows-cfg'd (its only gate is source counting),
+    /// so without this Linux-runnable test nothing executed the framing
+    /// the first structured query depends on.
+    #[test]
+    fn line_decoding_strips_the_delimiter_and_rejects_unframed_chunks() {
+        // The exact r6 BLOCKER shape: helper writes READY_LINE + "\n",
+        // `read_line` hands us the same bytes, the decoded line must equal
+        // the bare constant the wait compares against.
+        assert_eq!(
+            decode_line(&(READY_LINE.to_owned() + "\n")).as_deref(),
+            Some(READY_LINE),
+            "a well-framed ready line must decode to the bare constant the \
+             parent's wait compares against (the delimiter std delivers is \
+             stripped)"
+        );
+        // CRLF framing (a future writer change) decodes clean too.
+        assert_eq!(
+            decode_line(&(READY_LINE.to_owned() + "\r\n")).as_deref(),
+            Some(READY_LINE)
+        );
+        // A chunk without its newline is mid-line corruption (cap hit or a
+        // helper dying mid-line): never handed to a caller as a "line".
+        assert_eq!(decode_line(READY_LINE), None, "no delimiter = corrupt");
+        assert_eq!(decode_line(""), None);
+        // The bare constant is NOT itself well-framed input — only the
+        // wire shape (+ "\n") decodes to it, so a caller comparing a
+        // decoded line against the constant can never be fooled by an
+        // unframed chunk that happens to equal the constant.
+        assert_eq!(decode_line("{\"ready\":true}"), None);
+    }
 
     #[test]
     fn tree_request_round_trips_with_short_field_names() {

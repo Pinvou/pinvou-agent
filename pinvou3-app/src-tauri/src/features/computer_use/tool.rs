@@ -76,16 +76,16 @@ pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// (`cu-<hex>`) are far below this; over the cap is rejected as a parse
 /// error.
 pub const MAX_CONFIRM_ID_CHARS: usize = 128;
-/// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
-/// properties (`minimum: 1`, maximums = these constants); the parser rejects
-/// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
-/// clamping or truncating. Note the macOS/Windows backends additionally cap
-/// their own tree walks below these values (slower cross-process a11y APIs):
-/// a parser-accepted `max_nodes` above their cap is clamped there — this is
-/// disclosed in the tool description so the model is not surprised by a
-/// smaller tree than requested.
-pub const MAX_UI_TREE_DEPTH: u32 = 64;
-pub const MAX_UI_TREE_NODES: u32 = 10_000;
+/// `ui_tree` argument caps — the SAME values the schema declares (`maximum`)
+/// and every backend clamps to (helpers.rs `MAX_TREE_DEPTH`/`MAX_TREE_NODES`
+/// = 24/2000): parser, schema, and backend now state one ceiling, so no
+/// client can pass a value that is accepted here and silently shrunk there
+/// (the r6 review found the parser still admitted 64/10000 against a
+/// 24/2000 schema, re-requesting "larger" per the truncation footer would
+/// loop). The parser rejects out-of-range values explicitly
+/// ([`opt_u32_range`]) instead of silently clamping or truncating.
+pub const MAX_UI_TREE_DEPTH: u32 = 24;
+pub const MAX_UI_TREE_NODES: u32 = 2000;
 /// `open` program-name cap (characters), mirroring the parse-time cap
 /// convention of the other free-text fields: the program rides the consent
 /// summary/payload and the audit trail, so an uncapped model-supplied string
@@ -2848,9 +2848,10 @@ impl ToolSpec for ComputerUseTool {
          as a clear one, and every unreadable location binds identically, so the \
          replay only detects a readable target appearing. The CONTENT you type is never \
          screened, and \
-         key chords are not screened for destructiveness. On macOS and Windows the \
-         accessibility tree walk is additionally capped below the max_depth/max_nodes \
-         arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \
+         key chords are not screened for destructiveness. The accessibility tree walk \
+         is capped at 24 levels / 2000 nodes — the max_depth/max_nodes arguments cannot \
+         exceed that hard ceiling (parser, schema, and every backend agree). Observation \
+         (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
          attached; if it is not visible, call image_analyze with the returned attachments \
@@ -2861,7 +2862,9 @@ impl ToolSpec for ComputerUseTool {
         // Bounds parity: every parser-enforced cap is declared here so a
         // schema-validating client sees the same domain the parser enforces
         // (ms 1-30000 shared by wait/hold_key, amount 1-100, text ≤ 10000
-        // chars for type, max_depth ≤ 64, max_nodes ≤ 10000). The `text`
+        // chars for type, max_depth ≤ 24, max_nodes ≤ 2000 — the parser
+        // constants ARE these maximums, and the same values are the
+        // backends' hard ceilings). The `text`
         // maxLength covers type; chord text for key/hold_key is capped
         // tighter (128) at parse time but shares this field, so the schema
         // declares only the common bound.

@@ -6734,3 +6734,29 @@ fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
          complement that makes the mint re-take necessary)"
     );
 }
+
+/// The ui_tree parser caps, the schema maximums, and the backends' hard
+/// ceilings must state ONE value (r6 pin): the r5 fixwave aligned the
+/// schema to 24/2000 but left the parser at 64/10000 — a schema-validating
+/// client could never exceed 24/2000 while a non-validating one was
+/// silently shrunk by the backend clamp, so a model re-requesting "larger"
+/// per the truncation footer would loop. The parser constants must equal
+/// the schema's declared maximums AND the backend ceilings (helpers.rs
+/// MAX_TREE_DEPTH/MAX_TREE_NODES = 24/2000, pinned there).
+#[test]
+fn ui_tree_parser_caps_match_the_schema_maximums_and_backend_ceilings() {
+    assert_eq!(
+        MAX_UI_TREE_DEPTH, 24,
+        "parser depth cap = the backend ceiling"
+    );
+    assert_eq!(
+        MAX_UI_TREE_NODES, 2000,
+        "parser node cap = the backend ceiling"
+    );
+    let src = include_str!("../tool.rs");
+    assert!(
+        src.contains("\"maximum\": 24") && src.contains("\"maximum\": 2000"),
+        "the schema must declare the same ceilings the parser enforces — \
+         a schema/parser drift reopens the accept-then-silently-shrink gap"
+    );
+}
