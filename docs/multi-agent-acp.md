@@ -9,7 +9,7 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 | Agent | 启动方式 | 运行时来源 | 登录 |
 |---|---|---|---|
 | 品悟（原生） | 进程内 CodeWhale Engine（非 ACP 子进程） | 与“工作”模式相同的应用模型配置 | 无独立登录，沿用工作模式的模型凭据 |
-| Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 优先使用系统安装（≥ 0.144.6），缺失或过旧时经用户确认自动安装或升级（见下文安装与升级矩阵） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
+| Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 在内置随包与系统安装间择版本最新的兼容者（下限 ≥ 0.144.6；`PINVOU3_CODEX_PATH` 覆盖不兼容时并入同一择新序；「随包」实指随 adapter 托管安装的 legacy Codex、非随安装包分发，正式包 Bridge 打包已剪除 Codex 平台二进制），缺失或过旧时经用户确认自动安装或升级（见下文安装与升级矩阵；2026-11-20 订正：选取序并非固定「系统优先」，详见 codex-acp.md 开发环境步骤 2 订正） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
 | Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge（仅 JS 适配器，版本固定为 `0.95.0`）；Claude Code CLI 使用系统安装（≥ 2.0.0），App 不内置 CLI，缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级（见下文安装与升级矩阵） | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
 | Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI（≥ 0.9.0），缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级 | 在 Pinvou 点击“授权登录”，按提示完成设备码授权；也支持成对设置 `KIMI_MODEL_NAME` 与 `KIMI_MODEL_API_KEY` |
 
@@ -167,7 +167,7 @@ Windows 与 macOS 还会在各自原生 CI runner 上生成实际安装包 Runti
 Claude ACP 完成 `initialize`。macOS Runtime 包含 arm64/x64 两套 Node，供 universal
 app 在两种架构上选择；Bridge 只携带 JS 适配器，Claude Code 与 Codex 的平台原生
 二进制均不随包发布（单个 claude 二进制约 245MB，随包会让 universal dmg 多出约
-140MB）。运行时优先解析系统安装；Codex、Claude Code 或 Kimi 缺失时，由各自官方
+140MB）。运行时来源并非一律系统优先（2026-11-20 订正：Codex 于内置 Bridge 随包与系统安装间择版本最新的兼容者——「随包」实指随 adapter 托管安装的 legacy Codex（`install.rs` `codex_path_for_adapter` 解析），非随安装包分发、正式包 Bridge 打包已剪除 Codex 平台二进制；Claude Code 与 Kimi 无内置 CLI、仍以系统安装为准）；Codex、Claude Code 或 Kimi 缺失时，由各自官方
 脚本安装到用户目录；版本过旧则按安装来源经用户确认后用对应包管理器或官方脚本升级，
 用户拒绝升级时保持当前状态并挂起升级提示。
 最终都通过 `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE` 注入。

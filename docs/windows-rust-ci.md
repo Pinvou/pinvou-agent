@@ -1,5 +1,7 @@
 # Windows Rust CI
 
+> 相关 Windows 接手/验收史料（2026-11 回填留档）：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md) · [`Windows端功能清单与测试用例.md`](./Windows端功能清单与测试用例.md)。
+
 ## Coverage contract
 
 `windows-rust-test` is the required native-Windows **Rust** job (the required
@@ -134,6 +136,8 @@ order:
     - `multiagent_depth_guard_enforces_two_level_inputs`
     - `features::marketplace::tests::reinstall_upload_with_unlocked_pip_dependencies_contract`
     - `features::marketplace::scope::tests::`
+    - `reconcile_`
+    - `release_env_defaults_guard`
     - `before_landing`
     - `before_anything_lands`
     - `preserves_consent_state`
@@ -182,16 +186,28 @@ order:
     - `features::sessions::`
     - `run_with_timeout_reaps_and_stays_bounded`
     - `reap_killed_child_`
+    - `platform::process::tests::output_capture_`
+    - `platform::process::tests::completed_process_cannot_bypass_output_capture_limit`
+    - `platform::process::tests::completed_parent_does_not_wait_for_descendant_capture_handles`
+    - `platform::process::tests::plain_output_limit_also_terminates_the_process_tree`
+    - `platform::process::tests::read_capture_`
+    - `platform::process::tests::writing_descendant_`
     - `features::browser::platform::windows::tests::`
+    - `features::monitor::cpu_math::tests::`
     - `features::monitor::platform::windows_cpu::tests::`
     - `features::monitor::platform::windows_memory::tests::`
     - `features::monitor::platform::windows_gpu::tests::`
     - `features::remote_control::platform::windows::tests::`
     - `features::computer_use::platform::windows::tests::`
+    - `features::computer_use::platform::virtual_display::windows_virtual::tests::`
     - `failed_probe_never_deletes_an_existing_store_windows`
     - `features::voice_shortcut::platform::tests::`
     - `app::commands::dependencies::platform::windows::tests::`
     - `features::codex_acp::platform::windows::tests::`
+    - `features::codex_acp::platform::windows::shutdown_tests::`
+    - `features::codex_acp::shutdown::tests::`
+    - `features::system_tray::`
+    - `install_child_guard_drop_reclaims_tree_and_settled_guards_never_rekill`
     - `platform::os::windows::`
     - `windows_attachment_runtime_stays_security_gated`
 
@@ -216,7 +232,8 @@ understandable in one place:
 - `windows-codex-runtime-test` (`windows_codex`/`acp_runtime` filters): a
   15-minute Windows job natively running the browser-wrapper
   lifecycle/lazy regressions, the runtime manifest lifecycle contract, the
-  runtime packaging contract, and the ACP bridge runtime smoke.
+  runtime packaging contract, the runtime cache contract, the NSIS
+  resource-staging check, and the ACP bridge runtime smoke.
 - `macos-codex-runtime-test` (`acp_runtime` filter): a 20-minute macOS job
   that prepares the universal ACP Bridge and runs the native Codex/Claude
   runtime packaging smoke.
@@ -262,7 +279,7 @@ The saved entry holds the regression leg's build artifacts, so much of the
 dependency graph stays warm for the `all-targets-check` leg; the application
 crate's own `--all-targets --features dev-tools` metadata is the part compiled
 cold on every run. That residual cost is visible in the timing lines below.
-The `pinvou-cli` workspace joined the entry on 2026-10-15 (both legs compile
+The `pinvou-cli` workspace was audited 2026-10-15 and joined the entry on 2026-10-16 (#711, f4c267865f) (both legs compile
 it — the check leg's manifest checks and the regression leg's filtered CLI
 test runs — so its target directory needs caching here; before that every
 run cold-compiled the CLI tree on the slowest leg). Node/npm setup is absent —
