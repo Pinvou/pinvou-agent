@@ -11,9 +11,11 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
 # and CodeWhale#157 (session-reader read-only classification) merged,
 # plus the #154 limits-audit branch (squash 841fe98fe + review fixwaves
-# r1-r7) rebased onto 687358f7e.
-EXPECTED_HEAD="42a4a9833fe3fcf178fc290bca2844f931137eae"
-EXPECTED_COMMITS=151
+# r1-r7) rebased onto 687358f7e, and the #847 review fixwave r8
+# (1918d76466: pr_context keeps the complete diff inline below the
+# artifact threshold).
+EXPECTED_HEAD="1918d764669bab14ce0369386a8cf01f2d601821"
+EXPECTED_COMMITS=152
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
