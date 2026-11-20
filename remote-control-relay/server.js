@@ -1349,9 +1349,18 @@ async function revokeFromSocket(ws, msg) {
   // reason would push the desktop's own frame past its 4 MiB − 64 KiB inbound
   // bound and kill the desktop with a capacity error, the same boundary-kill
   // class the web-forward gate closed. Clamp at intake; short reasons pass
-  // through unchanged.
+  // through unchanged. Round-36 review: `desktop_offline_ttl_expired` is the
+  // server's own TTL-expiry literal (expireEndpoint), and web clients classify
+  // endpoint_revoked frames by it (wait-and-rejoin vs permanent revoke), so a
+  // client-supplied reason of that literal would masquerade as benign TTL
+  // expiry — normalize it to the default like any other invalid reason.
+  const RESERVED_TTL_EXPIRED_REASON = "desktop_offline_ttl_expired";
   const revokeReason =
-    typeof msg.reason === "string" && msg.reason.length <= 256 ? msg.reason : "revoked";
+    typeof msg.reason === "string"
+    && msg.reason.length <= 256
+    && msg.reason !== RESERVED_TTL_EXPIRED_REASON
+      ? msg.reason
+      : "revoked";
   revokeEndpoint(endpoint, revokeReason, ws);
   // Only a socket of the revoked endpoint goes down with it. A desktop
   // revoking a different endpoint with that endpoint's secret keeps its own

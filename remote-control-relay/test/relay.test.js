@@ -1328,6 +1328,11 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
     );
     await connected;
     const offline = nextMessage(web.ws, "desktop_connection_state");
+    // Round-36 review: the genuine TTL expiry must keep delivering the
+    // server's own literal — the web client classifies endpoint_revoked by it
+    // (wait-and-rejoin vs permanent revoke), and the intake normalization in
+    // the revoke path must not leak into this server-generated path.
+    const ttlRevoked = nextMessage(web.ws, "endpoint_revoked", 15000);
     first.ws.terminate();
     assert.equal((await offline).status, "offline");
 
@@ -1338,6 +1343,9 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
     await new Promise((resolve) => setTimeout(resolve, 1100));
     const expired = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
     assert.equal(expired.endpoint_count, 0);
+    assert.equal((await ttlRevoked).reason, "desktop_offline_ttl_expired",
+      "a genuine TTL expiry must carry the server's own literal so the web \
+       client renders the wait-and-rejoin path, not the permanent revoke");
     await waitForClose(web.ws);
 
     const second = await registerDesktop(
@@ -2504,18 +2512,23 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
   // line" drift (the same posture as the Rust-side comment_filtered);
   // line-start anchoring (^…$ multiline) also makes a prefix reordering (e.g.
   // pub const) mismatch, freezing spelling as strongly as the value.
-  // Round-31 review: strip closed block comments first — a block-commented
+  // Round-31 review: strip comments before matching — a block-commented
   // decoy line starting at column 0 would otherwise still satisfy the ^…$m
   // needle. Round-33 review: the stripper is the hoisted depth-tracking port
   // of the Rust helper (see its definition above); the first-closer variant
-  // that stood here left nested-comment decoys alive.
-  const rustCode = stripClosedBlockComments(rust)
-    .split('\n')
-    .filter((line) => {
-      const trimmed = line.trimStart();
-      return !(trimmed.startsWith('//') || trimmed.startsWith('///'));
-    })
-    .join('\n');
+  // that stood here left nested-comment decoys alive. Round-36 review: the
+  // passes compose in the Rust helper's order (whole-line filter first,
+  // block strip second) — the previous reverse order let a `//`-commented-out
+  // `/*` marker make the block pass eat live code past the decoy closer.
+  const rustCode = stripClosedBlockComments(
+    rust
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trimStart();
+        return !(trimmed.startsWith('//') || trimmed.startsWith('///'));
+      })
+      .join('\n'),
+  );
   assert.match(
     rustCode,
     /^const MAX_INBOUND_TEXT_BYTES: usize = \(4 \* 1024 \* 1024\) - \(64 \* 1024\);$/m,
@@ -2616,6 +2629,60 @@ test("clamps an oversized revoke reason before the revoked frames reach any desk
     const notice = await webNotice;
     assert.equal(notice.reason, "revoked",
       "the web client's notice must carry the clamped reason too");
+  } finally {
+    closeSocket(webB?.ws);
+    closeSocket(desktopA?.ws);
+    closeSocket(desktopB?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("normalizes the reserved TTL-expiry literal out of a client-supplied revoke reason", async () => {
+  // Round-36 review: `desktop_offline_ttl_expired` is the server's own
+  // expireEndpoint literal, and web clients classify endpoint_revoked frames
+  // by it (wait-and-rejoin vs permanent revoke). A manual revoker supplying
+  // that literal would otherwise produce frames indistinguishable from benign
+  // TTL expiry, sending the phone into the retry loop against a tombstoned
+  // endpoint. The intake clamp normalizes it to the default; the genuine
+  // server-generated TTL path keeps the literal (pinned by the TTL expiry
+  // test above).
+  const isolated = await spawnRelay();
+  const suffix = Date.now();
+  const accessToken = `access-token-ttlreason-${suffix}-000001`;
+  const secretA = `desktop-secret-ttlreason-a-${suffix}-001`;
+  const secretB = `desktop-secret-ttlreason-b-${suffix}-001`;
+  let desktopA;
+  let desktopB;
+  let webB;
+  try {
+    desktopA = await registerDesktop(`endpoint_ttlr_a_${suffix}`, accessToken, secretA, isolated.wsUrl);
+    desktopB = await registerDesktop(`endpoint_ttlr_b_${suffix}`, accessToken, secretB, isolated.wsUrl);
+    const connectedB = nextMessage(desktopB.ws, "web_client_connected");
+    webB = await joinWeb(`endpoint_ttlr_b_${suffix}`, accessToken, {}, isolated.wsUrl);
+    await connectedB;
+
+    const revokedB = nextMessage(desktopB.ws, "desktop_endpoint_revoked", 15000);
+    const answerA = nextMessage(desktopA.ws, "desktop_endpoint_revoked", 15000);
+    const webNotice = nextMessage(webB.ws, "endpoint_revoked", 15000);
+    desktopA.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: `endpoint_ttlr_b_${suffix}`,
+      desktop_secret: secretB,
+      reason: "desktop_offline_ttl_expired",
+    }));
+
+    const tornDown = await revokedB;
+    assert.equal(tornDown.reason, "revoked",
+      "the reserved TTL-expiry literal must be normalized out of a \
+       client-supplied revoke reason");
+    const requesterCopy = await answerA;
+    assert.equal(requesterCopy.reason, "revoked",
+      "the requester's copy must carry the normalized reason too");
+    const notice = await webNotice;
+    assert.equal(notice.reason, "revoked",
+      "the web client must see the normalized reason so a manual revocation \
+       renders the permanent revoked card, not the TTL retry path");
   } finally {
     closeSocket(webB?.ws);
     closeSocket(desktopA?.ws);

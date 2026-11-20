@@ -255,7 +255,7 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. The error echoes at most 64 characters of the offending `type`, so the reply stays inside the recipient's own inbound bound. |
 | `desktop_offline` | A Web-to-desktop message arrived while the desktop socket is not connected. |
 | `ingress_rate_limited` | The per-connection ingress message or byte rate was exceeded. |
-| `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. A client-supplied revoke `reason` is clamped at intake to a 256-character string (anything else becomes the default `revoked`), so the revoked frames can never exceed the desktop's own inbound bound. |
+| `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. A client-supplied revoke `reason` is clamped at intake to a 256-character string (anything else — including the server's own `desktop_offline_ttl_expired` TTL-expiry literal, which Web clients classify as benign expiry rather than a revoke — becomes the default `revoked`), so the revoked frames can never exceed the desktop's own inbound bound. |
 | `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
 | `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
 | `revoked_endpoint_capacity_reached` | The tombstone capacity is exhausted (nothing was written); the requester is closed and the endpoint remains usable. |
@@ -346,13 +346,15 @@ approximation let crafted frames through.)
   problems (`relay_state_load_failed ...`, the over-size line, or the
   non-regular-file line), and bind failures (`listen_failed code=<errno>`).
   No startup report echoes a filesystem path, the offending value, or the
-  bind address. Four runtime events share the same fixed-line discipline and
+  bind address. Five runtime events share the same fixed-line discipline and
   leave the process up: `websocket_protocol_violation code=<ws error code>`
   (a contained per-socket protocol violation), `revocation_persist_failed
-  code=<errno>`, `revocation_unexpected_failure`, and
+  code=<errno>`, `revocation_unexpected_failure`,
   `forward_reencode_refused` (a web forward that could not be re-encoded
   at all — the defensive catch; the frame is refused with `bad_message`
-  and the desktop is untouched). An over-bound forward whose encoding
+  and the desktop is untouched), and the poisoned-frame receiver line
+  `[relay] receiver error on <role> socket: code=<code>` (terminates only
+  that socket, loudly). An over-bound forward whose encoding
   measured successfully is refused with `frame_too_large` and produces
   no log line.
 - After the handlers are installed at the very end of startup, `SIGINT` and

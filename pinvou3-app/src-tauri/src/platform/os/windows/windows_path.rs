@@ -167,6 +167,15 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // constant-prefix recognition is a behavior change needing its own
     // evaluation).
     //
+    // Round-36 review false-split record (usability direction, fail-closed):
+    // trailing separators are not trimmed before folding, so `C:\foo\` and
+    // `C:\foo` produce different keys (`c:/foo/` vs `c:/foo`) for the same
+    // directory — a duplicate grant/dedup miss, never a bypass. The nesting
+    // lanes heal this (`path_identity_is_same_or_nested` strips a trailing
+    // `/`; `path_relative_suffix_under` trims it before matching); spelling
+    // producers that canonicalize never emit trailing separators, so only
+    // caller-supplied non-canonical spellings can observe it.
+    //
     // Another false-split (recorded in round-21 review, no directional
     // risk): with a dot/space-suffixed component followed by `..` navigation,
     // per-component stripping disagrees with Win32's resolve-then-strip —

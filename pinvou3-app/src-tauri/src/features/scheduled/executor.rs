@@ -2013,9 +2013,12 @@ mod tests {
         Ok(())
     }
 
-    /// Round-22 review (m1/m2) census pin: all four run-record error arms fold via
-    /// fold_then_redact (except the secret-only delivery arm and the organize arm
-    /// with its own format! prefix). The whole production half's counts of the two
+    /// Round-22 review (m1/m2) census pin: all four run-record error arms fold
+    /// before the secret scan — three via the fold_then_redact helper (the
+    /// unsupported-kind, canceled-completion, and failed-completion arms, plus
+    /// the failed() constructor) and two inline with the same order (the
+    /// delivery arm and the organize arm, each with its own format! prefix).
+    /// The whole production half's counts of the two
     /// primitive spellings are pinned: if a new error arm inlines the old order or
     /// bypasses the helper, the census count turns red and the author must adopt the
     /// helper explicitly (census blind spots: respelling — e.g. a `use` import of a
@@ -2055,18 +2058,19 @@ mod tests {
         // was invisible to both primitive-spelling censuses (deleting that call and
         // reverting to the bare detail kept the whole suite green, violating this
         // file's self-pinned standard that error construction always goes through
-        // the helper). The production half's total reference count is pinned (4 error
-        // arms + the helper definition itself): deleting a call or adding a bypassing
-        // arm turns red.
+        // the helper). The production half's total reference count is pinned (the
+        // four helper callers + the helper definition itself): deleting a call or
+        // adding a bypassing arm turns red. The delivery and organize arms fold
+        // inline with the same order and do not reference the helper.
         assert_eq!(
             production.matches("fold_then_redact(").count(),
             5,
-            "exactly the four error arms (organize, canceled completion, \
-             failed completion, unsupported-kind) plus the helper definition \
-             may reference fold_then_redact; deleting a call site changes \
-             this census. Disclosed blindness: a NEW raw arm emitting \
-             neither primitive nor the helper stays invisible here — the \
-             per-arm behavioral pins are the second line of defense"
+            "exactly the four helper callers (unsupported-kind, canceled \
+             completion, failed completion, the failed() constructor) plus \
+             the helper definition may reference fold_then_redact; deleting \
+             a call site changes this census. Disclosed blindness: a NEW raw \
+             arm emitting neither primitive nor the helper stays invisible \
+             here — the per-arm behavioral pins are the second line of defense"
         );
     }
 

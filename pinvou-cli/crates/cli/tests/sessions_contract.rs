@@ -618,7 +618,10 @@ fn sessions_show_limits_and_exports_transcript() {
     ]);
     assert!(
         error.to_string().contains("refusing to overwrite"),
-        "{error}"
+        "the existing-destination export must be refused by the overwrite guard \
+         (round-36 review: the full error Display is not interpolated here — a \
+         CliError Display can carry oauth login material, and formatting it \
+         into the panic payload trips the cleartext-logging scanner)"
     );
     // The first export's content survived the refusal untouched.
     assert_eq!(std::fs::read_to_string(&destination).unwrap(), written);
@@ -756,7 +759,15 @@ fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() 
         vec!["pinvou", "sessions", "show", &id],
         vec!["pinvou", "sessions", "export", &id],
     ] {
-        let outcome = run(&arguments).unwrap_or_else(|error| panic!("{arguments:?}: {error}"));
+        let outcome = run(&arguments).unwrap_or_else(|error| {
+            panic!(
+                "expected a successful run, got exit class {:?} (round-36 \
+                 review: neither the CliError Display nor the argv is \
+                 interpolated into this payload — usage/transcript argv can \
+                 carry session ids, a cleartext-logging scanner shape)",
+                error.exit_code()
+            )
+        });
         assert!(
             !outcome.stdout.contains('\x1b'),
             "{arguments:?} leaked ESC to the terminal: {:?}",
@@ -1500,7 +1511,11 @@ fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
         assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
         assert!(
             error.to_string().contains("auxiliary conversations"),
-            "{arguments:?}: {error}"
+            "the metadata lane must refuse the aux-session id with the \
+             auxiliary-conversations guard (round-36 review: neither the \
+             CliError Display nor the argv is interpolated into this payload \
+             — session-id-bearing argv in a panic payload is a \
+             cleartext-logging scanner shape)"
         );
     }
 }

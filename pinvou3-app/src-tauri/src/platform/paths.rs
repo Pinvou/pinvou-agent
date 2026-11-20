@@ -123,9 +123,12 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // install shape, handled as a disclosed residual. Round-19 re-review
     // disclosed two verbatim residuals — (a) forward-slash spellings
     // still do not fold; (b) verbatim drive/UNC spellings do not fold —
-    // of which (b) has since been closed by the exact multi-spelling
-    // folds above; (a) forward-slash spellings remain a disclosed
-    // residual. Round-21 re-review addendum: when PINVOU3_HOME is a
+    // of which (b) now folds at the exact multi-spelling needles above
+    // (a case-VARIANT verbatim spelling, e.g. lowercase `\\?\unc\`, still
+    // passes unfolded unless it matches one of those exact needles — the
+    // verbatim needles are case-sensitive matches, so this combination
+    // remains a disclosed residual); (a) forward-slash spellings remain a
+    // disclosed residual. Round-21 re-review addendum: when PINVOU3_HOME is a
     // relative value (the tests' `p8`, or a bare directory name in a
     // malformed deployment), the needle is that relative string, and any
     // identical substring of separator-free text gets over-folded (the

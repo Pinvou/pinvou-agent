@@ -190,8 +190,8 @@
       // Set on every connect(): wedge-window start for the liveness watchdog.
       this.connectStartedAt = 0;
       // First CLOSING observation by the watchdog (same wedge rescue);
-      // cleared on every connect(), speculative close, and CLOSING/CLOSED
-      // rescue.
+      // cleared on every connect(), speculative close, CLOSING/CLOSED
+      // rescue, and remote-event failure catch.
       this.closingStartedAt = null;
       this.livenessTimer = null;
       this.pending = new Map();
