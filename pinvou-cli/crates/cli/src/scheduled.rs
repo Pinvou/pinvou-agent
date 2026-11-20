@@ -3702,6 +3702,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Mixed-version contract (#899 review P2 and its fix-delta follow-up):
+    /// the INSTALLED pre-#899 reader recognizes a quarantine sibling only
+    /// through the `.invalid-` prefix. The current desktop quarantines
+    /// damaged tables to a platform-named `.corrupt-<ts>.<nanos>` copy AND
+    /// drops a desktop-owned `.invalid-desktop` sentinel (established
+    /// before the rename, so no canonical-absence window can precede the
+    /// marker); during that quarantine window (canonical absent) a mutation
+    /// read must refuse instead of rebuilding from defaults — a fresh Null
+    /// rebuild here would let the next write persist a small replacement
+    /// the desktop then loads, destroying the other surface's recoverable
+    /// entries. The sentinel is what makes the refusal fire for an
+    /// already-installed older binary that predates the dual-prefix scan,
+    /// so the frozen legacy scan below — a verbatim stand-in for the
+    /// shipped reader's check — must see it.
+    fn legacy_prefix_scan(path: &std::path::Path) -> bool {
+        let Some(file_name) = path.file_name() else {
+            return false;
+        };
+        let prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        std::fs::read_dir(path.parent().unwrap_or(std::path::Path::new(".")))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn mutation_read_refuses_when_the_new_desktop_quarantine_output_is_present() {
+        let root = scratch_dir("mixed-quarantine");
+        let path = root.join("task-kinds.json");
+        // No canonical file: the desktop quarantined the damaged table aside
+        // and has not re-persisted yet. Its on-disk output is the
+        // platform-named evidence copy plus the legacy-visible sentinel.
+        std::fs::write(
+            path.with_file_name("task-kinds.json.corrupt-20261119T120000.123456789"),
+            b"{not json",
+        )
+        .unwrap();
+        std::fs::write(path.with_file_name("task-kinds.json.invalid-desktop"), b"").unwrap();
+
+        // The shipped old reader's own scan must see the sentinel — this is
+        // the compatibility guarantee, checked against the frozen legacy
+        // logic rather than the current dual-prefix reader (which would
+        // refuse on the `.corrupt-*` evidence copy alone).
+        assert!(
+            legacy_prefix_scan(&path),
+            "the sentinel must satisfy the shipped pre-#899 scan's `.invalid-` prefix check"
+        );
+
+        let error = read_registry_for_write(&path, &["tasks"])
+            .expect_err("the quarantine window must refuse a mutation read");
+        assert!(
+            error.to_string().contains("scheduled_store_unreadable"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert!(
+            !path.exists(),
+            "the refusal must not have materialized a fresh registry"
+        );
+
+        // The vulnerability shape, documented: with the sentinel absent and
+        // only the `.corrupt-*` evidence copy on disk, the shipped old
+        // scan sees NO sibling — exactly the gap that let an old CLI
+        // rebuild from defaults before the sentinel existed. The current
+        // desktop never produces this state (marker established before the
+        // rename), so this is a contract note, not a reachable state.
+        std::fs::remove_file(path.with_file_name("task-kinds.json.invalid-desktop")).unwrap();
+        assert!(
+            !legacy_prefix_scan(&path),
+            "corrupt-only output is invisible to the shipped scan — the sentinel is load-bearing"
+        );
+
+        // Window closed (the desktop re-persisted a healthy canonical table
+        // and cleared its sentinel): with no quarantine sibling left at all,
+        // the fresh bootstrap applies again. The evidence copy alone would
+        // keep this dual-prefix reader refusing — the desktop clears the
+        // sentinel only once the canonical file exists, so this shape
+        // (sibling present, canonical absent) never arises from a fixed
+        // desktop.
+        std::fs::remove_file(
+            path.with_file_name("task-kinds.json.corrupt-20261119T120000.123456789"),
+        )
+        .unwrap();
+        let value = read_registry_for_write(&path, &["tasks"]).expect("no sibling, no canonical");
+        assert_eq!(value, serde_json::Value::Null);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Round-50 review: the identity arm. An atomic-rename foreign write
     /// with IDENTICAL bytes and an identical mtime (the coarse-clock alias
     /// the metadata pair cannot distinguish) replaces the inode, so only
