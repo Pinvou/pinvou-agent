@@ -1045,19 +1045,36 @@
   // Returns a rejection reason string, or null when the draft may create.
   function scheduledTaskDraftCronReject(rrule) {
     const text = String(rrule || "").trim().toUpperCase();
-    if (!text.startsWith("FREQ=CRON")) return null;
+    // (#900 review P2) Classify AFTER parsing the fields, never by a raw
+    // prefix: the engine parses trimmed KEY=VALUE segments in arbitrary
+    // order with last-wins duplicates, so `EXPR=…;FREQ=CRON`, `FREQ = CRON`
+    // and `FREQ=WEEKLY;FREQ=CRON` are all engine-valid CRON drafts a raw
+    // startsWith("FREQ=CRON") check would wave through without the product
+    // fence. Parse first; decide on the effective (last-wins) FREQ, and
+    // reject duplicate fields consistently with the product validator.
     const parts = {};
+    const duplicateKeys = [];
     for (const raw of text.split(";")) {
       const segment = raw.trim();
       if (!segment) continue;
       const eq = segment.indexOf("=");
       if (eq <= 0) return "invalid rrule: segment '" + segment.slice(0, 32) + "' is not KEY=VALUE";
-      parts[segment.slice(0, eq).trim()] = segment.slice(eq + 1).trim();
+      const key = segment.slice(0, eq).trim();
+      if (key in parts && !duplicateKeys.includes(key)) duplicateKeys.push(key);
+      parts[key] = segment.slice(eq + 1).trim();
+    }
+    if ((parts.FREQ || "") !== "CRON") return null;
+    if (duplicateKeys.length) {
+      return "invalid rrule: duplicate field(s) " + duplicateKeys.join(",") + " for FREQ=CRON";
     }
     if (!parts.EXPR) return "invalid rrule: FREQ=CRON requires EXPR";
     const unknown = Object.keys(parts).filter(function (key) { return key !== "FREQ" && key !== "EXPR"; });
     if (unknown.length) return "invalid rrule: unsupported field(s) " + unknown.join(",") + " for FREQ=CRON";
-    const fields = parts.EXPR.trim().split(/\s+/);
+    // Same whitespace definition as the bundled editor (schedule-cron-expr.js):
+    // exactly the Unicode White_Space set — JS \s additionally matches U+FEFF,
+    // which neither the engine's split_whitespace nor the editor treats as
+    // whitespace, and JS \s misses U+0085, which both accept (#900 review P3).
+    const fields = parts.EXPR.trim().split(/[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+/);
     if (fields.length !== 5) return "invalid rrule: CRON EXPR must have exactly 5 fields";
     const minute = fields[0];
     if (!/^\d+$/.test(minute) || Number(minute) > 59) {

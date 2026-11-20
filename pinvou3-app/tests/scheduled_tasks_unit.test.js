@@ -9216,11 +9216,99 @@ function scheduledTaskDraftCronRejectBehavior() {
   assert.strictEqual(reject('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30'), null);
   assert.strictEqual(reject('FREQ=ONCE;AT=2027-06-01T09:30'), null);
   assert.strictEqual(reject('FREQ=HOURLY;INTERVAL=6;BYMINUTE=0'), null);
+  // #900 review P2: classify AFTER parsing — reordered, space-padded and
+  // duplicate-FREQ spellings are all engine-valid CRON drafts the old
+  // startsWith prefix check waved through without the product fence.
+  assert.match(
+    reject('EXPR=*/5 * * * *;FREQ=CRON'),
+    /minute field must be a fixed value/,
+    'reordered EXPR-first must still be classified as CRON and refused'
+  );
+  assert.match(
+    reject('FREQ = CRON;EXPR=*/5 * * * *'),
+    /minute field must be a fixed value/,
+    'space-padded FREQ must still be classified as CRON and refused'
+  );
+  assert.match(
+    reject('FREQ = cron;EXPR=*/5 * * * *'),
+    /minute field must be a fixed value/,
+    'the effective FREQ is compared case-insensitively'
+  );
+  assert.match(
+    reject('FREQ=WEEKLY;FREQ=CRON;EXPR=*/5 * * * *'),
+    /duplicate field\(s\) FREQ/,
+    'duplicate FREQ with an effective CRON must be rejected, not last-wins accepted'
+  );
+  assert.strictEqual(
+    reject('FREQ=WEEKLY;FREQ=WEEKLY;BYDAY=MO'),
+    null,
+    'duplicates on a non-CRON effective FREQ stay engine\'s business'
+  );
+  // #900 review P3: the EXPR split uses the editor's exact Unicode
+  // White_Space set — U+0085 is a valid separator for the engine and the
+  // editor, and must not be refused by this final product entry point.
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=30\u00859\u00851\u0085*\u0085*'),
+    null,
+    'a U+0085-separated minute-fixed EXPR must pass the fence'
+  );
+  assert.match(
+    reject('FREQ=CRON;EXPR=*/5\u00859\u00851\u0085*\u0085*'),
+    /minute field must be a fixed value/,
+    'a U+0085-separated wildcard-minute EXPR must still be refused'
+  );
 }
+
+  /// (#900 review P2, fixwave): the reordered / space-padded / duplicate-FREQ
+  /// spellings drive the ACTUAL auto-create path (chat auto-create is the
+  /// surface that must carry the product fence) — none may reach the
+  /// backend creation command; each surfaces the cron rejection through the
+  /// creation error instead.
+  function cronGuardRefusesVariantsThroughAutoCreate() {
+    const helpersContext = {
+      window: {},
+      console: { log: function () {}, warn: function () {}, error: function () {} },
+    };
+    vm.runInNewContext(bridgeSharedHelpers, helpersContext, { filename: 'bridge-shared-helpers.js' });
+    const state = { scheduledTaskError: null };
+    const invokes = [];
+    const api = helpersContext.window.PinvouBridgeShared.create('tauriScheduled', {
+      state,
+      notify() {},
+      bt(key) { return key; },
+      invoke(name) { invokes.push(name); return Promise.reject(new Error('backend must not be reached')); },
+      runSyncOnSession(sessionId, fn) { fn(); },
+      addSystemItem() {},
+      scheduledTaskAutoCreateInFlight: { value: {} },
+      scheduledTaskAutoCreateSeq: { value: 0 },
+    });
+    const variants = [
+      'EXPR=*/5 * * * *;FREQ=CRON',
+      'FREQ = CRON;EXPR=*/5 * * * *',
+      'FREQ=WEEKLY;FREQ=CRON;EXPR=*/5 * * * *',
+    ];
+    return Promise.all(variants.map(function (rrule, index) {
+      return new Promise(function (resolve) {
+        api.autoCreateScheduledTaskDraft({ rrule, name: 'n' + index }, 'session-' + index);
+        setTimeout(resolve, 0);
+      });
+    })).then(function () {
+      assert.strictEqual(
+        invokes.indexOf('create_scheduled_task'), -1,
+        'no variant may reach the backend creation command; got: ' + invokes.join(',')
+      );
+      assert.ok(
+        state.scheduledTaskError && /invalid rrule/.test(JSON.stringify(state.scheduledTaskError)),
+        'each variant surfaces the cron rejection through the creation error: ' +
+        JSON.stringify(state.scheduledTaskError)
+      );
+    });
+  }
 
 Promise.resolve()
   .then(scheduleCronExprBehavior)
   .then(scheduledTaskDraftCronRejectBehavior)
+  .then(cronGuardRefusesVariantsThroughAutoCreate)
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
