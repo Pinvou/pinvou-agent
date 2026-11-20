@@ -37,6 +37,14 @@ const MODAL_SHELL = fs.readFileSync(
   path.join(appRoot, 'src', 'components', 'ModalShell.jsx'),
   'utf8',
 );
+// The shell's Escape guard lives in its own hook (extracted from ModalShell in
+// the 2026-11-20 round so it can be pinned behaviorally — see
+// tests/use_dialog_escape_key.test.mjs); this file pins the guard expression
+// and ModalShell's wiring to both hooks.
+const DIALOG_ESCAPE_KEY = fs.readFileSync(
+  path.join(appRoot, 'src', 'hooks', 'useDialogEscapeKey.js'),
+  'utf8',
+);
 // Absorbed confirms that must keep their pre-absorption stacking tier (they
 // used to ride the z-[200] ConfirmDialogShell / ModalBackdrop band).
 const ARCHIVE_CONFIRM = fs.readFileSync(
@@ -215,6 +223,29 @@ test('the shared confirm keeps its alertdialog semantics on the shared shell', (
     MODAL_SHELL,
     /aria-label=\{backdropLabel\}[\s\S]{0,500}tabIndex=\{-1\}[\s\S]{0,60}disabled=\{busy\}[\s\S]{0,30}onClick=\{onCancel\}/,
     'the ModalShell backdrop button must stay out of Tab order (tabIndex={-1} between its label and handlers)',
+  );
+  // The shell hardening is load-bearing for every absorbed confirm: Escape is
+  // IME-guarded (candidate-cancelling Escape must not close anything) and
+  // busy-guarded (an in-flight confirmation cannot be dismissed), and the
+  // dialog takes focus on open and restores it on close. The guard behavior is
+  // pinned behaviorally in tests/use_dialog_escape_key.test.mjs and
+  // tests/use_dialog_focus_restore.test.mjs; these pins keep ModalShell wired
+  // to both hooks (dropping a call would silently unguard all 12 confirms —
+  // the r3-review mutations that survived).
+  assert.match(
+    DIALOG_ESCAPE_KEY,
+    /event\.key === 'Escape' && !busy && !isImeComposing\(event\)/,
+    'the shared dialog Escape must stay busy-guarded and IME-guarded (behavioral pins: use_dialog_escape_key.test.mjs)',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /useDialogEscapeKey\(busy, onCancel\)/,
+    'ModalShell must keep its window-level Escape wired to useDialogEscapeKey',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /useDialogFocusRestore\(dialogRef, initialFocusRef\)/,
+    'ModalShell must keep focus capture/restore wired to useDialogFocusRestore',
   );
 });
 
