@@ -501,6 +501,15 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/marketplace/scope.rs'
               - 'pinvou3-app/src-tauri/src/app/commands/marketplace.rs'
               - 'pinvou3-app/src-tauri/src/features/connectors/skill_gate.rs'
+              # mcp_python_dependencies_contract.test.js 读取
+              # python_dependencies.rs、connector_online_install_contract.test.js
+              # 读取 native_installer.rs 与 platform/download.rs(下载骨架收敛后
+              # HTTPS 候选门与 .part RAII 清理守卫随实现移入 download.rs,
+              # 契约断言随之 re-point)做跨语言契约断言;不列出则 Rust-only
+              # 改动会静默跳过该 node 门禁。
+              - 'pinvou3-app/src-tauri/src/features/marketplace/python_dependencies.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/native_installer.rs'
+              - 'pinvou3-app/src-tauri/src/platform/download.rs'
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'

@@ -5,6 +5,7 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8");
 const installer = read("src-tauri", "src", "features", "connectors", "native_installer.rs");
+const download = read("src-tauri", "src", "platform", "download.rs");
 const paths = read("src-tauri", "src", "platform", "paths.rs");
 const build = read("scripts", "tauri", "build.js");
 const tmeet = read("src-tauri", "src", "features", "connectors", "tmeet.rs");
@@ -31,9 +32,11 @@ for (const connector of ["lark-cli", "wecom-cli", "dws"]) {
 assert.match(installer, /archive_sha256/);
 assert.match(installer, /binary_sha256/);
 // Double HTTPS gate: candidate URLs must pass the scheme check before any
-// download (non-HTTPS candidates are skipped outright), and the redirect
-// policy likewise refuses to downgrade to non-HTTPS.
-assert.match(installer, /url\.scheme\(\) == "https"/);
+// download (non-HTTPS candidates are skipped outright — since the loops
+// converged into the shared blocking skeleton, that gate lives in
+// platform/download.rs), and the redirect policy likewise refuses to
+// downgrade to non-HTTPS (the per-lane guard stays in native_installer.rs).
+assert.match(download, /scheme\(\) == "https"/);
 assert.match(installer, /scheme\(\) != "https"/);
 assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
