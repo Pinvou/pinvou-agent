@@ -199,13 +199,31 @@ test('the shared confirm keeps its alertdialog semantics on the shared shell', (
   // the 2026-11-19 round).
   assert.match(
     MODAL_SHELL,
-    /\{\.\.\.\(role === 'dialog' \|\| role === 'alertdialog'[\s\S]{0,80}'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy[\s\S]{0,20}:\s*\{\}\)\}/,
+    /\{\.\.\.\(role === 'dialog' \|\| role === 'alertdialog'[\s\S]{0,240}'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy[\s\S]{0,160}:\s*\{\}\)\}/,
     'ModalShell must gate its aria attributes on the dialog/alertdialog roles via a conditional spread',
   );
+  // No static aria-* on the panel — and the gate must hold in every form the
+  // lint cannot catch: a static string literal OR a brace expression
+  // (aria-modal={true}) would both trip useAriaPropsSupportedByRole.
   assert.doesNotMatch(
     MODAL_SHELL,
-    /aria-modal="true"|aria-labelledby=\{|aria-describedby=\{/,
+    /aria-modal="true"|aria-modal=\{|aria-labelledby=\{|aria-describedby=\{/,
     'the shell panel must carry no static aria-* attributes (they would fail useAriaPropsSupportedByRole against the implicit generic role)',
+  );
+  // A caller passing neither title nor description would otherwise render an
+  // unnamed alertdialog — the exact gap the audit flagged. No live site hits
+  // this (every site passes title or description), but the component must not
+  // offer the footgun to future callers: the confirm label is the last-resort
+  // accessible name (aria-labelledby still wins whenever it is present).
+  assert.match(
+    CONFIRM_DIALOG,
+    /ariaLabel=\{title \|\| description \? undefined : confirmLabel\}/,
+    'ConfirmDialog must fall back to the confirm label when title and description are both absent',
+  );
+  assert.match(
+    MODAL_SHELL,
+    /\.\.\.\(ariaLabel \? \{ 'aria-label': ariaLabel \} : \{\}\)/,
+    'ModalShell must forward the last-resort aria-label through the gated spread',
   );
   // The cancel testid must exist in BOTH layouts — a stacked-only gap would
   // silently break smoke drivers that target the cancel button of a stacked confirm.
@@ -213,6 +231,11 @@ test('the shared confirm keeps its alertdialog semantics on the shared shell', (
     (CONFIRM_DIALOG.match(/data-testid=\{cancelTestId\}/g) || []).length,
     2,
     'cancelTestId must be rendered in both the stacked and grid layouts',
+  );
+  assert.strictEqual(
+    (CONFIRM_DIALOG.match(/data-testid=\{confirmTestId\}/g) || []).length,
+    2,
+    'confirmTestId must be rendered in both the stacked and grid layouts (a layout-only loss would silently break that layout\'s smoke driver)',
   );
   // The backdrop button is a pointer-only affordance: tabIndex={-1} keeps it
   // out of Tab order so keyboard users cannot land on a full-viewport invisible

@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 // hand-rolled "no timer while disabled, cleaned up on disable and unmount"
 // setInterval effects. Four sites consume it (ProvidersSection install,
 // CodexWorkspacePanel workspace, KnowledgeView index, ScheduledTasksView
-// refresh); the other ~6 poll components keep bespoke effects for ref-managed
+// refresh); the other seven poll components keep bespoke effects for ref-managed
 // timers, staleness guards, or deliberate reset semantics — do not force-fit.
 // Deliberately narrow — per-site guards (document.visibilityState checks,
 // staleness logic, immediate-first-tick syncs) stay with their components; this

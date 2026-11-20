@@ -919,8 +919,8 @@ assert.match(
 // 冒到表单根节点的 onClose,连带关掉整个表单。
 assert.match(
   providerFormModalSource,
-  /onClick=\{event => event\.stopPropagation\(\)\}/,
-  'the form card must keep its stopPropagation shield: the confirm layer portals to body, but React synthetic events still bubble through the React tree to the form root onClose',
+  /data-testid="acp-provider-form-dialog"[\s\S]{0,1000}onClick=\{event => event\.stopPropagation\(\)\}/,
+  'the form card must keep its stopPropagation shield (anchored between the form dialog root and the card): the confirm layer portals to body, but React synthetic events still bubble through the React tree to the form root onClose',
 );
 // 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
 assert.match(

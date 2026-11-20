@@ -175,10 +175,7 @@ test('a fresh onCancel swaps the listener for the new closure', () => {
 });
 
 test('unmount removes the listener from the window', () => {
-  let cancelled = 0;
-  const host = mount(false, () => {
-    cancelled += 1;
-  });
+  const host = mount(false, () => {});
   host.cleanup();
   assert.strictEqual(registered.length, 0, 'unmount must leave no keydown listener behind');
 });

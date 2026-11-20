@@ -442,7 +442,7 @@ assert.ok(
     // (shadow-2xl card, no border) — the floating-surface-border rule above now
     // applies to the two popover surfaces; the confirm must at least keep the
     // app's topmost confirm z-index.
-    /testid="scheduled-detail-delete-confirmation"[\s\S]{0,200}zIndexClass="z-\[300\]"/.test(scheduledViewSource),
+    /<ConfirmDialog\s+testid="scheduled-detail-delete-confirmation"[\s\S]{0,240}zIndexClass="z-\[300\]"/.test(scheduledViewSource),
   'embedded scheduled task form groups should not have outer borders, while floating surfaces keep borders'
 );
 assert.ok(

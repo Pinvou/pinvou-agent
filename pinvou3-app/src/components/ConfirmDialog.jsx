@@ -12,9 +12,10 @@
 // Absorbed per the audit: SheetConfirmDialog, SheetRowConfirm,
 // SavedPersonaConfirmDialog, ProviderFormModal's confirm layer, the scheduled
 // delete confirm, and ArchiveConfirmDialog/ArchivedDeleteConfirmDialog.
-// Deliberately NOT absorbed: TsAlert (an OK-only loading/result alert, not a
-// cancel/confirm pair — force-fitting it here would be the over-abstraction
-// the audit warns against) and ProvidersSection's CardConfirm /
+// Deliberately NOT absorbed: TsAlert (an OK-first loading/result alert — its
+// cancelable loading state shows a Cancel, but there is no confirm pair, so
+// force-fitting it here would be the over-abstraction the audit warns
+// against) and ProvidersSection's CardConfirm /
 // TransferModalShell (already rebuilt on ModalShell; converging their pill
 // footer onto this iOS idiom is follow-up material, not dedup).
 // No copy lives here: callers pass their own `t.*` labels, so trilingual
@@ -49,7 +50,9 @@ export function ConfirmDialog({
   // alertdialog requires an accessible name, so a title-less confirm (the
   // provider-form confirm layer) names itself from the description instead —
   // and describedby stays off there, or SR users would hear the same sentence
-  // twice (once as the name, once as the description).
+  // twice (once as the name, once as the description). A caller passing
+  // neither title nor description falls back to the confirm label, so the
+  // alertdialog can never render unnamed.
   const titleId = useId();
   const descriptionId = useId();
   const stacked = layout === 'stacked';
@@ -64,6 +67,7 @@ export function ConfirmDialog({
       role="alertdialog"
       labelledBy={title ? titleId : (description ? descriptionId : undefined)}
       describedBy={title && description ? descriptionId : undefined}
+      ariaLabel={title || description ? undefined : confirmLabel}
       panelClass={`max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] ${stacked ? 'w-[270px]' : 'w-[320px]'}`}
       onCancel={onCancel}
     >

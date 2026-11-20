@@ -11,8 +11,9 @@
 // features/codex/ModalDialogShell.jsx per the 2026-10 reuse audit (its header already said it
 // was meant to be shared); the prop surface grew only when a second shape actually needed it:
 // `role` (ConfirmDialog renders role=alertdialog — destructive-confirm semantics per the
-// ArchiveConfirmDialog reference) and `describedBy` (descriptions announced alongside the
-// title, scheduled-delete confirm).
+// ArchiveConfirmDialog reference), `describedBy` (descriptions announced alongside the
+// title, scheduled-delete confirm) and `ariaLabel` (last-resort accessible name for
+// role-bearing shells whose callers pass no title/description).
 
 import { useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -29,6 +30,7 @@ export function ModalShell({
   initialFocusRef,
   labelledBy,
   describedBy,
+  ariaLabel,
   role = 'dialog',
   title = null,
   error = null,
@@ -65,7 +67,9 @@ export function ModalShell({
         // describedBy values are omitted by React, so the rendered DOM is
         // identical to static attributes for every consumer.
         {...(role === 'dialog' || role === 'alertdialog'
-          ? { 'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy }
+          // The aria-label arm is the last-resort name (aria-labelledby always
+          // wins when present): role-bearing shells must never render unnamed.
+          ? { 'aria-modal': 'true', 'aria-labelledby': labelledBy, 'aria-describedby': describedBy, ...(ariaLabel ? { 'aria-label': ariaLabel } : {}) }
           : {})}
       >
         {title}
