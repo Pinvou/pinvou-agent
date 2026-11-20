@@ -15,12 +15,18 @@
 
 /// Per-OS virtual display stacks. Each module exposes the same three
 /// functions: `probe`, `create_backend`, and (linux only) `sweep_orphans`.
+/// `pub(super)` (r5): the only external consumer of `windows_virtual`'s
+/// helpers is the sibling `platform::uia_helper`, so platform-subtree
+/// visibility suffices — crate-wide exposure of the internals (the r2-r4
+/// widening) exceeded what any caller needed. The shared items inside keep
+/// their `pub(crate)` declarations; effective visibility is the
+/// intersection.
 #[cfg(target_os = "linux")]
 mod linux_virtual;
 #[cfg(target_os = "macos")]
 mod macos_virtual;
 #[cfg(target_os = "windows")]
-mod windows_virtual;
+pub(super) mod windows_virtual;
 
 #[cfg(target_os = "linux")]
 use self::linux_virtual as virtual_imp;

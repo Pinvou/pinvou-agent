@@ -4,8 +4,10 @@
 //! inlined twice). No OS handles here: everything is a plain function so it
 //! stays unit-testable on every target.
 
+use std::fmt::Write as _;
+
 use super::super::guard::{self, for_each_folded_window};
-use super::super::types::{ComputerUseError, Key, ScrollDirection};
+use super::super::types::{ComputerUseError, Key, ScrollDirection, UiTreeOptions};
 use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -61,6 +63,66 @@ pub(crate) const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
 pub(crate) const DEFAULT_TREE_MAX_NODES: u32 = 400;
 pub(crate) const MAX_TREE_DEPTH: u32 = 24;
 pub(crate) const MAX_TREE_NODES: u32 = 2000;
+
+/// The effective `ui_tree` budgets: the caller's options bounded by the
+/// caps above (`DEFAULT_TREE_*` when omitted, hard `MAX_TREE_*` ceilings).
+/// The clamp the two virtual consumers (the UIA helper's walk + wait budget
+/// and the hidden-desktop fallback) must apply identically — drift here
+/// desyncs the helper's timeout basis from the walk's actual budget, so the
+/// rule lives next to its constants (r4: the two new copies are consolidated
+/// on it). The physical stack inlines its own clamp over these same
+/// constants (its budgets were frozen pre-sharing and its leg has no CI
+/// seam — r5 wording: the claim is the CONSTANTS being shared, not the
+/// clamp fn being called everywhere). Identical numbers so a model
+/// switching between stacks sees one budget contract. Pure; pinned.
+pub(crate) fn tree_budget(opts: &UiTreeOptions) -> (u32, u32) {
+    (
+        opts.max_depth
+            .unwrap_or(DEFAULT_TREE_MAX_DEPTH)
+            .min(MAX_TREE_DEPTH),
+        opts.max_nodes
+            .unwrap_or(DEFAULT_TREE_MAX_NODES)
+            .min(MAX_TREE_NODES),
+    )
+}
+
+/// The truncation footers, emitted byte-identically by the physical stack,
+/// the in-process hidden-desktop walk, AND the UIA helper's walk (the model
+/// parses all three shapes; drift here desyncs the budget contract across
+/// the stacks). `cap_bounded` adds the top-level-cap honesty line (r5: a
+/// walk whose top-level cap consumed slots must say so — the bottom-most
+/// windows are silently absent, the same rule as the node/depth footers);
+/// stacks with no top-level cap pass `false`, keeping their output
+/// byte-identical. Moved here from the Windows-only module (r5) so the
+/// physical stack routes through it too and the literals are pinned by the
+/// Linux-runnable test below. Pure; pinned.
+pub(crate) fn append_tree_truncation_footers(
+    truncated: bool,
+    truncated_by_depth: bool,
+    cap_bounded: bool,
+    emitted_nodes: u32,
+    out: &mut String,
+) {
+    if truncated {
+        let _ = writeln!(
+            out,
+            "... (truncated at {} nodes; pass a larger max_nodes to see more)",
+            emitted_nodes
+        );
+    }
+    if truncated_by_depth {
+        let _ = writeln!(
+            out,
+            "... (truncated by depth; pass a larger max_depth to see more)"
+        );
+    }
+    if cap_bounded {
+        let _ = writeln!(
+            out,
+            "... (top-level window cap bound; bottom-most windows absent)"
+        );
+    }
+}
 
 /// Shared `xcap` error mapping (screenshot/monitor probes on macOS and
 /// Windows): plain `{context}: {err}` wrapping.
@@ -1105,5 +1167,32 @@ mod tests {
         assert!(!open_capacity_rejected(MAX_OPEN_CHILDREN - 1));
         assert!(open_capacity_rejected(MAX_OPEN_CHILDREN));
         assert!(open_capacity_rejected(MAX_OPEN_CHILDREN + 1));
+    }
+
+    /// The truncation footers have ONE home (r5: moved here from the
+    /// Windows-only module so the physical stack routes through it too) and
+    /// their literals are pinned verbatim — the model parses these exact
+    /// lines from all three stacks, and the r2-era quoting bug class lives
+    /// exactly here. The cap-bound line is emitted only when the walk's
+    /// top-level cap consumed slots. Pure; Linux-runnable.
+    #[test]
+    fn tree_truncation_footers_are_byte_stable() {
+        let mut out = String::new();
+        append_tree_truncation_footers(true, true, true, 4321, &mut out);
+        assert_eq!(
+            out,
+            "... (truncated at 4321 nodes; pass a larger max_nodes to see more)\n\
+             ... (truncated by depth; pass a larger max_depth to see more)\n\
+             ... (top-level window cap bound; bottom-most windows absent)\n",
+            "the three footers render in node/depth/cap order, one line each"
+        );
+        let mut out = String::new();
+        append_tree_truncation_footers(false, false, false, 0, &mut out);
+        assert!(
+            out.is_empty(),
+            "a clean walk appends nothing (the physical stack passes \
+             cap_bounded=false and must stay byte-identical to its \
+             pre-shared output)"
+        );
     }
 }

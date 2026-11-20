@@ -33,8 +33,36 @@ mod wayland_capture;
 /// (used by `linux` under Wayland sessions).
 #[cfg(target_os = "linux")]
 mod wayland_portal;
+/// Windows-only physical desktop stack (the UIA/input/capture adapter the
+/// virtual backend reuses).
 #[cfg(target_os = "windows")]
 mod windows;
+
+/// Windows-only: the hidden-desktop UIA helper process (helper loop + the
+/// parent-side client the virtual backend drives).
+#[cfg(target_os = "windows")]
+mod uia_helper;
+/// Cross-platform pure half of the UIA helper (protocol + arg detection):
+/// compiled everywhere so its framing tests run on the Linux gates.
+mod uia_helper_protocol;
+
+/// The composition root's helper dispatch, uniform on every platform:
+/// when this executable was started AS the hidden-desktop UIA helper
+/// (Windows — the only place the hidden-desktop stack exists), serve its
+/// pipe loop and answer `true` so `run` exits before ANY app
+/// initialization. The `cfg` lives here in the adapter layer (the
+/// architecture boundary for OS conditionals); the caller stays
+/// unconditioned.
+pub(crate) fn run_as_uia_helper_if_invoked() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if uia_helper_protocol::is_helper_invocation() {
+            uia_helper::run_helper_loop();
+            return true;
+        }
+    }
+    false
+}
 
 pub(crate) use self::virtual_display::{
     TargetDecision, VirtualAvailabilitySnapshot, probe as probe_virtual_display, resolve_snapshot,

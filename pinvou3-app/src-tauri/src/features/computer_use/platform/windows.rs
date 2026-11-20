@@ -84,9 +84,9 @@ use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS,
     MAX_TREE_DEPTH, MAX_TREE_NODES, MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun,
-    combine_drag_errors, combine_hold_errors, drag_waypoints, map_scroll, map_xcap_err,
-    normalize_typed_newlines, pick_monitor, release_reverse, sanitize_name, screening_hit,
-    split_type_runs,
+    append_tree_truncation_footers, combine_drag_errors, combine_hold_errors, drag_waypoints,
+    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
+    sanitize_name, screening_hit, split_type_runs,
 };
 
 /// Defensive cap for climbing from the focused element up to its owning window.
@@ -402,7 +402,7 @@ enum CacheScope {
     ElementAndChildren,
 }
 
-fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
+pub(crate) fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
     if err.code() == E_ACCESSDENIED {
         ComputerUseError::unavailable(format!(
             "{context}: access denied reading UI Automation data — the target window is likely \
@@ -519,13 +519,13 @@ fn map_mouse_button(button: MouseButton) -> Button {
 }
 
 /// Node budget and sequence numbers for tree serialization.
-struct TreeWriter {
-    next_index: u32,
-    remaining: u32,
-    truncated: bool,
+pub(crate) struct TreeWriter {
+    pub(crate) next_index: u32,
+    pub(crate) remaining: u32,
+    pub(crate) truncated: bool,
     /// The depth budget cut off descendants that exist but were not serialized;
     /// surfaced in the footer alongside node-budget truncation.
-    truncated_by_depth: bool,
+    pub(crate) truncated_by_depth: bool,
 }
 
 /// Single-line format: `[i] role "name" (x,y,w,h) flags`, with flags omitted when there are none.
@@ -566,8 +566,13 @@ fn format_tree_line(
         indent = "  ".repeat(depth as usize),
         x = rect.get_left(),
         y = rect.get_top(),
-        w = (rect.get_right() - rect.get_left()).max(0),
-        h = (rect.get_bottom() - rect.get_top()).max(0),
+        // Saturating, not plain subtraction (r7): the rect comes from a
+        // cross-process UIA provider, and a hostile one can answer
+        // left = i32::MIN, right = i32::MAX — the plain difference
+        // overflows (debug panic; release wraps negative, clamped to a
+        // bogus 0-size row).
+        w = rect.get_right().saturating_sub(rect.get_left()).max(0),
+        h = rect.get_bottom().saturating_sub(rect.get_top()).max(0),
     );
     Ok(line)
 }
@@ -579,7 +584,7 @@ fn format_tree_line(
 /// variant of an Edit control must have it set; browser-drawn password fields expose it
 /// too): `unwrap_or(false)` would silently pass password fields off as ordinary elements,
 /// defeating the T3 screening. `context` prefixes the error messages.
-fn element_info_from_cache(
+pub(crate) fn element_info_from_cache(
     context: &str,
     element: &uiautomation::UIElement,
 ) -> Result<ElementInfo, ComputerUseError> {
@@ -613,8 +618,10 @@ fn element_info_from_cache(
         name: display_name,
         x: rect.get_left(),
         y: rect.get_top(),
-        width: (rect.get_right() - rect.get_left()).max(0),
-        height: (rect.get_bottom() - rect.get_top()).max(0),
+        // Saturating like format_tree_line (r7): a hostile provider's
+        // extreme rect must not overflow the width/height subtraction.
+        width: rect.get_right().saturating_sub(rect.get_left()).max(0),
+        height: rect.get_bottom().saturating_sub(rect.get_top()).max(0),
         secure,
     })
 }
@@ -628,7 +635,7 @@ fn element_info_from_cache(
 /// the caller already abandoned stops at the next fetch instead of burning the remaining
 /// node budget on cross-process COM calls. One in-flight fetch itself stays uninterruptible
 /// up to the COM timeout (inherent, see the module docs).
-fn write_tree_node(
+pub(crate) fn write_tree_node(
     element: &uiautomation::UIElement,
     cache: &uiautomation::core::UICacheRequest,
     depth: u32,
@@ -745,14 +752,27 @@ pub(super) struct WindowsComputerUseBackend {
     // for once-per-turn calls).
 }
 
+/// Free wrapper for the helper process (crate-internal): the identical cache
+/// request the physical backend builds, addressable without a backend value
+/// and with a name that reads like the physical stack's cache entry point
+/// (a widened associated function would serve the same purpose — this
+/// wrapper is the named alias the helper imports by path).
+pub(crate) fn build_tree_cache(
+    uia: &UIAutomation,
+) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
+    WindowsComputerUseBackend::property_cache(uia, CacheScope::ElementAndChildren)
+}
+
 impl WindowsComputerUseBackend {
     fn new() -> Result<Self, ComputerUseError> {
         let enigo = Enigo::new(&Settings::default()).map_err(|err| {
             ComputerUseError::unavailable(format!("cannot initialize SendInput backend: {err}"))
         })?;
         // Initialize COM as MTA on the worker thread (UIAutomation::new includes
-        // CoInitializeEx), then drop the client; the apartment lives until thread end
-        // (the crate does not CoUninitialize).
+        // CoInitializeEx), then drop the client; an MTA apartment is
+        // process-wide — it lives until CoUninitialize balances the init or
+        // the process exits, not until this thread ends (the crate does not
+        // CoUninitialize; r7 wording).
         let _com_mta_init = UIAutomation::new().map_err(|err| {
             ComputerUseError::unavailable(format!(
                 "cannot initialize UI Automation (COM MTA): {err}"
@@ -1222,19 +1242,20 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             &mut out,
             self.cancel.as_deref(),
         )?;
-        if writer.truncated {
-            let _ = writeln!(
-                out,
-                "... (truncated at {} nodes; pass a larger max_nodes to see more)",
-                writer.next_index
-            );
-        }
-        if writer.truncated_by_depth {
-            let _ = writeln!(
-                out,
-                "... (truncated by depth; pass a larger max_depth to see more)"
-            );
-        }
+        // The shared footer builder (r5): the physical stack previously
+        // inlined the same literals the virtual walk and the UIA helper
+        // emit through `append_tree_truncation_footers` — byte-identical
+        // today, but a one-stack edit could desync the model-visible
+        // format with no test catching it. `cap_bounded` is false: this
+        // walk's root is the focused window's subtree and has no
+        // top-level cap.
+        append_tree_truncation_footers(
+            writer.truncated,
+            writer.truncated_by_depth,
+            false,
+            writer.next_index,
+            &mut out,
+        );
         Ok(out)
     }
 
@@ -1481,5 +1502,55 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// The physical stack's truncation footers route through the shared
+    /// builder (r6 pin): the r5 consolidation moved the byte-literals into
+    /// helpers.rs (golden-pinned there byte-exactly), but nothing pinned
+    /// the PHYSICAL stack's routing — a one-stack revert to inline
+    /// literals would fork the payload format across stacks while every
+    /// gate stayed green (the exact r5 drift class; windows_virtual.rs's
+    /// routing and uia_helper.rs's routing carry their own pins).
+    #[test]
+    fn physical_tree_footers_route_through_the_shared_builder() {
+        let src = include_str!("windows.rs");
+        let production = src.split("mod tests {").next().unwrap_or("");
+        assert_eq!(
+            production
+                .matches("append_tree_truncation_footers(")
+                .count(),
+            1,
+            "the physical ui_tree must emit its truncation footers through \
+             the shared builder (cap_bounded=false) — an inline-literal \
+             revert forks the payload format across stacks"
+        );
+    }
+
+    /// The UIA rect extremes are hostiles-controlled (a provider answers
+    /// left = i32::MIN, right = i32::MAX): the width/height subtraction in
+    /// both serializers must saturate — a plain difference overflows
+    /// (debug panic; release wraps negative and clamps to a bogus 0-size
+    /// row/geometry). No runtime seam (Windows-only file), so the two
+    /// serializer sites are source-counted (r7).
+    #[test]
+    fn uia_rect_width_subtraction_stays_saturated() {
+        let src = include_str!("windows.rs");
+        let production = src.split("mod tests {").next().unwrap_or("");
+        assert_eq!(
+            production
+                .matches("rect.get_right().saturating_sub(rect.get_left())")
+                .count(),
+            2,
+            "both UIA rect consumers (the tree row writer and \
+             element_info_from_cache) must saturate the width subtraction — \
+             reverting either to plain `-` reopens the hostile-provider \
+             overflow"
+        );
+        assert_eq!(
+            production.matches("saturating_sub").count(),
+            4,
+            "the height subtractions (get_bottom/get_top) saturate too — \
+             four saturating sites total across the two consumers"
+        );
     }
 }

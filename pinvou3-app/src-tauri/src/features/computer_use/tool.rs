@@ -76,16 +76,16 @@ pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// (`cu-<hex>`) are far below this; over the cap is rejected as a parse
 /// error.
 pub const MAX_CONFIRM_ID_CHARS: usize = 128;
-/// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
-/// properties (`minimum: 1`, maximums = these constants); the parser rejects
-/// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
-/// clamping or truncating. Note the macOS/Windows backends additionally cap
-/// their own tree walks below these values (slower cross-process a11y APIs):
-/// a parser-accepted `max_nodes` above their cap is clamped there — this is
-/// disclosed in the tool description so the model is not surprised by a
-/// smaller tree than requested.
-pub const MAX_UI_TREE_DEPTH: u32 = 64;
-pub const MAX_UI_TREE_NODES: u32 = 10_000;
+/// `ui_tree` argument caps — the SAME values the schema declares (`maximum`)
+/// and every backend clamps to (helpers.rs `MAX_TREE_DEPTH`/`MAX_TREE_NODES`
+/// = 24/2000): parser, schema, and backend now state one ceiling, so no
+/// client can pass a value that is accepted here and silently shrunk there
+/// (the r6 review found the parser still admitted 64/10000 against a
+/// 24/2000 schema, re-requesting "larger" per the truncation footer would
+/// loop). The parser rejects out-of-range values explicitly
+/// ([`opt_u32_range`]) instead of silently clamping or truncating.
+pub const MAX_UI_TREE_DEPTH: u32 = 24;
+pub const MAX_UI_TREE_NODES: u32 = 2000;
 /// `open` program-name cap (characters), mirroring the parse-time cap
 /// convention of the other free-text fields: the program rides the consent
 /// summary/payload and the audit trail, so an uncapped model-supplied string
@@ -1836,16 +1836,21 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // the timeout for no safety gain. Unknown target ⇒ lock, the
         // conservative direction.
         //
-        // The skip's safety rests on a coupling that must stay true: a
-        // pending confirmation can only be minted from a Blocked screening
-        // verdict, and every virtual stack answers the accessibility
-        // queries (`element_at_point` / `focused_element`) with an explicit
-        // unsupported — a virtual session can never mint a pending, so
-        // nothing mints outside the lock (grant dialogs stay serialized via
-        // `mark_grant_requested_serialized` regardless of target). If a
-        // virtual stack ever grows a real accessibility tree, restore the
-        // lock for at least the mint path — the dialog-under-injection
-        // window the physical lock exists to close would otherwise reopen.
+        // The skip's original safety rested on "a virtual stack can never
+        // mint": its accessibility queries answered explicit unsupported, so
+        // no Blocked screening verdict — and therefore no pending
+        // confirmation — could come from a virtual session. The
+        // hidden-desktop stack now answers those queries with a REAL tree
+        // (the UIA helper / window-class walk), so its Input actions CAN
+        // reach the mint. The injection itself still skips the lock
+        // (serializing independent isolated displays would cap process-wide
+        // input throughput and stall a second session up to the timeout for
+        // no safety gain — unknown target ⇒ lock, the conservative
+        // direction), and the mint path takes the lock itself (see the
+        // mint site below): the dialog-under-injection window the physical
+        // lock exists to close stays shut on every stack. Grant dialogs
+        // stay serialized via `mark_grant_requested_serialized` regardless
+        // of target.
         let target_is_virtual = parts.state.lock().display_target == Some(DisplayTarget::Virtual);
         let _input_guard = (action.class() == ActionClass::Input && !target_is_virtual)
             .then(|| parts.shared.lock_physical_input())
@@ -1997,6 +2002,27 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                             return Err(rejection.message());
                         }
+                        // The physical-input lock guards the
+                        // dialog-under-injection window: a pending consent
+                        // must not mint while a physical session is
+                        // mid-injection. A non-virtual Input action already
+                        // holds the dispatch guard (the lock is NOT
+                        // reentrant — never take it twice), and a virtual
+                        // target skipped it at dispatch, so the mint takes
+                        // it here: "restore the lock for the mint path", as
+                        // the dispatch-skip coupling doc prescribes now
+                        // that this stack mints pendings via its real
+                        // accessibility tree.
+                        let _mint_lock_guard = if target_is_virtual {
+                            Some(
+                                parts
+                                    .shared
+                                    .lock_physical_input()
+                                    .map_err(|rejection| rejection.message())?,
+                            )
+                        } else {
+                            None
+                        };
                         let mut blocked = request_confirmation(
                             &parts,
                             &action,
@@ -2822,9 +2848,10 @@ impl ToolSpec for ComputerUseTool {
          as a clear one, and every unreadable location binds identically, so the \
          replay only detects a readable target appearing. The CONTENT you type is never \
          screened, and \
-         key chords are not screened for destructiveness. On macOS and Windows the \
-         accessibility tree walk is additionally capped below the max_depth/max_nodes \
-         arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \
+         key chords are not screened for destructiveness. The accessibility tree walk \
+         is capped at 24 levels / 2000 nodes — the max_depth/max_nodes arguments cannot \
+         exceed that hard ceiling (parser, schema, and every backend agree). Observation \
+         (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
          attached; if it is not visible, call image_analyze with the returned attachments \
@@ -2835,7 +2862,9 @@ impl ToolSpec for ComputerUseTool {
         // Bounds parity: every parser-enforced cap is declared here so a
         // schema-validating client sees the same domain the parser enforces
         // (ms 1-30000 shared by wait/hold_key, amount 1-100, text ≤ 10000
-        // chars for type, max_depth ≤ 64, max_nodes ≤ 10000). The `text`
+        // chars for type, max_depth ≤ 24, max_nodes ≤ 2000 — the parser
+        // constants ARE these maximums, and the same values are the
+        // backends' hard ceilings). The `text`
         // maxLength covers type; chord text for key/hold_key is capped
         // tighter (128) at parse time but shares this field, so the schema
         // declares only the common bound.
@@ -2855,8 +2884,8 @@ impl ToolSpec for ComputerUseTool {
                 "ms": { "type": "integer", "minimum": 1, "maximum": 30000, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
                 "amount": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Scroll wheel clicks, 1-100 (scroll)" },
-                "max_depth": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Max accessibility tree depth (ui_tree)" },
-                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Max accessibility tree nodes (ui_tree)" },
+                "max_depth": { "type": "integer", "minimum": 1, "maximum": 24, "description": "Max accessibility tree depth (ui_tree; the backend's hard ceiling)" },
+                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Max accessibility tree nodes (ui_tree; the backend's hard ceiling)" },
                 "program": { "type": "string", "maxLength": 1024, "description": "Program to launch, spawned directly without a shell (open): a bare name resolved by the platform's usual search order, or an absolute path" },
                 "args": { "type": "array", "items": { "type": "string", "maxLength": 4096 }, "maxItems": 64, "description": "Arguments passed verbatim to the program (open)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }

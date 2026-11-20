@@ -902,6 +902,16 @@ pub(crate) fn remove_agents_index_entry(
 }
 
 pub fn run() {
+    // The computer-use UIA helper is THIS executable re-spawned with the
+    // helper argv on a hidden desktop; the check must run before ANY app
+    // initialization (window, tray, runtime) — the helper process is a pipe
+    // server for one session and never builds the app. Windows-only: the
+    // hidden-desktop stack (and therefore the helper) exists there alone,
+    // and the OS cfg lives inside the platform adapter (this call answers
+    // false, and the app boots, everywhere else).
+    if features::computer_use::run_as_uia_helper_if_invoked() {
+        return;
+    }
     // WebKitGTK reads its RemoteInspector endpoint while constructing the first
     // WebContext, so the browser feature must reserve it before Tauri starts.
     features::browser::prepare_process_environment();
