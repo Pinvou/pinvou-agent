@@ -233,7 +233,10 @@
 
     async function stopRemoteControl() {
       const seq = ++webAccessIntentSeq;
-      let outcome = null;
+      // (#876 review P3) no useless initializer: the success branch always
+      // assigns before any read and the failure branch rethrows, so a null
+      // init was dead (no-useless-assignment).
+      let outcome;
       try {
         outcome = await invoke("web_access_disable");
       } catch (error) {
@@ -245,14 +248,20 @@
         throw error;
       }
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
-      // 复审 P2(#876):本地停止总是完成,但旧凭据远端撤销意图的去向由
-      // 返回的 disposition 如实报告;queue-full(deferred_full_queue)时
-      // 旧 endpoint 的撤销意图没有任何持久落点,重启后也不会重放——
-      // 必须以持久的 revocation_warning 三语提示呈现,本地完成与远端
-      // 撤销保持两种口径,不得把处置吞成无声的干净停止。非 queue-full
-      // 处置(queued/not_needed)清除既有警告。
+      // Review P2 (#876, fix-delta follow-up): the local stop always
+      // completes, and the returned disposition truthfully reports where the
+      // old credentials' revocation intent went. On a full queue
+      // (deferred_full_queue) the intent landed nowhere and is never
+      // replayed, so it must surface as a persistent revocation_warning.
+      // A queued disposition covers ONLY the endpoint stopped here: any
+      // earlier endpoint whose intent was dropped stays orphaned (joinable
+      // until expiry or manual cleanup), so queued/not_needed must never
+      // clear an existing warning — auto-clearing would misreport the
+      // still-orphaned endpoint as recovered.
       const revocationWarning =
-        outcome && outcome.revocation === "deferred_full_queue" ? "deferred_full_queue" : null;
+        outcome && outcome.revocation === "deferred_full_queue"
+          ? "deferred_full_queue"
+          : state.webAccess.revocation_warning || null;
       state.webAccess = Object.assign({}, state.webAccess, {
         revocation_warning: revocationWarning,
         active: false, endpoint_id: null, url: null, qr_data_url: null,
@@ -260,6 +269,13 @@
         last_error: null, last_error_code: null,
       });
       notify();
+      // (#876 fix-delta follow-up P2) Callers (the settings dialog) need the
+      // outcome to decide whether the queue-full warning is live after this
+      // stop — the dialog must NOT dismiss itself over an incomplete
+      // revocation. Return the raw outcome; a null revocation_warning here
+      // means the warning did not change, so callers keep whatever is
+      // already displayed.
+      return { revocation: revocationWarning, raw: outcome || {} };
     }
 
     async function refreshRemoteControlQr() {
@@ -267,17 +283,17 @@
       try {
         const info = await invoke("web_access_rotate");
         if (seq !== webAccessIntentSeq) return info;
-        // 复审 P2(#876):rotation 的 revocation_disposition 与 stop 同口径
-        // ——queue-full 必须以持久警告呈现,queued/not_needed 清除既有警告。
-        const revocationWarning =
-          info && info.revocation_disposition === "deferred_full_queue"
-            ? "deferred_full_queue"
-            : info && info.revocation_disposition
-              ? null
-              : (state.webAccess.revocation_warning || null);
+        // Review P2 (#876, fix-delta follow-up): the rotation disposition
+        // describes only the endpoint replaced here — queued means THIS one
+        // was durably queued, while earlier dropped-intent endpoints stay
+        // orphaned, so the warning never auto-clears (deferred_full_queue
+        // overwrites it; anything else keeps what is already shown).
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,
-          revocation_warning: revocationWarning,
+          revocation_warning:
+            info && info.revocation_disposition === "deferred_full_queue"
+              ? "deferred_full_queue"
+              : state.webAccess.revocation_warning || null,
         });
         notify();
         await refreshRemoteControlStatus(seq);

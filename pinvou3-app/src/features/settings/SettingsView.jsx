@@ -218,10 +218,12 @@ function hasStoredCredential(record) {
         ? remoteCopy.registerHints?.[webAccess.last_error_code]
         : null;
       const webAccessErrorText = registerHint || webAccess.last_error || null;
-      // 复审 P2(#876):queue-full 的远端撤销意图落空必须以持久的三语
-      // 警告呈现(本地停止已完成,但旧凭据的撤销意图无落点且重启不
-      // 重放)——本地完成与远端撤销保持两种口径,警告独立于 status 存
-      // 在,状态刷新不抹除。
+      // Review P2 (#876): a queue-full revocation must surface as a
+      // persistent localized warning (the local stop completed, but the old
+      // credentials' revocation intent landed nowhere and is not replayed
+      // after restart) — local completion and remote revocation stay two
+      // distinct outcomes; the warning lives outside the status field so a
+      // status refresh cannot wipe it.
       const revocationHint = webAccess.revocation_warning
         ? remoteCopy.revocationHints?.[webAccess.revocation_warning] || null
         : null;
@@ -244,7 +246,13 @@ function hasStoredCredential(record) {
         if (!bridge.available) return;
         setActionBusy(true);
         try {
-          await bridge.remoteControl.stopRemoteControl();
+          const outcome = await bridge.remoteControl.stopRemoteControl();
+          // Review P2 (#876 fix-delta follow-up): a queue-full stop is an
+          // INCOMPLETE remote revocation — dismissing the dialog here would
+          // hide the persistent warning surface. Keep the dialog open so
+          // the banner states the incompleteness; the user closes it
+          // explicitly once informed.
+          if (outcome && outcome.revocation === "deferred_full_queue") return;
           onClose();
         } catch { /* stop failure surfaced by the banner */ } finally {
           setActionBusy(false);
