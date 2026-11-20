@@ -790,6 +790,55 @@ mod tests {
             text(&F::Promote("denied".into())),
             "保存连接器缓存失败: denied"
         );
+        assert_eq!(
+            text(&F::CreatePart("denied".into())),
+            "failed to create partial download file: denied"
+        );
+        assert_eq!(
+            text(&F::WritePart("denied".into())),
+            "failed to save download: denied"
+        );
+        assert_eq!(
+            text(&F::SyncPart("denied".into())),
+            "failed to flush downloaded file: denied"
+        );
+        assert_eq!(
+            text(&F::HashRead("denied".into())),
+            "读取下载文件失败: denied"
+        );
+        assert_eq!(
+            text(&F::ReplaceDest("denied".into())),
+            "替换连接器缓存失败: denied"
+        );
+    }
+
+    /// The exhausted-aggregate wording is pinned end-to-end without network:
+    /// the only candidate fails the HTTPS gate, so the loop exhausts with
+    /// exactly one entry and never touches the destination.
+    #[test]
+    fn connector_exhausted_aggregate_wording_is_pinned() {
+        let artifact = Artifact {
+            name: "wecom-cli".into(),
+            version: "1.0.0".into(),
+            url: "http://insecure.example/a.zip".into(),
+            mirror_url: None,
+            archive_sha256: "e".repeat(64),
+            binary_sha256: "f".repeat(64),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-connector-aggregate-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let destination = root.join("a.zip");
+        let error = download_verified(&artifact, &destination).unwrap_err();
+        assert_eq!(
+            error,
+            "wecom-cli archive download failed (all 1 candidate download sources exhausted): \
+             download URL is invalid or not HTTPS: http://insecure.example/a.zip"
+        );
+        assert!(!destination.exists(), "no staging may materialize");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

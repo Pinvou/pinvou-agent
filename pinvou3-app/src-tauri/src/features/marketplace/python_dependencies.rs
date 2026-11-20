@@ -1164,6 +1164,91 @@ mod tests {
         assert!(wheel_redirect_guard(0, &plain).is_some());
     }
 
+    /// The lane's localized wording for the shared skeleton's failure steps
+    /// is pinned verbatim (release builds surface these strings to the user;
+    /// mirrors the connector lane's wording pin).
+    #[test]
+    fn wheel_download_failure_wording_is_pinned() {
+        use crate::platform::download::BlockingDownloadFailure as F;
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.name = "pyfoo".to_string();
+        let text = |failure: &F| localize_wheel_download_failure(failure, &wheel);
+        // The shared loop redacts userinfo BEFORE localize (end-to-end
+        // redaction is pinned in platform::download's loop tests); localize
+        // only formats.
+        assert_eq!(
+            text(&F::InvalidUrl("https://h/x".into())),
+            "invalid or non-HTTPS Python wheel URL: https://h/x"
+        );
+        assert_eq!(
+            text(&F::Request("boom for url (https://h/x)".into())),
+            "failed to download Python dependency pyfoo: boom for url (https://h/x)"
+        );
+        assert_eq!(
+            text(&F::TooLarge),
+            "Python dependency pyfoo exceeds the 64 MiB safety limit"
+        );
+        assert_eq!(
+            text(&F::CreatePart("denied".into())),
+            "failed to create the wheel staging file: denied"
+        );
+        assert_eq!(
+            text(&F::WritePart("denied".into())),
+            "failed to save the wheel: denied"
+        );
+        assert_eq!(
+            text(&F::SyncPart("denied".into())),
+            "failed to sync the wheel staging file: denied"
+        );
+        assert_eq!(
+            text(&F::HashRead("denied".into())),
+            "failed to read the wheel: denied"
+        );
+        assert_eq!(
+            text(&F::ShaMismatch {
+                expected: "a".repeat(64),
+                actual: "b".repeat(64),
+            }),
+            format!(
+                "Python dependency pyfoo checksum mismatch (expected {}, got {})",
+                "a".repeat(64),
+                "b".repeat(64)
+            )
+        );
+        assert_eq!(
+            text(&F::ReplaceDest("denied".into())),
+            "failed to replace the wheel cache: denied"
+        );
+        assert_eq!(
+            text(&F::Promote("denied".into())),
+            "failed to save the wheel cache: denied"
+        );
+    }
+
+    /// The exhausted-aggregate wording is pinned end-to-end without network:
+    /// the only candidate fails the HTTPS gate, so the loop exhausts with
+    /// exactly one entry and never touches the destination.
+    #[test]
+    fn wheel_exhausted_aggregate_wording_is_pinned() {
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.name = "pyfoo".to_string();
+        wheel.url = "http://insecure.example/x.whl".to_string();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-wheel-aggregate-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let destination = root.join("x.whl");
+        let error = ensure_cached(&wheel, &destination).unwrap_err();
+        assert_eq!(
+            error,
+            "Python dependency pyfoo download failed (1 candidate source(s) exhausted): \
+             invalid or non-HTTPS Python wheel URL: http://insecure.example/x.whl"
+        );
+        assert!(!destination.exists(), "no staging may materialize");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn lock_requires_imports_to_verify() {
         let mut lock = sample_lock();

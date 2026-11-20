@@ -3778,6 +3778,20 @@ mod tests {
             "corrupt-only output is invisible to the shipped scan — the sentinel is load-bearing"
         );
 
+        // The current dual-prefix reader must ALSO refuse this shape: the
+        // evidence copy alone is a quarantine signal for current binaries
+        // (defense in depth on top of the sentinel).
+        let error = read_registry_for_write(&path, &["tasks"])
+            .expect_err("the corrupt-only sibling must refuse a mutation read too");
+        assert!(
+            error.to_string().contains("scheduled_store_unreadable"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert!(
+            !path.exists(),
+            "the refusal must not have materialized a fresh registry"
+        );
+
         // Window closed (the desktop re-persisted a healthy canonical table
         // and cleared its sentinel): with no quarantine sibling left at all,
         // the fresh bootstrap applies again. The evidence copy alone would
