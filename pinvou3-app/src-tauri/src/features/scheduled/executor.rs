@@ -2038,8 +2038,8 @@ mod tests {
                 .matches("crate::platform::credential_store::redact_secret(")
                 .count(),
             3,
-            "exactly the helper, the organize arm and the secret-only delivery \
-             arm may scan; new error arms must route through fold_then_redact"
+            "exactly the helper, the organize arm and the delivery arm may \
+             scan; new error arms must route through fold_then_redact"
         );
         assert_eq!(
             production

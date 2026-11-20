@@ -2476,6 +2476,15 @@ jobs:
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
               exit 1
             }
+            # Round-32 review: an ignored-only run prints "ok. 0 passed; N
+            # ignored" and used to pass the zero-match guard alone (the same
+            # hole the pinvou-cli filtered-run step closed in round-27); an
+            # executed-count guard keeps a filter whose every match is
+            # #[ignore]d from passing the leg silently.
+            grep -qE '^test result: ok\. [1-9][0-9]* passed' /tmp/windows_regression.log || {
+              echo "FAIL: regression filter '$filter' passed 0 tests — an ignored-only run must not pass the guard" >&2
+              exit 1
+            }
             echo "WINDOWS_RUST_TIMING phase=regression step=test-filter-$index elapsed_seconds=$((SECONDS-started)) status=0"
           done
           echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"

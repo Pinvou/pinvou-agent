@@ -513,8 +513,8 @@ super-permission pkexec toggle.
   remains until manually removed (round-45 review).
 - macOS-only runtime branches of the CLI (ASR status lanes, vendored locks)
   are compile-checked by CI (`macos-cli-check`), and a filtered
-  `cargo test` run with a zero-match guard executes the macOS-gated
-  production alias-flag pin there (mirroring the Windows leg's
+  `cargo test` run with zero-match and executed-count guards executes the
+  macOS-gated production alias-flag pin there (mirroring the Windows leg's
   `run_filtered` pattern; before that the leg was compile-only, and the
   gap — a macOS-gated test that compiled via the leg's `--all-targets`
   check but executed on no CI leg — was the round-16 follow-up review's
@@ -527,9 +527,12 @@ super-permission pkexec toggle.
   DPAPI fail-closed and Windows ACL parse pins — plus the app-side
   knowledge-probe, voice-shortcut, dependencies-platform, codex_acp
   platform and headless-bridge Windows filters — all with zero-match
-  guards (round-42 review: before this they compiled on no CI leg at
-  all; the gate-policy suite covers the filter set, the routing `if` and
-  the guard bodies, so a deleted filter or a skipped step fails CI).
+  and executed-count guards (round-42 review: before this they compiled on
+  no CI leg at all; round-32 review: the app-side filter loop grew the
+  executed-count guard its pinvou-cli sibling already had, closing the
+  ignored-only hole in the same class; the gate-policy suite covers the
+  filter set, the routing `if` and the guard bodies, so a deleted filter or
+  a skipped step fails CI).
   The rest of the CLI lib suite still executes on Linux only.
 
 ## Implementation map

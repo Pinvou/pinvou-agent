@@ -1381,11 +1381,17 @@ function forwardAuthenticatedMessage(ws, msg) {
       return;
     }
     if (!WEB_TO_DESKTOP_TYPES.has(msg.type)) {
+      // Round-32 review: truncate the echo like the desktop arm below — a
+      // full-length echo of a near-ingress-cap type re-encodes to a frame
+      // that can exceed the web socket's own outbound high-water mark and
+      // kill the offending (not the desktop) socket; the truncated reply
+      // also keeps PROTOCOL.md's 64-character statement true for both
+      // directions.
       send(ws, {
         v: 2,
         type: "error",
         code: "unsupported_message_type",
-        message: `unsupported web message type: ${String(msg.type || "")}`,
+        message: `unsupported web message type: ${String(msg.type || "").slice(0, 64)}`,
       });
       return;
     }

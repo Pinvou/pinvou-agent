@@ -252,7 +252,7 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
 | `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
 | `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
-| `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. The error echoes at most 64 characters of the offending `type`, so the reply stays inside the desktop's own inbound bound. |
+| `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. The error echoes at most 64 characters of the offending `type`, so the reply stays inside the recipient's own inbound bound. |
 | `desktop_offline` | A Web-to-desktop message arrived while the desktop socket is not connected. |
 | `ingress_rate_limited` | The per-connection ingress message or byte rate was exceeded. |
 | `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. A client-supplied revoke `reason` is clamped at intake to a 256-character string (anything else becomes the default `revoked`), so the revoked frames can never exceed the desktop's own inbound bound. |

@@ -707,7 +707,9 @@
           this.desktopGoneRetries = 0;
           this.clearSpeculativeReconnect();
           this.joined = true;
-          this.lastInboundAt = Date.now();
+          // (lastInboundAt is already stamped by the post-gate blanket update
+          // above for every parseable frame, this one included — round-32
+          // review: the join-arm re-stamp was a dead store.)
           this.desktopOnline = message.desktop_connected !== false;
           this.desktopCapabilitiesReady = false;
           this.awaitingCapabilitySnapshot = this.desktopOnline;

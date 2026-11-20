@@ -1347,10 +1347,13 @@ impl RemoteControlManager {
                 // (a real state change) — same rationale as the config-absent arm's
                 // Round-19 NIT below, so emit one status refresh before returning the
                 // error, keeping the UI from staying stuck until the next unrelated
-                // status push. The UI shows the authoritative (revoked) memory state, and
-                // the error says plainly that the revocation did not take effect and
-                // should be retried. No inner guard is held here (the invalidation block
-                // above is closed), so the exact lock-span pin is not triggered.
+                // status push. The UI shows the authoritative (revoked) memory state; the
+                // raw load error propagates as-is, so unlike the persist-failure arm the
+                // message names only the underlying read failure, not the retry guidance
+                // (round-32 review correction: the earlier wording claimed this arm's
+                // error carried the durable-survivor framing — it never did). No inner
+                // guard is held here (the invalidation block above is closed), so the
+                // exact lock-span pin is not triggered.
                 self.emit_status();
                 return Err(error);
             }
@@ -2162,6 +2165,13 @@ impl RemoteControlManager {
             .filter(|(id, _)| id.as_str() != download_id)
             .map(|(_, download)| download.reserved_bytes)
             .sum::<usize>();
+        // Round-32 review disclosure: between begin and commit the on-disk
+        // partial file is bounded by the caller's reservation estimate, not by
+        // the real total — an under-reserved export can transiently exceed the
+        // budget on disk until THIS commit-time check rejects it and the
+        // reservation's Drop removes the partial file. The steady-state
+        // invariant (sum of committed totals within the cap) is enforced only
+        // here.
         if other_bytes.saturating_add(total) > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
             return Err(format!(
                 "进行中的远程控制会话下载将超过 {} MiB 总上限",
@@ -7195,11 +7205,14 @@ mod tests {
             .find("durable revocation did not take effect")
             .expect("the durable-survivor error copy must exist");
         let failure_arm = &body[failure_arm_start..failure_arm_end];
-        // P2 reversal (Round-24 MAJOR caliber): the re-latch line inside THIS arm's window
-        // is exactly the contract violation the final review blocked on — an arm-bounded
-        // window assertion so the validate arm (or any future arm) cannot backstop it.
+        // P2 reversal (Round-24 MAJOR caliber): a re-latch assignment inside THIS arm's
+        // window is exactly the contract violation the final review blocked on — an
+        // arm-bounded window assertion so the validate arm (or any future arm) cannot
+        // backstop it. Round-32 review: the needle drops the `= true` tail so a
+        // differently-spelled rollback (a variable or helper carrying the latch) cannot
+        // slip the window either; the window holds no legitimate assignment.
         assert!(
-            !failure_arm.contains("allow_host_workspace = true"),
+            !failure_arm.contains("allow_host_workspace ="),
             "the persist-failure arm must keep the in-memory revocation in force: \
              re-latching the consent flag inside the arm would let the live \
              process mint fresh grants immediately, violating immediate \
@@ -7309,10 +7322,14 @@ mod tests {
         let arm = &body[arm_start..];
         let arm_end = arm.find("})?;").expect("the map_err arm must close");
         let arm_body = &arm[..arm_end];
-        // P2 reversal (Round-24 MAJOR caliber): an `= true` rollback inside this arm's
+        // P2 reversal (Round-24 MAJOR caliber): a rollback assignment inside this arm's
         // window is exactly the contract violation the final review blocked on.
+        // Round-32 review: the needle drops the `= true` tail so a differently-spelled
+        // rollback (the arm's own `remains_enabled` variable, or a helper) cannot slip
+        // the window; the window's only allow_host_workspace text is the flag READ that
+        // feeds `remains_enabled`, which carries no `=`.
         assert!(
-            !arm_body.contains("allow_host_workspace = true"),
+            !arm_body.contains("allow_host_workspace ="),
             "the validation-failure arm must keep the in-memory revocation in \
              force: re-latching the consent flag inside the arm would let the \
              live process mint fresh grants immediately, violating immediate \

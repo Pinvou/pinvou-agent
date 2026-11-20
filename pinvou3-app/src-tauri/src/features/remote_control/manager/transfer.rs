@@ -411,7 +411,11 @@ pub(super) fn take_web_session_download(
 /// new download; a non-ready entry means the engine is still writing and
 /// cannot be the victim, so the existing capacity error is kept.
 /// web_session_download_order thereby becomes the carrier of the eviction
-/// order (previously write-only dead weight).
+/// order (previously write-only dead weight). "Oldest" is that queue's
+/// insertion order — FIFO-by-creation, not LRU-by-touch: chunk reads refresh
+/// `last_touched` for the freshness window below but never reorder the queue,
+/// a distinction that only matters if the slot cap ever grows (round-32
+/// review wording).
 /// Round-16 review (M2): the victim criteria add a freshness window —
 /// "ready" alone cannot distinguish a "response-lost orphan" from a
 /// "download the phone already holds an id for and is chunk-reading"

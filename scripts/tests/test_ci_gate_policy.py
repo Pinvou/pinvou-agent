@@ -3241,6 +3241,13 @@ class CiGatePolicyTests(unittest.TestCase):
             # The loop's zero-match guard is load-bearing (a renamed test
             # must fail the step, not pass silently).
             "回归过滤器 '$filter' 匹配 0 个测试",
+            # Round-32 review: the loop gains the executed-count guard its
+            # pinvou-cli sibling grew in round-27 — an ignored-only run
+            # prints "ok. 0 passed; N ignored" and passed the zero-match
+            # guard alone. Pin both the regex and the failure wording so a
+            # deletion reverts to the asymmetric shape.
+            "^test result: ok\\. [1-9][0-9]* passed",
+            "an ignored-only run must not pass the guard",
         ]:
             self.assertIn(needle, windows_rust_test)
 

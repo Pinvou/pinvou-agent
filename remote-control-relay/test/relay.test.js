@@ -2599,6 +2599,45 @@ test("truncates the echoed type in unsupported_message_type inside the desktop b
   }
 });
 
+test("truncates the echoed type in the web arm of unsupported_message_type too", async () => {
+  // Round-32 review: the web arm echoed the offending type in full while the
+  // desktop arm truncated at 64, so PROTOCOL.md's unconditional 64-character
+  // statement was only half true. A near-ingress-cap type from a web client
+  // re-encodes to an error frame that can exceed the web socket's own
+  // outbound high-water mark and terminate the offending (not the desktop)
+  // socket; the symmetric truncation keeps the reply small and the doc true
+  // for both directions.
+  const isolated = await spawnRelay();
+  const suffix = Date.now();
+  const accessToken = `access-token-webecho-${suffix}-000001`;
+  const desktopSecret = `desktop-secret-webecho-${suffix}-001`;
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(
+      `endpoint_webecho_${suffix}`, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(`endpoint_webecho_${suffix}`, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    web.ws.send(JSON.stringify({ v: 2, type: "x".repeat(300) }));
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "unsupported_message_type",
+      "an unknown web message type must still be refused");
+    assert.equal(
+      rejected.message,
+      `unsupported web message type: ${"x".repeat(64)}`,
+      "the web arm must truncate the echoed type at 64 characters, like the desktop arm",
+    );
+    assert.equal(web.ws.readyState, web.ws.OPEN,
+      "the truncated error must not kill the web socket");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("answers desktop_offline before measuring an oversized frame", async () => {
   // Round-19 review: PROTOCOL.md promises "when the desktop disconnects, first
   // answer desktop_offline; the frame is neither measured nor forwarded" — no
