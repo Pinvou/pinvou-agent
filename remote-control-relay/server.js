@@ -1424,7 +1424,7 @@ function forwardAuthenticatedMessage(ws, msg) {
         endpoint_id: endpoint.endpoint_id,
         lease_id: endpoint.lease_id,
       }));
-    } catch (error) {
+    } catch {
       // Round-20 review (S08): this defensive path used to be silent — add one
       // fixed-prefix log line under the same [relay-error] discipline as other
       // runtime errors (the path is unreachable today, but if it ever fires it

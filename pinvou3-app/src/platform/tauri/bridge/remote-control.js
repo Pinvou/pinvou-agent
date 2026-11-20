@@ -272,9 +272,11 @@
       // (#876 fix-delta follow-up P2) Callers (the settings dialog) need the
       // outcome to decide whether the queue-full warning is live after this
       // stop — the dialog must NOT dismiss itself over an incomplete
-      // revocation. Return the raw outcome; a null revocation_warning here
-      // means the warning did not change, so callers keep whatever is
-      // already displayed.
+      // revocation. `revocation` carries the effective post-stop warning: a
+      // later queued/not_needed stop preserves a pre-existing warning and
+      // keeps reporting deferred_full_queue, while a clean stop reports null
+      // only when nothing was ever orphaned. `raw` carries the stop's own
+      // disposition for callers that need the boundary value.
       return { revocation: revocationWarning, raw: outcome || {} };
     }
 

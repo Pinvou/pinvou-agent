@@ -248,8 +248,13 @@
         renderEntries(listing && Array.isArray(listing.entries) ? [...listing.entries] : [], false);
       }
 
-      // Maps stable host-workspace authorization codes to localized copy for
-      // both the listing and the confirm-mint failure paths.
+      // Composes the final failure text for both the listing and the
+      // confirm-mint paths. Stable wire codes map to complete localized
+      // sentences and render bare — the caller must not wrap them again
+      // in loadFailed, or the panel shows the prefix and the sentence
+      // spliced together (e.g. "Failed to read: Listing desktop files
+      // failed. Please try again."). Only unrecognized errors carry the
+      // loadFailed prefix around their raw detail.
       function localizedPickerError(error) {
         const message = String(error && error.message ? error.message : error);
         const code = String(error && error.code ? error.code : "");
@@ -264,7 +269,7 @@
           || message === "web_session_list_host_files_failed") {
           return labels.listingFailed;
         }
-        return message;
+        return labels.loadFailed(message);
       }
 
       function load(path) {
@@ -294,7 +299,7 @@
           }
           rootsButton.disabled = rootEntries.length === 0;
           body.replaceChildren(element("div", "pinvou-host-picker-error",
-            labels.loadFailed(localizedPickerError(error))));
+            localizedPickerError(error)));
         });
       }
 
@@ -339,7 +344,7 @@
             mintInFlight = false;
             confirm.disabled = false;
             body.replaceChildren(element("div", "pinvou-host-picker-error",
-              labels.loadFailed(localizedPickerError(error))));
+              localizedPickerError(error)));
           });
         } else if (directoryMode) finish(currentPath);
         else finish(multiple ? [...selected.keys()] : [...selected.keys()][0] || null);

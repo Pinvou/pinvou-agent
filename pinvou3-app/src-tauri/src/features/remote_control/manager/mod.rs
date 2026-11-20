@@ -5864,13 +5864,12 @@ mod tests {
              a retired-sibling re-push can persist an over-cap ledger that \
              validation rejects"
         );
-        let failure_cap = body[push_at..].find(cap_needle).expect(
+        // `find` runs on the [push_at..] slice, so a match already places the
+        // failure-arm cap after the re-push; only its presence needs pinning
+        // (an offset-ordering assert here would be vacuous).
+        body[push_at..].find(cap_needle).expect(
             "the persist-failure arm must cap again after the re-push, or \
                      the re-push can grow the backlog past MAX_PENDING_REVOCATIONS",
-        );
-        assert!(
-            push_at < push_at + failure_cap,
-            "the failure-arm cap must sit after the re-push"
         );
     }
 
@@ -7012,8 +7011,8 @@ mod tests {
         // comments and strings included — a comment or string literal containing an unbalanced
         // `}` between a lock site and its block closure would truncate the span early, and a
         // future "emit inside the guard span" regression could be judged outside it (silently
-        // green; same caliber as the round-23 sibling pins). Under today's text all five lock
-        // spans close correctly; the green baseline was confirmed by manual review.
+        // green; same caliber as the round-23 sibling pins). Under today's text all three lock
+        // spans close before their emit sites; the green baseline was confirmed by manual review.
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace")
@@ -7806,10 +7805,12 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// Round-14 复审 minor(source 契约钉):回放装载必须按「并集且内存
-    /// 优先」合并——朴素 `backlog = ledger.entries…collect()` 的整覆盖会
-    /// 在第二次生命周期调用时把抢救降级后只在内存里的条目从两侧同时
-    /// 抹掉。回退成整覆盖本钉即红。
+    /// Round-14 review minor (source-contract pin): the replay load must merge
+    /// as a union with memory taking priority — a naive whole overwrite
+    /// (`backlog = ledger.entries…collect()`) would, on the second lifecycle
+    /// call, wipe from both sides the entries that survive only in memory
+    /// after a salvage downgrade. Reverting to a whole overwrite turns this
+    /// pin red.
     #[test]
     fn revocation_replay_merges_disk_entries_into_the_process_backlog() {
         let source = include_str!("mod.rs");
