@@ -8,6 +8,18 @@
 // to the CRON editor here instead of the weekly fallback.
 import { cronExprWithTime, fixedCronTime } from './schedule-cron-expr.js';
 
+// Exactly the Unicode White_Space set — the watcher's str::trim and the
+// editor module's definition above this file's imports. JS trim() misses
+// U+0085, so a key or value padded with it (`FREQ\u0085=CRON`) stayed
+// orphaned and re-triggered the weekly fallback the ASCII-space fix closed
+// (#900 review P2, round 2).
+const RRULE_WS_CLASS = '[\\t\\n\\v\\f\\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]';
+const RRULE_WS_TRIM = new RegExp(`^${RRULE_WS_CLASS}+|${RRULE_WS_CLASS}+$`, 'g');
+
+function rruleWsTrim(text) {
+  return String(text || '').replaceAll(RRULE_WS_TRIM, '');
+}
+
 // Bare code array: display labels are rebuilt per current language by the
 // component (see weekdayOptions/hourlyIntervalOptions).
 export const WEEKDAY_CODES = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
@@ -25,14 +37,15 @@ export function parseScheduleFields(rrule) {
   return String(rrule || '').split(';').reduce((result, part) => {
     const split = part.indexOf('=');
     if (split > 0) {
-      // The backend trims around the separator (`FREQ = CRON` arrives from
-      // MCP/chat as an engine-valid stored CRON rule), so the field map must
-      // trim too: an orphaned `FREQ ` key falls into the weekly fallback,
-      // whose time edit appends BYHOUR/BYMINUTE to a CRON rule the domain
-      // refuses, and the bounced patch then wedges the pending-patch flush
-      // on every later save/run/toggle (#900 review P2).
-      const key = part.slice(0, split).trim().toUpperCase();
-      if (key) result[key] = part.slice(split + 1).trim();
+      // The backend trims around the separator with the full Unicode
+      // White_Space set (`FREQ = CRON` and `FREQ\u0085=CRON` both arrive
+      // from MCP/chat as engine-valid stored CRON rules), so the field map
+      // must trim the same way: an orphaned `FREQ ` key falls into the
+      // weekly fallback, whose time edit appends BYHOUR/BYMINUTE to a CRON
+      // rule the domain refuses, and the bounced patch then wedges the
+      // pending-patch flush on every later save/run/toggle (#900 review P2).
+      const key = rruleWsTrim(part.slice(0, split)).toUpperCase();
+      if (key) result[key] = rruleWsTrim(part.slice(split + 1));
     }
     return result;
   }, {});

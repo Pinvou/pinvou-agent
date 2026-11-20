@@ -9244,6 +9244,38 @@ function scheduleRruleFieldsBehavior() {
     scheduleRruleFields.buildRrule('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30', 'time', '07:05'),
     'FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=7;BYMINUTE=5'
   );
+  // #900 review P2 (round 2): the backend trims keys and values with the
+  // full Unicode White_Space set and persistence's outer trim preserves an
+  // INTERNAL U+0085, so `FREQ\u0085=CRON` / `FREQ=CRON\u0085` are valid
+  // stored rules the guard and Rust parser both accept — JS trim() used to
+  // leave them orphaned and re-wedge the pending patch. The padded
+  // spellings must project to the CRON editor and survive a real time edit
+  // (guard → stored-rule projection → time-edit round trip, padding
+  // adjacent to '=').
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ\u0085=CRON;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a U+0085-padded key must not orphan the field'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ=CRON\u0085;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a U+0085-padded value must not split the classification'
+  );
+  const paddedKeyEditor = scheduleRruleFields.scheduleEditorValue('FREQ\u0085=CRON;EXPR=30 9 1 * *');
+  assert.strictEqual(paddedKeyEditor.repeat, 'cron', 'padded-key rule must project to the CRON editor');
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ\u0085=CRON;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *',
+    'a padded-key rule must rewrite the CRON expression, not append BYHOUR/BYMINUTE'
+  );
+  const paddedValueEditor = scheduleRruleFields.scheduleEditorValue('FREQ=CRON\u0085;EXPR=30 9 1 * *');
+  assert.strictEqual(paddedValueEditor.repeat, 'cron', 'padded-value rule must project to the CRON editor');
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ=CRON\u0085;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *',
+    'a padded-value rule must rewrite the CRON expression, not append BYHOUR/BYMINUTE'
+  );
 }
 
 // Round-3 review M2 (issue #821): the chat draft fence auto-creates with the
