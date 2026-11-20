@@ -1142,7 +1142,12 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "not-json{{{").unwrap();
 
-            assert!(store.load().is_err(), "损坏 JSON 读取应报错");
+            let error = store.load().expect_err("损坏 JSON 读取应报错");
+            assert!(
+                error.starts_with("解析 ")
+                    && error.contains("bundles.json 是唯一真相源，损坏时 fail loud，不静默重建"),
+                "fail-loud parse wording is pinned (store-specific note): {error}"
+            );
             assert!(store.import_legacy().is_err(), "损坏 JSON 导入应报错");
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),

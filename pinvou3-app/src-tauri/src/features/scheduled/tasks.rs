@@ -5422,8 +5422,13 @@ mod tests {
                 .find(|entry| {
                     let entry_file_name = entry.file_name();
                     let entry_name = entry_file_name.to_string_lossy();
-                    entry_name.starts_with(&invalid_prefix)
-                        || entry_name.starts_with(&corrupt_prefix)
+                    // The desktop-owned legacy-visible sentinel
+                    // (`<name>.invalid-desktop`, written BEFORE the rename,
+                    // empty) is a marker, not a quarantine payload; the
+                    // evidence copy is `.corrupt-<ts>.<nanos>`.
+                    entry_name != format!("{name}.invalid-desktop")
+                        && (entry_name.starts_with(&invalid_prefix)
+                            || entry_name.starts_with(&corrupt_prefix))
                 })
                 .expect("quarantined read-state file");
             assert_eq!(

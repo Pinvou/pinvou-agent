@@ -1409,7 +1409,12 @@ mod tests {
         let bin = RecycleBin::with_roots(tmp.clone());
         std::fs::write(tmp.join("recycle-bin.json"), "not-json{{{").unwrap();
 
-        assert!(bin.list().is_err(), "损坏清单读取应报错");
+        let error = bin.list().expect_err("损坏清单读取应报错");
+        assert!(
+            error.starts_with("解析 ")
+                && error.contains("recycle-bin.json 损坏时 fail loud，不静默重建"),
+            "fail-loud parse wording is pinned (store-specific note): {error}"
+        );
         assert!(bin.purge("x").is_err(), "损坏清单 purge 应报错");
         assert_eq!(
             std::fs::read_to_string(tmp.join("recycle-bin.json")).unwrap(),
