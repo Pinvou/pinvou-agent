@@ -55,15 +55,17 @@ try {
   );
   const { ensureLanguage } = await import(pathToFileURL(path.join(sharedDir, 'i18n.js')).href);
   await ensureLanguage('en');
+  const elapsedRetryTime = 1001;
   const historicalRecovery = pairDeepSeekTimeline([
     { event: 'user_start', turn_id: 'recovery-turn', timestamp: 1000 },
-    { event: 'model_recovery', turn_id: 'recovery-turn', timestamp: 1001, model_recovery: { state: 'interrupted', attempt: 3, max_attempts: 20, next_retry_at_ms: 1900000000000 } },
+    { event: 'model_recovery', turn_id: 'recovery-turn', timestamp: 1001, model_recovery: { state: 'interrupted', attempt: 3, max_attempts: 20, next_retry_at_ms: elapsedRetryTime } },
     { event: 'assistant_done', turn_id: 'recovery-turn', timestamp: 1002, status: 'Interrupted', error: 'Rate limit exceeded: fixture' },
   ], { language: 'en' });
   assert.equal(historicalRecovery.length, 1);
   assert.equal(historicalRecovery[0].status, 'Interrupted');
   assert.ok(historicalRecovery[0].userError.message.includes('3/20'));
-  assert.ok(historicalRecovery[0].modelRecovery.next_retry_at_ms > 0);
+  assert.ok(historicalRecovery[0].userError.message.includes('Recovery time: unknown'));
+  assert.equal(historicalRecovery[0].modelRecovery.next_retry_at_ms, elapsedRetryTime);
 
   assert.equal(externalMarkdownUrl('http://localhost:8080/'), 'http://localhost:8080/');
   assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');

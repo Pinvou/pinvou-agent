@@ -1287,7 +1287,7 @@ Object.assign(dictEn.uiChat, {
   modelRecoveryWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Use Stop to cancel waiting.',
   modelRecoveryChildWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Waiting for recovery.',
   modelRecoveryInterrupted: 'Rate-limit recovery paused; progress saved ({attempt}/{max} attempts). Recovery time: {time}. You can continue when available.',
-  modelRecoveryUnknownTime: 'not provided; continue manually later',
+  modelRecoveryUnknownTime: 'unknown',
 });
 
 Object.assign(dictEn.uiChat, { modelRecoveryAgent: 'Subtask {agent}: ' });

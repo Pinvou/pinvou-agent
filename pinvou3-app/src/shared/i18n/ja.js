@@ -1294,7 +1294,7 @@ Object.assign(dictJa.uiChat, {
   modelRecoveryWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。「停止」で待機を取り消せます。',
   modelRecoveryChildWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。回復を待機しています。',
   modelRecoveryInterrupted: 'レート制限からの復旧を中断し、進捗を保存しました（{attempt}/{max} 回）。復旧時刻：{time}。復旧後に続行できます。',
-  modelRecoveryUnknownTime: '提供されていません。後ほど手動で続行してください',
+  modelRecoveryUnknownTime: '不明',
 });
 
 Object.assign(dictJa.uiChat, { modelRecoveryAgent: 'サブタスク {agent}：' });
