@@ -32,17 +32,17 @@ Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_em
 The latter uses a controlled injected model, preserves the completed result and
 snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
 
-The parent review candidate pins CodeWhale commit `0022e737445a962a399e4470ad8cb683a07ac899`
-from [CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149). Its tree is byte-identical to the
+The parent review candidate pins the historical
+[CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149) review commit
+`0022e737445a962a399e4470ad8cb683a07ac899`. Its tree is byte-identical to the
 v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
-The application runtime source is unchanged from that review; this delivery
-step records the committed dependency and updates review-head metadata only.
 
-Public maintenance remains `11cba403d`. The parent PR stays draft until the
-dependency lands; then align its gitlink/register to the actual public merged
-commit and run the applicable final-SHA gates. The public-head verifier and
-immutable tags are unchanged. Local receipts do not establish clean committed
-product-build, merge or release eligibility.
+The historical candidate is based on `11cba403d`. Current public maintenance
+is at `687358f7e`. The parent PR stays draft until public maintenance contains
+the accepted #149 changes. Then align its gitlink to the current public head,
+update the register, and run the applicable final-SHA gates. The public-head
+verifier also checks the immutable tag. Local receipts cover the exact candidate
+and verification scope identified above.
 
 ## 已合入维护分支：压缩检查点角色兼容性
 
@@ -114,7 +114,7 @@ product-build, merge or release eligibility.
 
 ## 0. 当前状态（2026-11-15）
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
+- 当前公开维护头与父仓 `main` 的 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。

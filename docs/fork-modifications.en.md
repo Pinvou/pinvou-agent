@@ -32,17 +32,17 @@ Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_em
 The latter uses a controlled injected model, preserves the completed result and
 snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
 
-The parent review candidate pins CodeWhale commit `0022e737445a962a399e4470ad8cb683a07ac899`
-from [CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149). Its tree is byte-identical to the
+The parent review candidate pins the historical
+[CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149) review commit
+`0022e737445a962a399e4470ad8cb683a07ac899`. Its tree is byte-identical to the
 v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
-The application runtime source is unchanged from that review; this delivery
-step records the committed dependency and updates review-head metadata only.
 
-Public maintenance remains `11cba403d`. The parent PR stays draft until the
-dependency lands; then align its gitlink/register to the actual public merged
-commit and run the applicable final-SHA gates. The public-head verifier and
-immutable tags are unchanged. Local receipts do not establish clean committed
-product-build, merge or release eligibility.
+The historical candidate is based on `11cba403d`. Current public maintenance
+is at `687358f7e`. The parent PR stays draft until public maintenance contains
+the accepted #149 changes. Then align its gitlink to the current public head,
+update the register, and run the applicable final-SHA gates. The public-head
+verifier also checks the immutable tag. Local receipts cover the exact candidate
+and verification scope identified above.
 
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
@@ -116,7 +116,7 @@ product-build, merge or release eligibility.
 
 ## Current state (2026-11-15)
 
-- Public maintenance and parent gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
+- Public maintenance and the gitlink on the parent repository's `main`: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
 - Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one). Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 551 files, +121146/-49817, net +71329; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
