@@ -1,5 +1,49 @@
 # CodeWhale Fork Modification Register
 
+## Pending review: safe engine resource retirement (T4)
+
+The community uploaded-plugin uninstall fix pairs a local application overlay
+with generic CodeWhale lifetime corrections on registered baseline `11cba403d`:
+
+- Join the existing MCP boot worker before closing transports, without draining
+  UI progress into a stopped consumer. A late handshake cannot outlive shutdown.
+- Completion futures own only their receipt, without retaining the handle,
+  operation sender or event queue.
+- A private capacity-one lifecycle channel requests idle retirement on the
+  canonical actor. A ready/commit handshake prevents a cancelled proposal from
+  causing a later shutdown. All actor wait branches serve it. Retirement checks
+  existing goal, advisor ownership, child and shell state plus queued delivery;
+  it adds no advisor state, wire `Op`, protocol field or remote/model command.
+  Hosts must fence new submissions; busy engines preserve their accepted work.
+  A synchronous host predicate runs after actor readiness and before commit,
+  so dequeued events still undergoing host persistence or terminal delivery
+  prevent retirement without closing the cached actor.
+
+The application owns uninstall policy, lock ordering and transaction lifetime.
+An app-side event snapshot cannot establish the actor's atomic idle boundary;
+the narrow lifetime interface avoids cancelling an unobserved autonomous turn.
+This reusable correction belongs upstream. Existing wire parity stays unchanged.
+
+Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events`,
+`forkguard_completion_wait_does_not_retain_engine_handle`, the owning
+`idle_shutdown` tests (including
+`forkguard_idle_shutdown_checks_host_completion_after_actor_ready`), and
+`forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation`.
+The latter uses a controlled injected model, preserves the completed result and
+snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
+
+The parent review candidate pins the historical
+[CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149) review commit
+`0022e737445a962a399e4470ad8cb683a07ac899`. Its tree is byte-identical to the
+v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
+
+The historical candidate is based on `11cba403d`. Current public maintenance
+is at `687358f7e`. The parent PR stays draft until public maintenance contains
+the accepted #149 changes. Then align its gitlink to the current public head,
+update the register, and run the applicable final-SHA gates. The public-head
+verifier also checks the immutable tag. Local receipts cover the exact candidate
+and verification scope identified above.
+
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
 - T7: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of its retained round on the wire and merge that summary plus the topology checkpoint into the same user wire message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. The fix covers only the trailing `tool -> user` that compaction itself creates; the reported provider text was `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"` (SSE lane). Saved history and tool-call/result IDs stay untouched, and the session-pinned system prefix is unchanged.
@@ -72,7 +116,7 @@
 
 ## Current state (2026-11-15)
 
-- Public maintenance and parent gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
+- Public maintenance and the gitlink on the parent repository's `main`: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
 - Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one). Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 551 files, +121146/-49817, net +71329; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.

@@ -921,6 +921,16 @@ impl SkillMarketplaceManager {
     /// skill as it lands. Same guard as the MCP tool uninstall's
     /// `removed_install_record == false` legs.
     pub fn uninstall(&self, skill_id: &str) -> Result<bool, String> {
+        self.uninstall_with_upload_preflight(skill_id, || Ok(()))
+    }
+
+    /// Check the host's Upload-only runtime precondition under the installation
+    /// locks, before changing persistent state or moving the current package.
+    pub(crate) fn uninstall_with_upload_preflight<G>(
+        &self,
+        skill_id: &str,
+        upload_preflight: impl FnOnce() -> Result<G, String>,
+    ) -> Result<bool, String> {
         let dir_name = self.precheck_uninstall(skill_id)?;
         // From here the same-id import lock is held to the end of the
         // critical section: the unified import, the legacy import, and the
@@ -937,7 +947,7 @@ impl SkillMarketplaceManager {
         // registered in §3.2 alongside the install twin above.
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        self.uninstall_locked(skill_id, &dir_name)
+        self.uninstall_locked(skill_id, &dir_name, upload_preflight)
     }
 
     /// Pre-lock validation shared by `uninstall` and
@@ -975,7 +985,12 @@ impl SkillMarketplaceManager {
     /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
     /// this teardown and its scope strip.
 
-    fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
+    fn uninstall_locked<G>(
+        &self,
+        skill_id: &str,
+        dir_name: &str,
+        upload_preflight: impl FnOnce() -> Result<G, String>,
+    ) -> Result<bool, String> {
         // Round-51 review: the in-process mutex held by the caller cannot see
         // the CLI's second process — hold the same cross-process market lock
         // every market mutator holds (order: import_lock → market file lock →
@@ -995,33 +1010,39 @@ impl SkillMarketplaceManager {
                 let owner = super::bundle::skill_owner_package(dir_name);
                 let pkg_dir = self.packages_root.join(skill_id);
                 if owner == skill_id && pkg_dir.is_dir() {
-                    // Standalone uploaded skill package: move the whole
-                    // bundles/<id>/ into the recycle bin (the skill content is
-                    // the user's only copy) and skip the remove_dir_all below.
-                    // kind is pinned to KIND_SKILL (the record id is the skill
-                    // name; no directory-shape inference); it shares the
-                    // recycle_upload_package core with the two MCP recycle
-                    // paths.
-                    if let Err(e) = self.bundle_store.remove(skill_id) {
-                        log::warn!(
-                            "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
-                        );
-                    }
-                    if let Err(e) = super::recycle_bin::recycle_upload_package(
-                        &self.recycle_bin,
-                        skill_id,
-                        &record,
-                        super::recycle_bin::KIND_SKILL,
-                    ) {
-                        // 回收失败（目录已回滚原位）：登记回写保持一致，卸载 fail loud。
-                        if let Err(re) = self.bundle_store.upsert(record) {
-                            log::warn!(
-                                "[skill-marketplace] 回收失败后登记回写失败（{skill_id}）: {re}"
-                            );
-                        }
-                        return Err(format!("移入回收站失败（{skill_id}）: {e}"));
-                    }
-                    return Ok(true);
+                    return super::file_lock::with_prelocked_file_writes(
+                        vec![self.bundle_store.file_path(), self.recycle_bin.file_path()],
+                        || {
+                            let _runtime_guard = upload_preflight()?;
+                            // Standalone uploaded skill package: move the whole
+                            // bundles/<id>/ into the recycle bin (the skill content is
+                            // the user's only copy) and skip the remove_dir_all below.
+                            // kind is pinned to KIND_SKILL (the record id is the skill
+                            // name; no directory-shape inference); it shares the
+                            // recycle_upload_package core with the two MCP recycle
+                            // paths.
+                            if let Err(e) = self.bundle_store.remove(skill_id) {
+                                log::warn!(
+                                    "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
+                                );
+                            }
+                            if let Err(e) = super::recycle_bin::recycle_upload_package(
+                                &self.recycle_bin,
+                                skill_id,
+                                &record,
+                                super::recycle_bin::KIND_SKILL,
+                            ) {
+                                // 回收失败（目录已回滚原位）：登记回写保持一致，卸载 fail loud。
+                                if let Err(re) = self.bundle_store.upsert(record) {
+                                    log::warn!(
+                                        "[skill-marketplace] 回收失败后登记回写失败（{skill_id}）: {re}"
+                                    );
+                                }
+                                return Err(format!("移入回收站失败（{skill_id}）: {e}"));
+                            }
+                            Ok(true)
+                        },
+                    );
                 }
                 if owner != skill_id && pkg_dir.is_dir() {
                     // Upload 登记且包目录仍在，但属主被其他已装包认领（例如回收
@@ -1099,7 +1120,7 @@ impl SkillMarketplaceManager {
         // (`ima-skills` → `ima`), so behavior is unchanged; this closes the
         // latent hazard for a future caller with a generic skill id.
         let owner = crate::features::marketplace::bundle::skill_owner_package(skill_id);
-        let torn_down = self.uninstall_locked(skill_id, &dir_name)?;
+        let torn_down = self.uninstall_locked(skill_id, &dir_name, || Ok(()))?;
         if torn_down {
             if let Err(error) = super::scope::remove_bundle_from_disabled_scopes_exact(&owner) {
                 log::warn!("[skill-marketplace] scope cleanup for {skill_id} skipped: {error}");
@@ -4117,6 +4138,16 @@ mod tests {
             .unwrap();
         let pkg_dir = tmp.join("bundles/up-skill");
         assert!(pkg_dir.join("skills/up-skill/SKILL.md").is_file());
+
+        let error = mgr
+            .uninstall_with_upload_preflight("up-skill", || {
+                Err::<(), String>("runtime_not_released".into())
+            })
+            .unwrap_err();
+        assert_eq!(error, "runtime_not_released");
+        assert!(pkg_dir.join("skills/up-skill/SKILL.md").is_file());
+        assert!(mgr.bundle_store.get("up-skill").unwrap().is_some());
+        assert!(mgr.recycle_bin.list().unwrap().is_empty());
 
         mgr.uninstall("up-skill").unwrap();
 

@@ -2385,6 +2385,12 @@ jobs:
             'platform::filesystem::tests::windows_' \
             'platform::paths::tests::managed_python_' \
             'cross_process_lock' \
+            'features::assistant::engine_pool::marketplace_uninstall::tests::upload_uninstall_' \
+            'features::marketplace::file_lock::tests::upload_uninstall_' \
+            'app::commands::marketplace::uninstall_native_tests::upload_uninstall_native_command_uses_the_real_pool_and_preserves_retry_and_next_use' \
+            'app::commands::marketplace::uninstall_native_tests::upload_uninstall_native_failed_receipt_preserves_package_and_configuration' \
+            'app::commands::marketplace::uninstall_native_tests::upload_uninstall_native_late_busy_refusal_keeps_the_same_actor_usable' \
+            'app::commands::marketplace::uninstall_native_tests::upload_uninstall_native_waits_for_an_evicted_real_engine' \
             'artifact_read_recovers_an_occupied_1177_layout_after_release' \
             'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
             'artifact_public_read_' \

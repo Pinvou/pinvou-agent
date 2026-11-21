@@ -1,5 +1,49 @@
 # CodeWhale Fork 修改清单
 
+## Pending review: safe engine resource retirement (T4)
+
+The community uploaded-plugin uninstall fix pairs a local application overlay
+with generic CodeWhale lifetime corrections on registered baseline `11cba403d`:
+
+- Join the existing MCP boot worker before closing transports, without draining
+  UI progress into a stopped consumer. A late handshake cannot outlive shutdown.
+- Completion futures own only their receipt, without retaining the handle,
+  operation sender or event queue.
+- A private capacity-one lifecycle channel requests idle retirement on the
+  canonical actor. A ready/commit handshake prevents a cancelled proposal from
+  causing a later shutdown. All actor wait branches serve it. Retirement checks
+  existing goal, advisor ownership, child and shell state plus queued delivery;
+  it adds no advisor state, wire `Op`, protocol field or remote/model command.
+  Hosts must fence new submissions; busy engines preserve their accepted work.
+  A synchronous host predicate runs after actor readiness and before commit,
+  so dequeued events still undergoing host persistence or terminal delivery
+  prevent retirement without closing the cached actor.
+
+The application owns uninstall policy, lock ordering and transaction lifetime.
+An app-side event snapshot cannot establish the actor's atomic idle boundary;
+the narrow lifetime interface avoids cancelling an unobserved autonomous turn.
+This reusable correction belongs upstream. Existing wire parity stays unchanged.
+
+Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events`,
+`forkguard_completion_wait_does_not_retain_engine_handle`, the owning
+`idle_shutdown` tests (including
+`forkguard_idle_shutdown_checks_host_completion_after_actor_ready`), and
+`forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation`.
+The latter uses a controlled injected model, preserves the completed result and
+snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
+
+The parent review candidate pins the historical
+[CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149) review commit
+`0022e737445a962a399e4470ad8cb683a07ac899`. Its tree is byte-identical to the
+v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
+
+The historical candidate is based on `11cba403d`. Current public maintenance
+is at `687358f7e`. The parent PR stays draft until public maintenance contains
+the accepted #149 changes. Then align its gitlink to the current public head,
+update the register, and run the applicable final-SHA gates. The public-head
+verifier also checks the immutable tag. Local receipts cover the exact candidate
+and verification scope identified above.
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
@@ -70,7 +114,7 @@
 
 ## 0. 当前状态（2026-11-15）
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
+- 当前公开维护头与父仓 `main` 的 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
