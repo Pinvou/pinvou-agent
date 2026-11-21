@@ -1,6 +1,14 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-11-15。公开维护头 687358f7e 已包含 #114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156 与 #157；父仓 gitlink 与公开维护头对齐。
+> Updated: 2026-11-05. T6 review candidate `19132162830b38aba7d900ef806427171d9203ef` integrates
+> public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e` and the rate-limit review fixes.
+> Candidate: 96 commits above upstream v0.9.12; tree `12a8be1ad97b7724618760ee3393c637633fb929`.
+> Candidate drift: 548 files, +123354/-50026 (net +73328).
+> Protected maintenance and immutable tags are unchanged. Published-head equality
+> remains a separate merge gate; the parent review gitlink is not maintenance.
+> See [the T6 register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05).
+
+> 公开维护头其后已推进至 `687358f7e`（2026-11-15，含 #114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156 与 #157）；父仓 main 的 gitlink 已与该维护头对齐。本 PR 的 T6 候选先于该推进（候选基于 `11cba403d`）；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -8,8 +16,9 @@
 
 ## 0. 当前维护基线与验证边界
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进，父仓 gitlink 随之跟随。
+- 当前公开维护头与父仓 main gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进，父仓 gitlink 随之跟随。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
+- 本 PR 的 T6 审查候选先于该推进（候选基于维护 `11cba403d`）；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 

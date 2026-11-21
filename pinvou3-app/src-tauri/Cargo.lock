@@ -1692,6 +1692,7 @@ dependencies = [
  "futures-util",
  "globset",
  "htmd",
+ "http",
  "ignore",
  "image",
  "libc",

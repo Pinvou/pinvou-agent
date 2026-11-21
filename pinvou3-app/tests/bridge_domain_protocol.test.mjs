@@ -282,7 +282,12 @@ const expectedProtocolHashes = {
   // without the per-request field the meter froze at "—/…·0%" on every
   // tool-using conversation). Same event surface — no new invoke or listen
   // entries.
-  chat: '3ae60b4537777a45fe6f5ae954a3e8b75822c00bb61b073c7348a4ec584d08a0',
+  // Recomputed for this PR's recovery integration (now merged with main
+  // b7f8bed76): recovery metadata settles at chat:done and notifies after
+  // transient updates; the transient error listener routes detached child
+  // recovery without claiming a foreground turn. Event names and payload
+  // shapes stay the same.
+  chat: '5f8276263c9b0dbbc1167e63239e8ef2c87eb30fb41db159a1df4fd5721b67f7',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

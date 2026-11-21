@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import './helpers/i18n-all.js';
+import { isActiveChildRecoveryNotice, restoreChildRecoveryNotices, upsertRecoveryNotice } from '../src/features/conversation/model-recovery.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const interactionBridgeSource = fs.readFileSync(path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'interaction.js'), 'utf8');
@@ -15,7 +17,7 @@ const interactionBridgeSource = fs.readFileSync(path.join(here, '..', 'src', 'pl
 // （in-flight 清空）后旧读取才返回。只靠瞬时 in-flight 集合识别不了这种
 // 顺序——epoch 校验必须在场（审计 P1）。
 function loadInteractionRuntime() {
-  const root = {};
+  const root = { PinvouModelRecovery: { isActiveChildRecoveryNotice, restoreChildRecoveryNotices } };
   vm.runInNewContext(fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
   const state = {
@@ -29,6 +31,7 @@ function loadInteractionRuntime() {
   };
   const deferred = {};
   const calls = [];
+  let itemIdSeq = 1000;
   const epochTable = {};                                    // 与 bridge.js 共享 epoch 表同构（#263）
   // 简化 mock：真实 runSyncOnSession（bridge.js）会 swap 到 sid 的工作集执行
   // 并在结束后 restore 当前显示，且 sid 无 buffer 时静默丢弃；本 mock 只记录
@@ -44,6 +47,7 @@ function loadInteractionRuntime() {
     invokeCalls: [],
     errorItems: [],
     notifyCount: 0,
+    nextChatItemId: () => ++itemIdSeq,
     defer(name) {
       deferred[name] = deferred[name] || {};
       deferred[name].promise = new Promise((resolve, reject) => {
@@ -75,10 +79,11 @@ function loadInteractionRuntime() {
     getBuffer() { return null; },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
-    rerenderFromMessages() {},
+    rerenderFromMessages(options) { if (!options?.keepItemIdSequence) itemIdSeq = 0; },
     currentStreamText: '',
     currentStreamId: 0,
-    itemIdSeq: 1000,
+    get itemIdSeq() { return itemIdSeq; },
+    set itemIdSeq(value) { itemIdSeq = value; },
     ensureSession: async () => (state.activeSessionId || 'chat-a'),
     sendMessage: async () => {},
     sendMessageToSession: async (sid) => {
@@ -201,6 +206,30 @@ test('cancelUserInput 响应写入定向触发会话：切走后卡片状态不�
   await cancelP;
   assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
     'cancelUserInput 的卡片状态写入必须定向回触发会话 chat-a');
+});
+
+test('a rejected edit preserves new child receipts and does not resurrect a recovered notice', async () => {
+  const rt = loadInteractionRuntime();
+  const edit = rt.defer('edit_last_turn');
+  const waiting = { state: 'waiting', attempt: 1, max_attempts: 20, agent_id: 'child-a', operation_id: 'op-a' };
+  const addNotice = (text, extra) => rt.state.chatItems.push({ id: rt.nextChatItemId(), type: 'system', text, ...extra });
+  upsertRecoveryNotice(waiting, rt.state.chatItems, addNotice, 'en');
+  const original = rt.state.chatItems[0];
+
+  const result = rt.api.editLastTurn('Replace the previous turn');
+  assert.ok(rt.state.chatItems.includes(original));
+  assert.ok(rt.state.chatItems.find(item => item.streaming).id > original.id);
+  upsertRecoveryNotice({ ...waiting, state: 'recovered' }, rt.state.chatItems, addNotice, 'en');
+  upsertRecoveryNotice({ ...waiting, agent_id: 'child-b', operation_id: 'op-b' }, rt.state.chatItems, addNotice, 'en');
+  edit.reject(new Error('edit rejected'));
+  await result;
+
+  assert.ok(rt.state.chatItems.includes(original));
+  assert.equal(original.legacyConversationOnly, true);
+  const waitingAfterRollback = rt.state.chatItems.filter(isActiveChildRecoveryNotice);
+  assert.equal(waitingAfterRollback.length, 1);
+  assert.equal(waitingAfterRollback[0].modelRecovery.agent_id, 'child-b');
+  assert.ok(waitingAfterRollback[0].id > original.id);
 });
 
 test('editLastTurn 失败恢复定向触发会话：切走后 busy/错误提示不砸进当前会话', async () => {

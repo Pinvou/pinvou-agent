@@ -1032,6 +1032,8 @@ fn default_global_shortcut_accelerator() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserPrefs {
+    /// Native model-call recovery limits; old settings retain bounded defaults.
+    pub model_rate_limit_retry: deepseek_tui::config::RateLimitRetryPolicy,
     pub theme: Theme,
     /// Color-scheme preference: `system` follows the OS (decided by the
     /// frontend, light when undeterminable), light/dark are explicit picks.
@@ -1172,7 +1174,7 @@ impl UserPrefs {
                 color_scheme_derived: false,
             };
         };
-        let value: serde_json::Value = match serde_json::from_str(raw) {
+        let mut value: serde_json::Value = match serde_json::from_str(raw) {
             Ok(value) => value,
             Err(error) => {
                 eprintln!(
@@ -1185,6 +1187,18 @@ impl UserPrefs {
                 };
             }
         };
+        // Settings-file compatibility only; direct UserPrefs/RPC decoding stays strict.
+        if value.get("model_rate_limit_retry").is_some_and(|policy| {
+            serde_json::from_value::<deepseek_tui::config::RateLimitRetryPolicy>(policy.clone())
+                .is_err()
+        }) {
+            if let Some(settings) = value.as_object_mut() {
+                settings.remove("model_rate_limit_retry");
+            }
+            eprintln!(
+                "[pinvou3-app] invalid model_rate_limit_retry in settings.json; using bounded defaults for this field"
+            );
+        }
         let has_language = value
             .as_object()
             .is_some_and(|settings| settings.contains_key("language"));
@@ -4116,6 +4130,10 @@ mod tests {
     #[test]
     fn prefs_roundtrip() {
         let prefs = UserPrefs {
+            model_rate_limit_retry: deepseek_tui::config::RateLimitRetryPolicy {
+                max_attempts: 7,
+                ..Default::default()
+            },
             theme: Theme::LiquidDark,
             color_scheme: ColorScheme::Dark,
             language: Language::En,
@@ -4147,6 +4165,7 @@ mod tests {
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model_rate_limit_retry.max_attempts, 7);
         assert_eq!(parsed.theme, Theme::LiquidDark);
         assert_eq!(parsed.color_scheme, ColorScheme::Dark);
         assert_eq!(parsed.language, Language::En);
@@ -4163,6 +4182,7 @@ mod tests {
     fn prefs_partial_json_fills_defaults() {
         let json = r#"{"theme":"genesis"}"#;
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.model_rate_limit_retry.max_attempts, 20);
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
@@ -5007,5 +5027,123 @@ mod tests {
             "空值存储不应被标为 Configured(假阳性会导致云端调用拿空 key → 401)"
         );
         assert!(!model.has_secret);
+    }
+
+    #[test]
+    fn disk_policy_fallback_is_whole_policy_and_direct_decode_stays_strict() {
+        for bad in [
+            serde_json::json!(null),
+            serde_json::json!("wrong-type"),
+            serde_json::json!([0]),
+            serde_json::json!(true),
+            serde_json::json!({"max_attempts": 1.5}),
+            serde_json::json!({"recovery_budget_secs": 86401}),
+            serde_json::json!({"max_attempts": -1}),
+            serde_json::json!({"max_attempts": 0}),
+            serde_json::json!({"max_attempts": 1001}),
+            serde_json::json!({"max_attempts": 7, "recovery_budget_secs": 0,
+                               "initial_delay_secs": 2, "max_delay_secs": 9}),
+            serde_json::json!({"initial_delay_secs": 10, "max_delay_secs": 9}),
+            serde_json::json!({"max_delay_secs": 86401}),
+        ] {
+            let mut doc = serde_json::to_value(UserPrefs::default()).unwrap();
+            doc["theme"] = serde_json::json!("liquid-dark");
+            doc["color_scheme"] = serde_json::json!("dark");
+            doc["language"] = serde_json::json!("ja");
+            doc["chat"]["streaming_animation"] = serde_json::json!(false);
+            doc["model_rate_limit_retry"] = bad;
+            // File-only fallback must never become a lenient Deserialize impl.
+            assert!(serde_json::from_value::<UserPrefs>(doc.clone()).is_err());
+            let raw = serde_json::to_string(&doc).unwrap();
+            let parsed = UserPrefs::parse_settings_with_state(Some(&raw), Some("en-US"));
+            assert!(parsed.allow_normalization_persist);
+            assert_eq!(parsed.prefs.theme, Theme::LiquidDark);
+            assert_eq!(parsed.prefs.language, Language::Ja);
+            assert!(!parsed.prefs.chat.streaming_animation);
+            let got = serde_json::to_value(&parsed.prefs.model_rate_limit_retry).unwrap();
+            assert_eq!(
+                got,
+                serde_json::json!({"max_attempts":20,
+                "recovery_budget_secs":600,"initial_delay_secs":5,"max_delay_secs":60})
+            );
+        }
+        // A different invalid known setting must retain its old whole-document failure.
+        let parsed = UserPrefs::parse_settings_with_state(
+            Some(r#"{"language":42,"model_rate_limit_retry":{"max_attempts":0}}"#),
+            Some("en-US"),
+        );
+        assert!(!parsed.allow_normalization_persist);
+        // Positive controls: absence, partial valid and boundary valid policies.
+        for (policy, expected_attempts) in [
+            // The pinned decoder already accepts an empty sequence as defaults.
+            (serde_json::json!([]), 20),
+            (serde_json::json!({}), 20),
+            (serde_json::json!({"max_attempts":7}), 7),
+            (
+                serde_json::json!({"max_attempts":1,"recovery_budget_secs":1,
+                 "initial_delay_secs":1,"max_delay_secs":1}),
+                1,
+            ),
+            (
+                serde_json::json!({"max_attempts":1000,"recovery_budget_secs":86400,
+                 "initial_delay_secs":86400,"max_delay_secs":86400}),
+                1000,
+            ),
+        ] {
+            let doc = serde_json::json!({"language":"ja","model_rate_limit_retry":policy});
+            assert!(serde_json::from_value::<UserPrefs>(doc.clone()).is_ok());
+            let raw = serde_json::to_string(&doc).unwrap();
+            let parsed = UserPrefs::parse_settings_with_state(Some(&raw), Some("en-US"));
+            assert!(parsed.allow_normalization_persist);
+            assert_eq!(parsed.prefs.language, Language::Ja);
+            assert_eq!(
+                parsed.prefs.model_rate_limit_retry.max_attempts,
+                expected_attempts
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_disk_policy_keeps_failed_credential_migration_and_write_refusal() {
+        with_temp_home("prefs-policy-migration-failed", || {
+            let _restore = crate::platform::test_support::EnvRestore::capture(&[
+                "CODEWHALE_SECRET_BACKEND",
+                "CODEWHALE_HOME",
+                "HOME",
+                "DEEPSEEK_API_KEY",
+            ]);
+            // SAFETY: with_temp_home owns ENV_LOCK; EnvRestore restores before it drops.
+            unsafe {
+                std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+                std::env::set_var("CODEWHALE_HOME", "relative-broken-home");
+                std::env::set_var("HOME", "relative-broken-home");
+                std::env::remove_var("DEEPSEEK_API_KEY");
+            }
+            let mut doc = serde_json::to_value(legacy_local_alias_prefs()).unwrap();
+            doc["model_rate_limit_retry"] = serde_json::json!({"max_attempts":0});
+            // Production serializer intentionally skips plaintext; this edit models a legacy file.
+            doc["advanced"]["saved_models"][0]["api_key"] =
+                serde_json::json!("synthetic-legacy-test-key");
+            let before = serde_json::to_vec_pretty(&doc).unwrap();
+            let path = super::super::paths::settings_path();
+            std::fs::write(&path, &before).unwrap();
+            let loaded = UserPrefs::load();
+            assert_eq!(loaded.active_model().unwrap().id, "local-model");
+            assert!(loaded.active_model().unwrap().alias.is_none());
+            assert_eq!(loaded.model_rate_limit_retry.max_attempts, 20);
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let mut mutation_called = false;
+            let result = UserPrefs::update_transaction(|prefs| {
+                mutation_called = true;
+                prefs.theme = Theme::LiquidLight;
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(
+                !mutation_called,
+                "migration gate must refuse before mutation"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        });
     }
 }

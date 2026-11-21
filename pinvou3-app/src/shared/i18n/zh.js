@@ -1180,6 +1180,17 @@ Object.assign(dictZh.uiChat, {
   bgTasksRunning: n => `${n} 个后台任务运行中`,
 });
 
+Object.assign(dictZh.uiChat, {
+  modelRecoveryWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。可点击停止取消等待。',
+  modelRecoveryChildWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。正在等待恢复。',
+  modelRecoveryInterrupted: '限流恢复已暂停，进度已保存（{attempt}/{max} 次）。恢复时间：{time}；恢复后可继续。',
+  modelRecoveryUnknownTime: '未知',
+});
+
+Object.assign(dictZh.uiChat, { modelRecoveryAgent: '子任务 {agent}：' });
+
+Object.assign(dictZh.uiChat, { modelRecoveryCancelled: '限流等待已取消。', modelRecoveryStopped: '限流等待已结束，请查看本轮结果。' });
+
 // 端点模型自动发现(规格 §2.6/§2.9):「获取模型列表」按钮与候选面板、
 // maxOutput 字段、测试连接自动填入的一次性提示;ACP 线复用键进 uiAcpProviders。
 Object.assign(dictZh.uiSettingsDetail, {

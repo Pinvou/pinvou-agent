@@ -23,6 +23,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import './helpers/i18n-all.js';
+import * as modelRecovery from '../src/features/conversation/model-recovery.js';
 
 const webBridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
@@ -104,6 +106,7 @@ function bootWebBridge() {
     clearTimeout,
   };
   const context = vm.createContext({
+    PinvouModelRecovery: modelRecovery,
     window: windowObject,
     document: documentObject,
     navigator: { mediaDevices: null },
@@ -140,7 +143,7 @@ function bootWebBridge() {
       return d;
     },
     setHandler(name, fn) { handlers[name] = fn; },
-    emit(name, payload) { (listeners[name] || []).forEach(fn => fn({ payload })); },
+    emit(name, payload) { (listeners[name] || []).forEach(fn => fn({ event: name, payload })); },
     fireWindow(type, detail) { windowObject.dispatchEvent({ type, detail }); },
     personas: api.personas,
     sessions: api.sessions,
@@ -156,6 +159,188 @@ function chunkResponse(saved) {
     data_base64: encoded.toString('base64'), eof: true,
   };
 }
+
+function childRecoveryPayload(sessionId, state = 'waiting') {
+  return {
+    session_id: sessionId,
+    error: 'Rate limit exceeded: model recovery state changed',
+    model_recovery: { agent_id: 'child', operation_id: 'recovery-1', state, attempt: 1, max_attempts: 3 },
+  };
+}
+
+function savedWithParentTurn(id) {
+  return chunkResponse({
+    metadata: { id, title: id }, artifacts: [], transcript_revision: 'fixture-revision',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Durable parent turn' }] }],
+  });
+}
+
+test('Web navigation retains only the live child receipt during remote terminal reconciliation', { timeout: 3000 }, async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  assert.equal(await rt.sessions.switchToSession('parent'), true);
+  assert.equal(await rt.sessions.switchToSession('other'), true);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery), false);
+  let beginReconcile;
+  const reconcileStarted = new Promise(resolve => { beginReconcile = resolve; });
+  let releaseReconcile;
+  const pendingReconcile = new Promise(resolve => { releaseReconcile = resolve; });
+  let parentLoads = 0;
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => {
+    if (id === 'parent' && ++parentLoads === 1) {
+      beginReconcile();
+      return pendingReconcile;
+    }
+    return savedWithParentTurn(id);
+  });
+  try {
+    rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+    await reconcileStarted;
+    assert.equal(await rt.sessions.switchToSession('parent'), true);
+    assert.equal(parentLoads, 2);
+    assert.equal(rt.view().busy, false);
+    assert.equal(rt.view().chatItems.filter(item => item.modelRecovery?.state === 'waiting').length, 1);
+  } finally {
+    releaseReconcile(savedWithParentTurn('parent'));
+  }
+});
+
+test('Web routes late child recovery to an unopened session without claiming a foreground turn', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  assert.equal(await rt.sessions.switchToSession('other'), true);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery), false);
+  assert.equal(await rt.sessions.switchToSession('parent'), true);
+  assert.equal(rt.view().busy, false);
+  assert.equal(rt.view().chatItems.filter(item => item.modelRecovery?.state === 'waiting').length, 1);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent', 'recovered'));
+  assert.equal(rt.view().busy, false);
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery && !item.legacyConversationOnly), false);
+  await rt.flat.sendMessage('New foreground turn');
+  assert.equal(rt.view().queued.length, 0);
+});
+
+test('Web recovery terminal settles the foreground notice without settling a live child', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  await rt.sessions.switchToSession('parent');
+  const foreground = childRecoveryPayload('parent');
+  foreground.model_recovery = {
+    state: 'waiting', operation_id: 'foreground', attempt: 1, max_attempts: 3,
+  };
+  rt.emit('chat:transient_error', foreground);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  const notice = rt.view().chatItems.find(item => item.modelRecovery?.operation_id === 'foreground');
+  assert.equal(notice?.modelRecovery.state, 'waiting');
+
+  rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+  // Inspect the synchronous terminal before asynchronous authority hydration
+  // replaces the view; hiding a generic error is not recovery settlement.
+  const settled = rt.view().chatItems.find(item => item.modelRecovery?.operation_id === 'foreground');
+  assert.equal(settled?.modelRecovery.state, 'recovered');
+  assert.equal(settled.legacyConversationOnly, true);
+  assert.equal(rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice).length, 1);
+});
+
+test('Web recovery send retains a waiting child and removes a settled child notice', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  await rt.sessions.switchToSession('parent');
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  const settled = childRecoveryPayload('parent', 'stopped');
+  settled.model_recovery = { ...settled.model_recovery, agent_id: 'settled', operation_id: 'old' };
+  rt.emit('chat:transient_error', settled);
+  assert.equal(rt.view().chatItems.filter(item => item.modelRecovery).length, 2);
+  try {
+    assert.equal(await rt.flat.sendMessage('New foreground turn'), true);
+    assert.equal(rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice).length, 1);
+    assert.equal(rt.view().chatItems.some(item => item.modelRecovery?.agent_id === 'settled'), false);
+  } finally {
+    rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+  }
+});
+
+for (const operation of ['append', 'edit_last']) {
+  test(`Web recovery remote ${operation} retains a waiting child receipt`, async () => {
+    const rt = bootWebBridge();
+    rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+    await rt.sessions.switchToSession('parent');
+    rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+    assert.ok(rt.view().chatItems.some(item => item.type === 'user' && item.text === 'Durable parent turn'));
+    try {
+      rt.emit('chat:user_message', {
+        session_id: 'parent', content: 'Remote replacement', operation,
+        base_transcript_revision: 'fixture-revision',
+      });
+      assert.equal(rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice).length, 1);
+      assert.ok(rt.view().chatItems.some(item =>
+        item.type === 'user' && item.text === 'Remote replacement'));
+      assert.equal(rt.view().chatItems.some(item =>
+        item.type === 'user' && item.text === 'Durable parent turn'), operation === 'append');
+    } finally {
+      rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+    }
+  });
+}
+
+test('Web recovery rejected edit retains new child receipts without resurrecting a recovered one', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  await rt.sessions.switchToSession('parent');
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  const edit = rt.defer('edit_last_turn');
+  const result = rt.interaction.editLastTurn('Replacement');
+  try {
+    assert.equal(rt.view().busy, true);
+    assert.equal(rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice).length, 1);
+    rt.emit('chat:transient_error', childRecoveryPayload('parent', 'recovered'));
+    const next = childRecoveryPayload('parent');
+    next.model_recovery = { ...next.model_recovery, agent_id: 'child-b', operation_id: 'new' };
+    rt.emit('chat:transient_error', next);
+  } finally {
+    edit.reject(new Error('edit rejected'));
+    await result;
+  }
+  const restored = rt.view();
+  assert.equal(restored.busy, false);
+  assert.equal(restored.thinking.active, false);
+  assert.ok(restored.messages.some(message => message.role === 'user' &&
+    message.content?.some(block => block.text === 'Durable parent turn')));
+  assert.equal(restored.messages.some(message => message.role === 'user' &&
+    message.content?.some(block => block.text === 'Replacement')), false);
+  const waiting = rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice);
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].modelRecovery.agent_id, 'child-b');
+  assert.equal(rt.view().chatItems.find(item => item.modelRecovery?.agent_id === 'child')?.legacyConversationOnly, true);
+  try {
+    assert.equal(await rt.flat.sendMessage('Continue after the rejected edit'), true);
+    const continued = rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice);
+    assert.equal(continued.length, 1);
+    assert.equal(continued[0].modelRecovery.agent_id, 'child-b');
+  } finally {
+    rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+  }
+});
+
+test('Web recovery slow disk hydration retains the cached child notice of a terminal run', async () => {
+  const rt = bootWebBridge();
+  let durableLoads = 0;
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => {
+    durableLoads += 1;
+    return savedWithParentTurn(id);
+  });
+  await rt.sessions.switchToSession('scheduled-child');
+  rt.emit('chat:transient_error', childRecoveryPayload('scheduled-child'));
+  await rt.sessions.switchToSession('other');
+  const before = durableLoads;
+  assert.equal(await rt.flat.openScheduledRunChat({
+    sessionId: 'scheduled-child', status: 'completed', automationId: 'task', runId: 'run',
+  }, { id: 'task' }), true);
+  assert.ok(durableLoads > before, 'terminal reopening must really take the disk path');
+  assert.equal(rt.view().chatItems.filter(modelRecovery.isActiveChildRecoveryNotice).length, 1);
+});
 
 test('web cold replay preserves first duplicate tool matching and cached session navigation', async () => {
   const rt = bootWebBridge();

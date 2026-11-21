@@ -1283,6 +1283,17 @@ Object.assign(dictEn.uiChat, {
 Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '代码场景': 'Coding tasks', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '轻量模型': 'Lightweight model'
 });
 
+Object.assign(dictEn.uiChat, {
+  modelRecoveryWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Use Stop to cancel waiting.',
+  modelRecoveryChildWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Waiting for recovery.',
+  modelRecoveryInterrupted: 'Rate-limit recovery paused; progress saved ({attempt}/{max} attempts). Recovery time: {time}. You can continue when available.',
+  modelRecoveryUnknownTime: 'unknown',
+});
+
+Object.assign(dictEn.uiChat, { modelRecoveryAgent: 'Subtask {agent}: ' });
+
+Object.assign(dictEn.uiChat, { modelRecoveryCancelled: 'Rate-limit waiting cancelled.', modelRecoveryStopped: 'Rate-limit waiting ended. See this turn’s result.' });
+
 // Endpoint model auto-discovery (spec §2.6/§2.9): fetch button + candidate
 // panel, max output field, and the one-shot filled-from-endpoint notice;
 // ACP-line keys ride the uiAcpProviders cluster.

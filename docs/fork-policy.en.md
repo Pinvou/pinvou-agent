@@ -1,14 +1,16 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-11-15. Public maintenance 687358f7e contains #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152, #156 plus #157; parent gitlink follows the public maintenance head.
+> Updated: 2026-11-05. T6 review gitlink `19132162830b38aba7d900ef806427171d9203ef` integrates public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e` with rate-limit review fixes. Protected maintenance and immutable tags remain unchanged; public-head equality remains a merge gate.
+> Public maintenance has since advanced to `687358f7e` (2026-11-15, containing #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152, #156 plus #157); the parent main gitlink follows that head. This PR's T6 candidate predates that advance (it is based on `11cba403d`); after CodeWhale#141 merges to the public maintenance branch, re-pin the merged head per the established gate.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Public maintenance and parent gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit and the parent gitlink followed.
+- Public maintenance and parent main gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit and the parent gitlink followed.
 - Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one). Published maintenance history is preserved.
+- This PR's T6 review candidate predates that advance (it is based on maintenance `11cba403d`); after CodeWhale#141 merges to the public maintenance branch, re-pin the merged head per the established gate.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 551 files, +121146/-49817, net +71329; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 

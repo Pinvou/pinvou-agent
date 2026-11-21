@@ -16,13 +16,14 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { isActiveChildRecoveryNotice } from '../src/features/conversation/model-recovery.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 
 /** vm 装载 sessions.js factory，注入最小依赖面。 */
 function loadSessionsFeature(overrides) {
-  const root = {};
+  const root = { PinvouModelRecovery: { isActiveChildRecoveryNotice } };
   const src = fs.readFileSync(path.join(bridgeDir, 'sessions.js'), 'utf8');
   vm.runInNewContext(fs.readFileSync(path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + src, { window: root, globalThis: root, setTimeout, clearTimeout });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
@@ -111,6 +112,27 @@ function loadSessionsFeature(overrides) {
 }
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
+
+test('desktop recovery slow disk hydration retains a cached child notice of a terminal run', async () => {
+  let renders = 0;
+  const rt = loadSessionsFeature({ rerenderFromMessages() { renders += 1; } });
+  rt.state.activeSessionId = 'other';
+  rt.sessionStates['scheduled-child'] = {
+    loadedFromDisk: true, messages: [], artifacts: [], queued: [], busy: false,
+    thinking: { active: false },
+    chatItems: [{ id: 101, type: 'system', text: 'Waiting child', turnErrorNotice: true,
+      modelRecovery: { agent_id: 'child', operation_id: 'recovery-1', state: 'waiting' } }],
+  };
+  const load = rt.defer('load_session');
+  const result = rt.api.openScheduledRunChat({
+    sessionId: 'scheduled-child', status: 'completed', automationId: 'task', runId: 'run',
+  }, { id: 'task' });
+  load.resolve({ metadata: { id: 'scheduled-child' }, messages: [], artifacts: [] });
+  assert.equal(await result, true);
+  assert.equal(rt.calls.invoke.filter(name => name === 'load_session').length, 1);
+  assert.equal(renders, 1, 'terminal reopening must really rebuild the durable presentation');
+  assert.equal(rt.state.chatItems.filter(isActiveChildRecoveryNotice).length, 1);
+});
 
 test('ensureSession：create_session 等待期间再进草稿 → 不物化、返回 null', async () => {
   const rt = loadSessionsFeature();

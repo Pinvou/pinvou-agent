@@ -478,7 +478,8 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });
     resetPendingAssistant();
     state.chatItems = [];
-    rerenderFromMessages();
+    rerenderFromMessages({ keepItemIdSequence: true });
+    state.chatItems.push(...previous.chatItems.filter(item => globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)));
     state.busy = true;
     startThinking();
     context.currentStreamText = "";
@@ -496,7 +497,7 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       if (editBuffer) editBuffer.localTurnOwned = false;
       runSyncOnSession(sid, function () {
         state.messages = previous.messages;
-        state.chatItems = previous.chatItems;
+        state.chatItems = globalThis.PinvouModelRecovery?.restoreChildRecoveryNotices?.(previous.chatItems, state.chatItems) ?? previous.chatItems;
         state.busy = previous.busy;
         state.thinking = previous.thinking;
         context.currentStreamText = previous.currentStreamText;
