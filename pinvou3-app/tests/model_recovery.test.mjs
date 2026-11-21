@@ -5,11 +5,22 @@ import './helpers/i18n-all.js';
 import { isActiveChildRecoveryNotice, recoveryNotice, upsertRecoveryNotice, settleRecoveryNotices } from '../src/features/conversation/model-recovery.js';
 import { conversationItemsForMode } from '../src/features/conversation/deepseek-conversation.js';
 
-const base = { state: 'waiting', attempt: 2, max_attempts: 20, next_retry_at_ms: 1900000000000, operation_id: 'operation-1' };
-for (const [language, word] of [['zh-Hans', '限流'], ['en', 'rate limited'], ['ja', 'レート制限']]) {
+const now = Date.now();
+const nextRetry = new Date(now + 60_000);
+const base = { state: 'waiting', attempt: 2, max_attempts: 20, next_retry_at_ms: nextRetry.getTime(), operation_id: 'operation-1' };
+for (const [language, locale, word, unknown] of [
+  ['zh-Hans', 'zh-CN', '限流', '未知'],
+  ['en', 'en-US', 'rate limited', 'unknown'],
+  ['ja', 'ja-JP', 'レート制限', '不明'],
+]) {
   const notice = recoveryNotice(base, language);
   assert.ok(notice.includes(word), notice);
   assert.ok(notice.includes('2/20'), notice);
+  assert.ok(notice.includes(nextRetry.toLocaleString(locale)), notice);
+  for (const next_retry_at_ms of [null, now - 60_000, now, 'invalid', Number.MAX_VALUE]) {
+    const unavailable = recoveryNotice({ ...base, next_retry_at_ms }, language);
+    assert.ok(unavailable.includes(unknown), unavailable);
+  }
   assert.ok(recoveryNotice({ ...base, state: 'interrupted' }, language));
   assert.equal(recoveryNotice({ ...base, state: 'recovered' }, language), '');
   assert.ok(recoveryNotice({ ...base, agent_id: 'detached-child' }, language).includes(word));

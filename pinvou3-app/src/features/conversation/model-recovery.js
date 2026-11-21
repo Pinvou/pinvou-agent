@@ -21,9 +21,9 @@ export function recoveryNotice(receipt, language) {
   const lang = languageFromLocaleTags(language, 'en');
   const copy = dict[lang]?.uiChat;
   if (!copy || !receipt || !['waiting', 'interrupted', 'recovered', 'cancelled', 'stopped'].includes(receipt.state)) return null;
-  const next = Number(receipt.next_retry_at_ms);
-  const time = Number.isFinite(next) && next > 0
-    ? new Date(next).toLocaleString(lang === 'zh' ? 'zh-CN' : lang === 'ja' ? 'ja-JP' : 'en-US') : '';
+  const next = new Date(Number(receipt.next_retry_at_ms));
+  const time = next.getTime() > Date.now()
+    ? next.toLocaleString(lang === 'zh' ? 'zh-CN' : lang === 'ja' ? 'ja-JP' : 'en-US') : '';
   const key = receipt.agent_id && receipt.state === 'waiting' ? 'modelRecoveryChildWaiting'
     : { waiting: 'modelRecoveryWaiting', interrupted: 'modelRecoveryInterrupted', cancelled: 'modelRecoveryCancelled', stopped: 'modelRecoveryStopped' }[receipt.state];
   if (receipt.state === 'recovered') return '';

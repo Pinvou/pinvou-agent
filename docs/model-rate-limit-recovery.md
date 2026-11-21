@@ -52,9 +52,10 @@ including successful HTTP JSON envelopes carrying a logical error. Unknown
 Within the process, independent clients using the same endpoint, credential and
 account/project headers share cooldown, request admission and a recovery-episode
 attempt ceiling. All models on that credential conservatively share one quota
-group. Separate accounts/endpoints are isolated. Admission starts at the explicit
-provider concurrency limit, or 16 if no limit is configured; refusals halve it
-and three successful admissions restore one slot. Existing child launch
+group. Separate accounts/endpoints are isolated. Admission starts at the effective
+provider concurrency limit, which defaults to 3 for Z.ai and 16 without an
+effective provider limit. Refusals halve it, and three successful admissions
+restore one slot. Existing child launch
 scheduling reuses the same dynamic semaphore primitive. A successful HTTP
 response ends the shared refusal episode; each logical operation retains its
 own recovery budget, and the separate success streak still restores capacity
@@ -82,7 +83,9 @@ External ACP agents retain their own retry policy; the host
 does not resend their prompts.
 
 The desktop/web bridges and native code conversations show localized waiting
-and interrupted notices with attempt count and the next attempt/reset time.
+and interrupted notices with the attempt count. When a notice is created or
+derived from stored history, it shows the attempt/reset time if it is in the
+future. Missing, invalid, or elapsed timestamps use the localized unknown time.
 Content-free recovery receipts are retained with the local timing timeline;
 the terminal event provides the end of cancelled or failed observations.
 Off-turn/background child observations persist in an independent `agent:<id>`
