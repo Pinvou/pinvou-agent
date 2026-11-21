@@ -2,8 +2,11 @@
 
 > 立档 2026-07-02。本文已取代早期 256K 调参方案；旧方案对应的 fork patch 已被上游
 > v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。早期调参推导的完整历史
-> 文档（`auto-compact-256K-tuning.md` 等）已从当前文档树移除；可从本仓库 Git 历史
-> 追溯（重建基线提交 `e34024e62` 携带了它们，发布标签 `v0.6.5`/`v0.7.0` 亦含）。
+> 文档（[`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)，连同同期移除的 [`base-prompt-override-阶段2.md`](./base-prompt-override-阶段2.md) 与
+> [`system-prompt-架构.md`](./system-prompt-架构.md)）曾从当前文档树移除；2026-11 起前两篇已作为史料回填留档
+> （[`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md) 文首有取代注记），[`system-prompt-架构.md`](./system-prompt-架构.md) 已在文档树，
+> 更早的其余材料仍可从本仓库 Git 历史追溯（重建基线提交 `e34024e62` 携带了它们，发布
+> 标签 `v0.6.5`/`v0.7.0` 亦含）。
 
 ## 0. 设计目标（钉死，优先于一切参数）
 
@@ -41,8 +44,8 @@
 
 ### 两把尺问题（所有复杂度的根）
 
-- **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。
-- **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :749）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
+- **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。（注：子集尺判据为 ≤0.9.5 行为；现行底座压力门按全量 input 估算、触发更早，app 侧 `derive_compaction_threshold` 仍按子集模型推导。）
+- **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :753——2026-11-20 r23 注：原稿「约 :749」系上一函数闭括号行，:753 始为 `estimate_input_tokens_conservative` 定义行）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
 
 两条线不是一把尺，差异是**乘性的 ×1.5**，不是加性的。这就是为什么 T 必须做尺换算、
 为什么阶段一 T 只能到 ~50% 而不是 75%。**真正的解法是消灭两把尺（§4 上游线），
@@ -53,9 +56,11 @@
 现状：阈值由 `derive_compaction_threshold`（`features/assistant/platform/bridge.rs`）按 `(E−S)/1.5 − 22000` 派生（早期实现曾写死 190,000），窗口靠 `qwen36_35b_256k`
 名字后缀 hint 派生。
 
-客户机（cube-f840）翻车根因：vLLM 启动丢了 `--served-model-name qwen36_35b_256k`，
+客户机翻车根因（内部机名已脱敏）：vLLM 启动丢了 `--served-model-name qwen36_35b_256k`，
 served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口（实际
-`max_model_len=262144` 完好）→ E 降到 105,472，而写死的 190,000 > E → **倒置**，
+`max_model_len=262144` 完好）→ E 降到 128,000 − 24,576 − 1,024 = **102,400**（2026-11
+订正：原书 105,472 系误取 §6 表中 131,072 档的配对值；写档时点兜底常量即 128,000，
+见 `route_budget.rs:63`（⚠️ 2026-11-19 r22 订正：该锚系 0.9.5 时代内部 tag `pinvou-v0.9.5-r1` 树——tagger 2026-08-10、晚于 2026-07-02 写档日，且本地 checkout 实含该 tag，前版「写档时代内部 tag、本仓 checkout 不含该 tag」两说均不成立；写档期同值兜底真身在 `core/engine/context.rs:50`。公开可复核锚：Pinvou/CodeWhale `v0.9.1` 同式兜底在 `:66`——裸 tag `v0.9.5` 在公开仓 Pinvou/CodeWhale 不可解；本地各 store 视 fetch 源可能解析到上游 DeepSeek-TUI 谱系的同名 tag，勿混用）），而写死的 190,000 > E → **倒置**，
 正常线永远轮不到，只剩 emergency 抖动（每次本地 trim 省 2-3K）。
 
 **单点失败：窗口来源依赖一个易丢的启动参数。** 修法 = 不靠名字，直接探测。
@@ -63,7 +68,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 > ✅ **已实证坐实**（2026-07-02，见 §6）：写死 190K 在**健康 256K 机器上也是倒置的**。
 > 触发顺序实证（真实 `should_compact`）：262K 窗口下 emergency 在 N=198 条触发，而
 > `should_compact(T=190K)` 要到 N=255 条才触发——**紧急线先，正常线永远轮不到**。之所以
-> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（engine.rs:2942），成功时体验与正常
+> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（写作期约 engine.rs:2942，勿按 0.9.5 或现树查；该行号未锚定任何现存快照），成功时体验与正常
 > 路径几乎一样；直到窗口被误判成 128K，emergency 摘要救不回落到本地 trim，才以抖动暴露。
 
 ## 3. 方案总纲
@@ -73,13 +78,13 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
-   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#419 引入）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
+   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#248 引入——2026-11 订正：原书误记 #419）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
 2. `engine_pool.rs`：探测结果两个都用，name 按 `resolve_served_model` 决策校正
    （配置名在服务列表中原样保留，仅单模型服务且不含配置名才跟随，其余保留配置名让
    `model_not_found` 显式浮现）+ 存 `max_model_len`。
 3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
    的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
-4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
+4. `bridge`（📌 2026-11 注：现行路径 `features/assistant/platform/bridge.rs`，`bridge/mod.rs` 为写档时布局）：声明窗口与 probe 取较小值，生成同时包含 context/output 的
    `active_route_limits`; operator-owned endpoints (local vLLM, custom
    OpenAI-compatible / custom, excluding coding_plan) declare their output
    uniformly by window tier: >=500K→131072 / >=250K→65536 / otherwise
@@ -91,15 +96,15 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
-连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs:933）、请求输出 cap
-按小窗自动钳制（context.rs:62）、context report 百分比 route-aware（context_report.rs:179）。
+连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，写作期约 :933，该行号未锚定现存快照）、请求输出 cap
+按小窗自动钳制（context.rs，写作期约 :62）、context report 百分比 route-aware（context_report.rs，写作期约 :179；行号为本文写作期 2026-07-02、v0.8.6x 基快照，勿按 0.9.5 或现树查）。
 
 ### T 推导公式（阶段一，同尺换算 + 守护余量）
 
 ```
 T = (E − S − framing) / k − R − M      // 换算到 raw 子集尺，并留 margin
 T = clamp(T, floor=4,096, 上界=0.75·W)
-工程简化等价： T = (E − S) / 1.5 − 22,000
+工程简化近似（较全式展开多扣约 833 tok，保守向；framing 在全式中位于 ÷1.5 之内）： T = (E − S) / 1.5 − 22,000
 ```
 
 | 常数 | 含义 | 取值（**§6 实测校准 2026-07-02**） |
@@ -157,7 +162,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 
 ### v0.8 一期：后端探测 + 多窗口适配（历史上零 fork）
 
-> **实施状态（2026-07-02，分支 `pinvou3-compact`）**：✅ 代码完成 + 编译通过 + 275
+> **实施状态（2026-07-02，分支 `pinvou3-compact`——内部 worktree 分支，不在本仓库）**：✅ 代码完成 + 编译通过 + 275
 > lib 测试全绿 + fork-guard `--fast` 零变化（证实零 fork）。
 > ✅ **真机探测已验证**：对测试 vLLM 端点跑 `live_probe_returns_window`,
 > probe→`(qwen36_35b_256k, 262144)`,端到端 derive→T=133029(非写死 190K)。
@@ -192,8 +197,10 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 **验收**：
 1. `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml -- --test-threads=1`
    （bridge 测试 env 竞争，必须单线程）。
-2. 守护测试参数化四窗口，断言**同尺**不变式 `k·(T+R) + S + M ≤ E`（旧的
-   `compaction_threshold_stays_below_emergency_budget` 锁的是跨尺假不变式，一并改）；
+2. 守护测试参数化四窗口，断言**同尺**不变式 `k·(T+R) + S + 2,500（格式化常数
+   FRAMING）≤ E`——实装守卫 `forkguard_compaction_threshold_below_emergency_all_windows`
+   即此式；本节规划的 M≈15K 保守余量未进守卫（实际锁比规划更松）。旧的
+   `compaction_threshold_stays_below_emergency_budget` 锁的是跨尺假不变式，一并改；
    另断言 `probed context_tokens=Some` 时 `active_route_limits.context_tokens` 被填。
 3. `./scripts/fork-guard.sh` 必须覆盖底座 route limits/output precedence 与 app 的
    128K/256K、自定义兼容引擎结果式回归。
@@ -212,10 +219,11 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 ### 上游线（并行，不阻塞一/二期）：usage 回灌 + 同尺判据
 
 **这是真正的「更优做法」，也是把 T 从 ~50% 提到 ~75% 的唯一途径**，但要动底座 +
-上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2「通用优化才提上游」）。
+上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2 的通用优化提上游判据——转述，原文为「所有 CodeWhale embedder 都受益｜从最新 upstream main 提上游 PR」）。
 
 - 事实基础：真实 `usage.input_tokens` 每 turn 从 provider 免费返回，现在只喂成本统计
-  （pricing.rs）+ goal 预算（engine.rs:1922）+ footer，**从不回灌估算器**。
+  （pricing.rs）、压缩压力门（`turn_loop` 的 `compaction_pressure_reached_with_billed`——billed
+  与全量估算取大者）、goal 预算（写作期约 engine.rs:1922，勿按 0.9.5 或现树查）+ footer，**从不回灌估算器**。
 - 做法：① 回灌校准 k（`observed = real / raw_estimate`，EWMA 平滑）；② 让正常压缩
   也用 `estimated_input_tokens()`（全量）判据，与 E 同尺 → T/E 退化成同轴两个百分比，
   规则变一句话「input ≥ 75%W 温和压，≥ E 强制压」，S/M/R/档位全部消失。
@@ -230,7 +238,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 
 | 方案 | 为什么现在不值 | 重新考虑的信号 |
 |---|---|---|
-| layered seam（底座已有，默认关） | 复杂 + 每次多请求，底座自己没敢默认开 | 出现超长自主 agent 循环，压缩成热路径 |
+| layered seam（底座曾有，默认关；2026-07-23 已从底座移除，配置键保留但被忽略） | 复杂 + 每次多请求，底座自己没敢默认开 | 出现超长自主 agent 循环，压缩成热路径 |
 | 会话 RAG（pinvou 有 L1 基础） | 对话连续性/指代不能靠检索 | 同上 |
 | 结构化状态（todo/notes） | 底座已部分覆盖，业务非长循环 | 同上 |
 | vLLM `/tokenize` 精确计数 | 每 turn 多一次往返 + pinvou 专用 | 仅作回灌异常时的对账探针 |
@@ -257,6 +265,8 @@ harness：一次性对拍程序（已于 2026-08 随测试清理删除；结论�
 |---|---|---|---|---|
 | 262,144 | 236,544 | ❌ 倒置(sc@255 > em@198) | ✅ sc@174 < em@198 | ✅ sc@60 |
 | 131,072 | 105,472 | — | ❌ 倒置(sc@174 > em@84) | ✅ sc@60 < em@84 |
+
+（2026-11-18 口径注：本表 E 值按二进制窗口 262,144 口径；底座对 256_000 十进制窗口的 auto-compact E=230,400（256,000−24,576−1,024）系另一窗口口径，两者之差为窗口口径差而非数据矛盾。）
 
 **待真机精修（不阻塞编码）**：S 用实际会话 dump（含 workspace/memory/更多 skills 注入）
 校准；但 S 是 /1.5 衰减的线性项，1.4K↔12K 只让 T 差 ~7K，取保守 4K 已够安全。

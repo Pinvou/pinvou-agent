@@ -4,7 +4,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fs4::FileExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -30,14 +29,16 @@ pub struct RunStore {
     lock: Arc<Mutex<()>>,
 }
 
+/// Holds one run's exclusive execution lock (flock on unix, LockFileEx on
+/// windows, via `fd-lock`) until dropped. No explicit unlock on drop: both
+/// primitives release the lock when the fd closes, which the inner `File`'s
+/// own drop does.
 #[derive(Debug)]
-pub(crate) struct RunExecutionGuard(File);
-
-impl Drop for RunExecutionGuard {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
-    }
-}
+pub(crate) struct RunExecutionGuard(
+    // Never read: owning the open fd *is* the lock hold; closing it (on
+    // drop) releases the OS lock.
+    #[allow(dead_code)] File,
+);
 
 trait PersistedRecord: DeserializeOwned {
     fn has_supported_schema(&self) -> bool;
@@ -427,15 +428,22 @@ impl RunStore {
     }
 
     pub(crate) fn claim_execution(&self) -> Result<RunExecutionGuard> {
-        let lock = open_execution_lock(&self.run_dir.join(EXECUTION_LOCK_FILE))?;
-        match FileExt::try_lock(&lock) {
-            Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => {
+        let mut lock = fd_lock::RwLock::new(open_execution_lock(
+            &self.run_dir.join(EXECUTION_LOCK_FILE),
+        )?);
+        match lock.try_write() {
+            // The write guard would flock/LockFileEx-unlock on drop, so keep
+            // it from running (`mem::forget`; fd-lock keeps no interior lock
+            // state). The OS lock stays bound to the open fd until
+            // `RunExecutionGuard` drops and closes it — the same release
+            // point the previous explicit `unlock` had.
+            Ok(guard) => std::mem::forget(guard),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(BenchmarkError::coded("run_in_progress"));
             }
-            Err(fs4::TryLockError::Error(error)) => return Err(error.into()),
+            Err(error) => return Err(error.into()),
         }
-        let guard = RunExecutionGuard(lock);
+        let guard = RunExecutionGuard(lock.into_inner());
         self.repair_torn_jsonl_tail::<RunEvent>(EVENT_FILE)?;
         self.repair_torn_jsonl_tail::<PersistedOutcome>(OUTCOME_FILE)?;
         Ok(guard)

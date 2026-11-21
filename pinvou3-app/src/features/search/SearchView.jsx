@@ -468,7 +468,6 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
           {/* 永久删除已收纳对话(二次确认,沿用原设置页同款弹窗) */}
           {archivedDeleteConfirm && createPortal(
             <ArchivedDeleteConfirmDialog
-              theme={theme}
               t={t}
               onCancel={() => setArchivedDeleteConfirm(null)}
               onConfirm={() => {

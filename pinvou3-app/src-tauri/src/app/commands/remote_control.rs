@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, State, Webview};
 
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::workspace::{
@@ -217,8 +217,19 @@ fn web_acp_result<T, E: std::fmt::Display>(
     web_operation_result("Web ACP", "web_acp", operation.as_str(), result)
 }
 
-fn require_main_webview(window: &WebviewWindow) -> Result<(), String> {
-    if window.label() == "main" {
+/// The Web access bridge answers only to the main desktop WebView: browser
+/// tab child WebViews (agent-browser-*) and auxiliary windows (reader, pet,
+/// detached shells) are rejected even if their content could reach IPC.
+fn is_main_webview_label(label: &str) -> bool {
+    label == "main"
+}
+
+/// The caller handle is injected as a `Webview`, not a `WebviewWindow`: the
+/// main window hosts browser-tab child WebViews (agent-browser-*), and
+/// Tauri's single-WebView `WebviewWindow` injection fails once any tab
+/// exists, which used to take the whole bridge down while tabs were open.
+fn require_main_webview(webview: &Webview) -> Result<(), String> {
+    if is_main_webview_label(webview.label()) {
         Ok(())
     } else {
         Err("Web access bridge is restricted to the main desktop WebView".to_string())
@@ -228,21 +239,21 @@ fn require_main_webview(window: &WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 pub fn web_access_enable(
     allow_host_workspace: Option<bool>,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.start(allow_host_workspace.unwrap_or(false))
 }
 
 #[tauri::command]
 pub fn web_access_disable(
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
     // 停链与启用同口径:辅助 WebView(code-reader/宠物等)里的脚本不得
     // 静默切断用户的远程链接。
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.stop_current()
 }
 
@@ -251,19 +262,19 @@ pub fn web_access_disable(
 /// 辅助 WebView 不得触发或轮询。
 #[tauri::command]
 pub fn web_access_status(
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessStatus, String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     Ok(manager.status())
 }
 
 #[tauri::command]
 pub fn web_access_rotate(
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.refresh()
 }
 
@@ -273,10 +284,10 @@ pub fn web_access_rotate(
 /// access policy.
 #[tauri::command]
 pub fn web_access_revoke_host_workspace(
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.revoke_host_workspace()
 }
 
@@ -285,10 +296,10 @@ pub fn web_access_revoke_host_workspace(
 #[tauri::command]
 pub fn web_access_bridge_ready(
     generation: String,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.mark_frontend_ready(generation)
 }
 
@@ -298,10 +309,10 @@ pub fn web_access_bridge_ready(
 pub fn web_access_rpc_begin(
     request_id: String,
     generation: String,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<bool, String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.begin_rpc(&request_id, &generation)
 }
 
@@ -316,10 +327,10 @@ pub fn web_access_rpc_respond(
     error: Option<String>,
     error_code: Option<String>,
     error_category: Option<String>,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.complete_rpc(
         &request_id,
         &generation,
@@ -338,10 +349,10 @@ pub fn web_access_rpc_respond(
 pub fn web_access_publish_event(
     event: String,
     payload: Value,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     manager.publish_frontend_event(&event, payload)
 }
 
@@ -361,13 +372,13 @@ pub struct WebHostFileListing {
 pub fn web_access_list_host_files(
     path: Option<String>,
     issue_workspace_handle: Option<bool>,
-    window: WebviewWindow,
+    webview: Webview,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebHostFileListing, String> {
     // 手机侧文件选择器经 Web RPC 调度,由主 WebView 的 bridge invoke(标签
     // 即 main,放行);此 gate 拦截的是桌面辅助 WebView 直接 invoke 浏览
     // $HOME 的路径。
-    require_main_webview(&window)?;
+    require_main_webview(&webview)?;
     let listing = file_access::list_host_files(path)?;
     let workspace_handle = issue_workspace_handle
         .unwrap_or(false)
@@ -1814,8 +1825,8 @@ mod tests {
         WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
         WebWorkspaceOperation, ensure_owned_session_download_id, ensure_web_artifact_file_size,
         ensure_web_artifact_response, ensure_web_chat_session_supported, fold_web_chat_error,
-        fold_web_session_error, web_acp_agent_id, web_acp_result, web_artifact_storage_path,
-        web_session_result, web_workspace_result,
+        fold_web_session_error, is_main_webview_label, web_acp_agent_id, web_acp_result,
+        web_artifact_storage_path, web_session_result, web_workspace_result,
     };
     use deepseek_tui::session_manager::{SavedSession, create_saved_session};
     use serde_json::{Value, json};
@@ -1899,6 +1910,71 @@ mod tests {
                 "{fn_name} must fold its errors at the command boundary ({marker})"
             );
         }
+    }
+
+    /// Issue #840: the ten gated bridge commands must inject a `Webview`
+    /// (whose handle survives a multi-webview main window) instead of a
+    /// `WebviewWindow` — once a browser-tab child WebView is attached to the
+    /// main window, Tauri's single-WebView `WebviewWindow` injection fails
+    /// and every bridge command errors before its body runs. Each command
+    /// body must also keep the main-WebView caller gate so browser-tab child
+    /// WebViews stay isolated from the bridge, and the gate itself must
+    /// accept exactly the `main` label.
+    #[test]
+    fn web_access_bridge_commands_inject_a_webview_and_gate_on_the_main_label() {
+        let source = include_str!("remote_control.rs");
+        for fn_name in [
+            "pub fn web_access_enable(",
+            "pub fn web_access_disable(",
+            "pub fn web_access_status(",
+            "pub fn web_access_rotate(",
+            "pub fn web_access_revoke_host_workspace(",
+            "pub fn web_access_bridge_ready(",
+            "pub fn web_access_rpc_begin(",
+            "pub fn web_access_rpc_respond(",
+            "pub fn web_access_publish_event(",
+            "pub fn web_access_list_host_files(",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let end = [
+                "\n#[tauri::command]",
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{fn_name} body must be terminated"));
+            let body = &body[..end];
+            // Positive pin: the injected handle must be a plain `Webview`
+            // (a `webview: WebviewWindow,` fallback would fail argument
+            // injection while a browser-tab child WebView exists).
+            assert!(
+                body.contains("webview: Webview,"),
+                "{fn_name} must inject a plain Webview handle"
+            );
+            assert!(
+                body.contains("require_main_webview(&webview)?;"),
+                "{fn_name} must keep the main-WebView caller gate"
+            );
+        }
+        for label in [
+            "agent-browser-0123abcdef",
+            "code-reader",
+            "pet",
+            "detached-notes-abc",
+        ] {
+            assert!(
+                !is_main_webview_label(label),
+                "auxiliary WebView label {label:?} must not reach the Web access bridge"
+            );
+        }
+        assert!(is_main_webview_label("main"));
     }
 
     #[test]

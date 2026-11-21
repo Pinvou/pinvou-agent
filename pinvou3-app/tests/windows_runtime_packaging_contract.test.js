@@ -665,8 +665,16 @@ assert.match(
   /ClearErrors\r?\n\s*ExecWait[^\r\n]+\$5\r?\n\s*IfErrors pinvou_vc_redist_exec_failed/,
   "ExecWait errors must be cleared and handled immediately",
 );
-assert.match(installerHook, /IntCmp \$5 3010/);
-assert.match(installerHook, /IntCmp \$5 1641/);
+// The exit-ladder pins carry the full jump targets, not just the compared
+// code: a one-letter drift in a target spelling is a makensis-dangling
+// label that no CI lane compiles away (no PR lane runs makensis), so the
+// prefix-only form cannot catch it.
+assert.match(installerHook, /IntCmp \$5 3010 pinvou_vc_redist_reboot 0 0/);
+assert.match(installerHook, /IntCmp \$5 1638 pinvou_vc_redist_ready 0 0/);
+assert.match(
+  installerHook,
+  /IntCmp \$5 1641 pinvou_vc_redist_reboot pinvou_vc_redist_exit_failed pinvou_vc_redist_exit_failed/,
+);
 for (const [label, nextLabel] of [
   ["pinvou_vc_redist_exec_failed", "pinvou_vc_redist_temp_failed"],
   ["pinvou_vc_redist_temp_failed", "pinvou_vc_redist_exit_failed"],

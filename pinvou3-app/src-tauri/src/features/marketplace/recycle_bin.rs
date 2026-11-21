@@ -920,17 +920,10 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 /// 文件锁，裸 `read_to_string` 会被植入的 FIFO 卡死在 `open()` 上——锁被持有
 /// 期间所有回收站操作（含 restore 持有的 per-id import 锁）全部停摆。硬化
 /// 语义与其它私有状态文件一致：非普通文件（FIFO/symlink/设备）一律响亮拒绝。
+/// 机制在 store.rs 的 [`super::store::load_private_json_locked`]（#817 B4 合并的读写孪生），
+/// 这里只传 recycle-bin.json 自己的损坏文案。
 fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
-    match crate::platform::filesystem::read_private_data_file(path) {
-        Ok(content) => serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "解析 {} 失败: {e}（recycle-bin.json 损坏时 fail loud，不静默重建）",
-                path.display()
-            )
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RecycleBinFile::default()),
-        Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
-    }
+    super::store::load_private_json_locked(path, "recycle-bin.json 损坏时 fail loud，不静默重建")
 }
 
 /// Test-only failpoint (the mod.rs `FAIL_NEXT_INSTALLED_WRITE` convention):
@@ -941,19 +934,14 @@ pub(crate) static FAIL_NEXT_RECYCLE_SAVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试）。
+/// 机制在 store.rs 的 [`super::store::save_private_json_locked`]；failpoint 留在包装层，
+/// 注入的错误必须在触碰磁盘前短路。
 fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
     #[cfg(test)]
     if FAIL_NEXT_RECYCLE_SAVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
         return Err("injected recycle-bin save failure (test failpoint)".to_string());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(file)
-        .map_err(|e| format!("序列化 recycle-bin.json 失败: {e}"))?;
-    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    super::store::save_private_json_locked(path, file, "recycle-bin.json")
 }
 
 #[cfg(test)]
@@ -1421,7 +1409,12 @@ mod tests {
         let bin = RecycleBin::with_roots(tmp.clone());
         std::fs::write(tmp.join("recycle-bin.json"), "not-json{{{").unwrap();
 
-        assert!(bin.list().is_err(), "损坏清单读取应报错");
+        let error = bin.list().expect_err("损坏清单读取应报错");
+        assert!(
+            error.starts_with("解析 ")
+                && error.contains("recycle-bin.json 损坏时 fail loud，不静默重建"),
+            "fail-loud parse wording is pinned (store-specific note): {error}"
+        );
         assert!(bin.purge("x").is_err(), "损坏清单 purge 应报错");
         assert_eq!(
             std::fs::read_to_string(tmp.join("recycle-bin.json")).unwrap(),

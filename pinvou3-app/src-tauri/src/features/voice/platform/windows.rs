@@ -96,7 +96,7 @@ pub fn native_recognition_source() -> &'static str {
     "pinvou-webview-sensevoice-local"
 }
 
-pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
+pub async fn reset_microphone_permission(webview: tauri::Webview) -> Result<bool, String> {
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
@@ -106,7 +106,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     };
     use windows_core::{HSTRING, Interface};
 
-    let origin = window
+    let origin = webview
         .url()
         .map_err(|error| format!("读取当前页面地址失败：{error}"))?
         .origin()
@@ -117,7 +117,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let sender = Arc::new(Mutex::new(Some(sender)));
-    window
+    webview
         .with_webview(move |webview| {
             let callback_sender = Arc::clone(&sender);
             // SAFETY: runs inside with_webview on the thread owning the WebView2,

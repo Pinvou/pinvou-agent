@@ -1031,11 +1031,14 @@ fn read_registry_capped(path: &Path) -> std::io::Result<String> {
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
 /// default. An unreadable or wrong-shaped payload is quarantined next to the
-/// original (`<name>.invalid-<timestamp>`, the GUI `VersionedJsonStore`
-/// convention) before degrading to the default for this process — otherwise
-/// the next write through this process would silently destroy the only copy
-/// of the other tasks' data. Newer-schema files stay untouched: they take
-/// the refusal path (`ensure_supported_schema`), not quarantine.
+/// original (`<name>.invalid-<timestamp>`). A missing canonical is refused —
+/// never silently rebuilt — by the mutation reader (`read_registry_for_write`)
+/// when a sibling carries either surface's quarantine naming: the desktop's
+/// `.corrupt-<timestamp>.<nanos>` copy, the desktop's `.invalid-desktop`
+/// sentinel, or this CLI's own `.invalid-` evidence; this read-only reader
+/// just degrades to the default for this process. Newer-schema files stay
+/// untouched: they take the refusal path (`ensure_supported_schema`), not
+/// quarantine.
 fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
     match read_registry_capped(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
@@ -1088,10 +1091,10 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// persist, silently resetting the sidecar entries and resolving their
 /// kinds to plain chat tasks. Three refusal cases, each repairable:
 /// malformed-on-read (quarantined this invocation), absent-after-quarantine
-/// (a `.invalid-*` sibling copy exists — the app's persist heals the path,
-/// or removing the stale copies opts back into a fresh bootstrap), and
-/// unreadable-at-rest (chmod/EIO). A healthy read and a genuinely fresh
-/// bootstrap (no file, no quarantine copies) still write.
+/// (an `.invalid-*`/`.corrupt-*` sibling copy exists — the app's persist
+/// heals the path, or removing the stale copies opts back into a fresh
+/// bootstrap), and unreadable-at-rest (chmod/EIO). A healthy read and a
+/// genuinely fresh bootstrap (no file, no quarantine copies) still write.
 /// Round-40 review: the foreign-write guard the app's
 /// `VersionedJsonStore::persist` carries and this CLI's read-modify-write
 /// lane lacked. Each surface previously closed only the opposite half of
@@ -1171,16 +1174,25 @@ fn write_json_atomic_checked(
 }
 
 fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Value, CliError> {
+    // #817 B4: the desktop app's stores quarantine through the platform
+    // primitive (`<name>.corrupt-<ts>.<nanos>`), while this CLI (and app
+    // builds before that switch) write `<name>.invalid-<stamp>`. Detection is
+    // a cross-process contract — either prefix means "a quarantine happened;
+    // the healthy registry may live only in the other surface's memory".
+    // Directory errors degrade to "no siblings", exactly as before.
     let quarantine_copies_exist = |path: &Path| -> bool {
         let Some(file_name) = path.file_name() else {
             return false;
         };
-        let prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        let invalid_prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        let corrupt_prefix = format!("{}.corrupt-", file_name.to_string_lossy());
         std::fs::read_dir(path.parent().unwrap_or(Path::new(".")))
             .map(|entries| {
-                entries
-                    .flatten()
-                    .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                entries.flatten().any(|entry| {
+                    let entry_file_name = entry.file_name();
+                    let name = entry_file_name.to_string_lossy();
+                    name.starts_with(&invalid_prefix) || name.starts_with(&corrupt_prefix)
+                })
             })
             .unwrap_or(false)
     };
@@ -1188,7 +1200,7 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
         CliError::failed(format!(
             "scheduled_store_unreadable: registry {} {why}; a default-based rewrite would \
              destroy the other surface's entries — repair the registry (or remove the \
-             .invalid-* quarantine copies to start fresh) and retry",
+             .invalid-*/.corrupt-* quarantine copies to start fresh) and retry",
             path.display()
         ))
     };
@@ -3690,6 +3702,110 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["v"], 2, "a fresh stamp must allow the write");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Mixed-version contract (#899 review P2 and its fix-delta follow-up):
+    /// the INSTALLED pre-#899 reader recognizes a quarantine sibling only
+    /// through the `.invalid-` prefix. The current desktop quarantines
+    /// damaged tables to a platform-named `.corrupt-<ts>.<nanos>` copy AND
+    /// drops a desktop-owned `.invalid-desktop` sentinel (established
+    /// before the rename, so no canonical-absence window can precede the
+    /// marker); during that quarantine window (canonical absent) a mutation
+    /// read must refuse instead of rebuilding from defaults — a fresh Null
+    /// rebuild here would let the next write persist a small replacement
+    /// the desktop then loads, destroying the other surface's recoverable
+    /// entries. The sentinel is what makes the refusal fire for an
+    /// already-installed older binary that predates the dual-prefix scan,
+    /// so the frozen legacy scan below — a verbatim stand-in for the
+    /// shipped reader's check — must see it.
+    fn legacy_prefix_scan(path: &std::path::Path) -> bool {
+        let Some(file_name) = path.file_name() else {
+            return false;
+        };
+        let prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        std::fs::read_dir(path.parent().unwrap_or(std::path::Path::new(".")))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn mutation_read_refuses_when_the_new_desktop_quarantine_output_is_present() {
+        let root = scratch_dir("mixed-quarantine");
+        let path = root.join("task-kinds.json");
+        // No canonical file: the desktop quarantined the damaged table aside
+        // and has not re-persisted yet. Its on-disk output is the
+        // platform-named evidence copy plus the legacy-visible sentinel.
+        std::fs::write(
+            path.with_file_name("task-kinds.json.corrupt-20261119T120000.123456789"),
+            b"{not json",
+        )
+        .unwrap();
+        std::fs::write(path.with_file_name("task-kinds.json.invalid-desktop"), b"").unwrap();
+
+        // The shipped old reader's own scan must see the sentinel — this is
+        // the compatibility guarantee, checked against the frozen legacy
+        // logic rather than the current dual-prefix reader (which would
+        // refuse on the `.corrupt-*` evidence copy alone).
+        assert!(
+            legacy_prefix_scan(&path),
+            "the sentinel must satisfy the shipped pre-#899 scan's `.invalid-` prefix check"
+        );
+
+        let error = read_registry_for_write(&path, &["tasks"])
+            .expect_err("the quarantine window must refuse a mutation read");
+        assert!(
+            error.to_string().contains("scheduled_store_unreadable"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert!(
+            !path.exists(),
+            "the refusal must not have materialized a fresh registry"
+        );
+
+        // The vulnerability shape, documented: with the sentinel absent and
+        // only the `.corrupt-*` evidence copy on disk, the shipped old
+        // scan sees NO sibling — exactly the gap that let an old CLI
+        // rebuild from defaults before the sentinel existed. The current
+        // desktop never produces this state (marker established before the
+        // rename), so this is a contract note, not a reachable state.
+        std::fs::remove_file(path.with_file_name("task-kinds.json.invalid-desktop")).unwrap();
+        assert!(
+            !legacy_prefix_scan(&path),
+            "corrupt-only output is invisible to the shipped scan — the sentinel is load-bearing"
+        );
+
+        // The current dual-prefix reader must ALSO refuse this shape: the
+        // evidence copy alone is a quarantine signal for current binaries
+        // (defense in depth on top of the sentinel).
+        let error = read_registry_for_write(&path, &["tasks"])
+            .expect_err("the corrupt-only sibling must refuse a mutation read too");
+        assert!(
+            error.to_string().contains("scheduled_store_unreadable"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert!(
+            !path.exists(),
+            "the refusal must not have materialized a fresh registry"
+        );
+
+        // Window closed (the desktop re-persisted a healthy canonical table
+        // and cleared its sentinel): with no quarantine sibling left at all,
+        // the fresh bootstrap applies again. The evidence copy alone would
+        // keep this dual-prefix reader refusing — the desktop clears the
+        // sentinel only once the canonical file exists, so this shape
+        // (sibling present, canonical absent) never arises from a fixed
+        // desktop.
+        std::fs::remove_file(
+            path.with_file_name("task-kinds.json.corrupt-20261119T120000.123456789"),
+        )
+        .unwrap();
+        let value = read_registry_for_write(&path, &["tasks"]).expect("no sibling, no canonical");
+        assert_eq!(value, serde_json::Value::Null);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -6,6 +6,7 @@ import {
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
+import { useIntervalWhen } from '../../hooks/useIntervalWhen.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   listAcpWorkspace,
@@ -276,21 +277,19 @@ export function CodexWorkspacePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- debounced reload: triggered by refresh token/visibility/expansion set; depending on the load functions would repeatedly rebuild the timer
   }, [refreshToken, sessionId, visible, tab, expanded]);
 
-  useEffect(() => {
-    if (!visible || !browsable) return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      if (tab === 'files') {
-        const loadedDirectories = ['', ...expanded];
-        Promise.all(loadedDirectories.map(
-          path => loadDirectory(path, { force: true }),
-        ));
-      }
-      if (sessionId && tab === 'changes') loadChanges();
-    }, 2000);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- polling subscription: configured by visibility/tab/expansion set; depending on the load functions would repeatedly rebuild the timer
-  }, [visible, browsable, tab, sessionId, browsePath, expanded]);
+  // 2s 轮询(#817 B3 起走共享的 useIntervalWhen):回调经 latest-ref 取最新
+  // tab/expansion/session,可见性门控不变;轮询期间 tab 切换不再重置定时器,
+  // 节奏保持(原实现依赖变化即重建)。
+  useIntervalWhen(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (tab === 'files') {
+      const loadedDirectories = ['', ...expanded];
+      Promise.all(loadedDirectories.map(
+        path => loadDirectory(path, { force: true }),
+      ));
+    }
+    if (sessionId && tab === 'changes') loadChanges();
+  }, 2000, visible && browsable);
 
   useEffect(() => {
     if (!browsable || !query.trim()) {

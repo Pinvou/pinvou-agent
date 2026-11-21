@@ -2,7 +2,7 @@
 use super::{
     AltSide, VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
     emit_shortcut_event, handle_voice_shortcut_with_modifiers, is_voice_shortcut_router_window,
-    recording_owner, resolve_trigger_target,
+    recording_owner, resolve_trigger_target, router_hwnd_entries,
 };
 #[cfg(target_os = "windows")]
 use std::sync::{
@@ -195,17 +195,31 @@ pub(super) fn set_enabled(enabled: bool) {
 
 #[cfg(target_os = "windows")]
 fn refresh_router_window_hwnds(app: &AppHandle) {
-    let mut windows = Vec::new();
-    for (label, window) in app.webview_windows() {
-        if !is_voice_shortcut_router_window(&label) {
-            continue;
-        }
-        if let Ok(hwnd) = window.hwnd() {
-            windows.push((hwnd.0 as isize, label));
-        }
-    }
+    // `webview_windows` only returns single-WebView windows: the main window
+    // hosts browser-tab child WebViews (agent-browser-*), so once any tab
+    // exists the "main" entry drops out of the enumeration and Alt-tap
+    // routing would silently lose the focused main window. Detached router
+    // shells never host child WebViews and keep appearing there; main is
+    // resolved from its native Window handle instead, which the multi-webview
+    // state does not affect.
+    // Each `hwnd()` is a blocking event-loop round trip and the keyboard hook
+    // locks the cache on every Alt gesture, so all resolution happens before
+    // the lock: non-router labels are skipped ahead of their `hwnd()` (the
+    // merge re-checks them anyway) and the merged Vec is materialized up
+    // front, keeping the critical section a plain Vec swap.
+    let webviews = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, _)| *label != "main" && is_voice_shortcut_router_window(label))
+        .map(|(label, window)| window.hwnd().ok().map(|hwnd| (hwnd.0 as isize, label)));
+    let main = app.get_window("main").and_then(|main| {
+        main.hwnd()
+            .ok()
+            .map(|hwnd| (hwnd.0 as isize, "main".to_string()))
+    });
+    let entries = router_hwnd_entries(webviews, main);
     if let Ok(mut guard) = ROUTER_WINDOWS.lock() {
-        *guard = windows;
+        *guard = entries;
     }
 }
 

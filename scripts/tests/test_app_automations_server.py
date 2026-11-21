@@ -4,8 +4,9 @@
 Covers the design doc's acceptance matrix
 (docs/app-automations-定时任务创建工具-设计与验收.md §5/§6):
 - rrule product subset (B1/B5/B8): HOURLY/WEEKLY/ONCE accepted and normalized
-  (trim + uppercase); CRON (B3), minute-granular (B2), unknown keys, out-of-range
-  values rejected with actionable errors;
+  (trim + uppercase); CRON accepted as the fixed-minute product subset
+  (issue #821) while minute-granular (B2) expressions, unknown keys, and
+  out-of-range values are rejected with actionable errors;
 - ONCE AT strictly local YYYY-MM-DDTHH:MM, no timezone suffix, future only (B4);
 - field caps and required-field validation (B6/B7);
 - create spool write: atomic JSON, idempotency-key dedup (C1), unique uuid
@@ -90,6 +91,13 @@ class RruleValidationTests(unittest.TestCase):
             ("FREQ=ONCE;AT=%s" % _future_at(), None),
             ("FREQ=HOURLY", None),
             ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=0;BYMINUTE=59", None),
+            # Issue #821: the CRON subset is accepted — fixed minute, full
+            # engine vocabulary in the other fields, uppercase normalization.
+            ("FREQ=CRON;EXPR=30 9 1 * *", "FREQ=CRON;EXPR=30 9 1 * *"),
+            ("freq=cron;expr=0 9-18 1,15 * mon-fri",
+             "FREQ=CRON;EXPR=0 9-18 1,15 * MON-FRI"),
+            ("FREQ=CRON;EXPR=15 9 */2 * *", "FREQ=CRON;EXPR=15 9 */2 * *"),
+            ("FREQ=CRON;EXPR=5 9 1 JAN *", "FREQ=CRON;EXPR=5 9 1 JAN *"),
         ]
         for rrule, expected in cases:
             normalized, error = server.validate_rrule(rrule)
@@ -108,10 +116,76 @@ class RruleValidationTests(unittest.TestCase):
             # B2: the error must guide toward the supported shapes.
             self.assertIn("HOURLY", error, rrule)
 
-    def test_cron_rejected(self):
-        _, error = server.validate_rrule("FREQ=CRON;EXPR=*/5 * * * *")
+    def test_cron_minute_granular_and_structural_bounds_rejected(self):
+        # Issue #821: CRON is accepted only as the fixed-minute product
+        # subset. Minute-granular expressions stay rejected even though the
+        # domain parser would run them, and the structural bounds (five
+        # fields, fixed minute, cron charset, no empty list items, FREQ+EXPR
+        # only) mirror validate_cron_expr in creation_requests.rs.
+        for rrule in [
+            "FREQ=CRON;EXPR=*/5 * * * *",
+            "FREQ=CRON;EXPR=0,30 * * * *",
+            "FREQ=CRON;EXPR=5-55/10 * * * *",
+            "FREQ=CRON;EXPR=* * * * *",
+            "FREQ=CRON",
+            "FREQ=CRON;EXPR=30 9 1 *",
+            "FREQ=CRON;EXPR=30 9 1 * * *",
+            "FREQ=CRON;EXPR=60 9 1 * *",
+            "FREQ=CRON;EXPR=abc 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1,3 * *;BYDAY=MO",
+            "FREQ=CRON;EXPR=30 9 1,,3 * *",
+            "FREQ=CRON;EXPR=30 9 1 * ?",
+            # Minute overflowing u32: the watcher's parse fails where this
+            # side's bounds check fires — the same shape, rejected.
+            "FREQ=CRON;EXPR=99999999999999999999 9 1 * *",
+        ]:
+            _, error = server.validate_rrule(rrule)
+            self.assertIsNotNone(error, rrule)
+            self.assertIn("CRON", error, rrule)
+        # Full-width digits pass Python's isdigit() but are watcher poison:
+        # the fixed-minute check must reject them like every other field.
+        _, error = server.validate_rrule("FREQ=CRON;EXPR=３０ 9 1 * *")
         self.assertIsNotNone(error)
-        self.assertIn("CRON", error)
+        _, error = server.validate_rrule("FREQ=CRON;EXPR=1_0 9 1 * *")
+        self.assertIsNotNone(error)
+
+    def test_control_separator_shapes_rejected_like_the_watcher(self):
+        # B9: Python's isspace() strips and splits U+001C-U+001F but the
+        # watcher's Unicode White_Space does not. normalize_rrule maps the
+        # four separators to DEL so every later check refuses exactly the
+        # shapes the watcher refuses (round-2 review minor 1).
+        for rrule in [
+            "FREQ=CRON;EXPR=30\u001c9 1 * *",
+            "FREQ=CRON;EXPR=\u001c30 9 1 * *",
+            "FREQ=CRON;EXPR=30 9 1 * *\u001c",
+            "FREQ=WEEKLY;BYDAY=\u001cMO;BYHOUR=9;BYMINUTE=30",
+            "FREQ=HOURLY;INTERVAL=1;BYHOUR=8;BYMINUTE=\u001c30",
+        ]:
+            _, error = server.validate_rrule(rrule)
+            self.assertIsNotNone(error, rrule)
+        # Unicode White_Space separators (here U+3000) stay accepted on both
+        # sides — the same five fields the watcher's split_whitespace sees.
+        normalized, error = server.validate_rrule("FREQ=CRON;EXPR=30\u30009 1 * *")
+        self.assertIsNone(error)
+        self.assertEqual(normalized, "FREQ=CRON;EXPR=30\u30009 1 * *")
+
+    def test_control_separator_padding_rejected_at_the_funnel(self):
+        # Round-3 review M1: schedule_task_request strips the raw tool
+        # argument before validate_rrule sees it, and that strip used to eat
+        # U+001C-U+001F padding the watcher keeps — the funnel accepted the
+        # exact bytes the gate rejects. The translate must run first, so pin
+        # the behavior at the entry funnel, not just at validate_rrule.
+        for rrule in (
+            "FREQ=CRON;EXPR=30 9 1 * *\u001c",
+            "\u001cFREQ=CRON;EXPR=30 9 1 * *",
+            "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30\u001f",
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                payload, error = server.schedule_task_request(
+                    tmp, "create", name="n", prompt="p", rrule=rrule)
+                self.assertIsNone(payload, rrule)
+                self.assertIsNotNone(error, rrule)
+                self.assertFalse(Path(tmp, "spool").exists(), rrule)
 
     def test_once_at_past_and_timezone_suffix_rejected(self):
         for rrule in [

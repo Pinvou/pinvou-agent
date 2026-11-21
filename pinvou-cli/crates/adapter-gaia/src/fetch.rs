@@ -5,7 +5,6 @@ use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use agent_backend_api::SecretText;
-use fs4::FileExt;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
 use rand::random;
@@ -2025,7 +2024,13 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
+/// Serializes acquisition across processes. The OS lock (flock on unix,
+/// LockFileEx on windows, via `fd-lock`) stays bound to the open fd, so
+/// dropping `AcquisitionLock` — which closes the fd — releases the lock.
 struct AcquisitionLock {
+    // Never read: owning the open fd *is* the lock hold; closing it (on
+    // drop) releases the OS lock.
+    #[allow(dead_code)]
     file: File,
 }
 
@@ -2033,20 +2038,20 @@ impl AcquisitionLock {
     fn claim(root: &Path) -> Result<Self, GaiaFetchError> {
         let path = root.join(".pinvou-gaia-acquire.lock");
         let file = open_private_lock_file(&path).map_err(|_| GaiaFetchError::VerifyFailed)?;
-        match FileExt::try_lock(&file) {
-            Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => {
+        let mut lock = fd_lock::RwLock::new(file);
+        match lock.try_write() {
+            // Forgetting the write guard skips its drop-time unlock
+            // (fd-lock keeps no interior lock state); the lock stays held
+            // by the fd until `AcquisitionLock`'s drop closes it.
+            Ok(guard) => std::mem::forget(guard),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(GaiaFetchError::Busy);
             }
             Err(_) => return Err(GaiaFetchError::VerifyFailed),
         }
-        Ok(Self { file })
-    }
-}
-
-impl Drop for AcquisitionLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+        Ok(Self {
+            file: lock.into_inner(),
+        })
     }
 }
 

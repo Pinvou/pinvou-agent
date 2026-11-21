@@ -411,6 +411,30 @@ fn is_voice_shortcut_router_window(label: &str) -> bool {
     label == "main" || label.starts_with("detached-")
 }
 
+/// Merge the router HWND cache entries from the single-WebView enumeration
+/// and the native main-window handle (issue #840: the enumeration drops the
+/// main window while any browser-tab child WebView is attached to it). The
+/// main entry always comes from the native `Window` handle and a stale
+/// "main" entry left in the enumeration (no tab open) is ignored; hwnd-less
+/// windows never join, and the label re-check is the policy owner: non-router
+/// windows (browser tabs, pet, reader, artifacts) never join the cache even
+/// if fed. The Windows caller pre-filters the same labels only to skip
+/// wasted `hwnd()` round trips.
+fn router_hwnd_entries(
+    webview_windows: impl IntoIterator<Item = Option<(isize, String)>>,
+    main_window: Option<(isize, String)>,
+) -> Vec<(isize, String)> {
+    let mut windows: Vec<(isize, String)> = webview_windows
+        .into_iter()
+        .flatten()
+        .filter(|(_, label)| *label != "main" && is_voice_shortcut_router_window(label))
+        .collect();
+    if let Some(main_window) = main_window {
+        windows.push(main_window);
+    }
+    windows
+}
+
 /// Routing for a bare Alt tap: the recording window wins (targeted stop,
 /// cross-window mutual exclusion), otherwise the gesture targets the focused
 /// whitelisted window; with neither, returns None (no swallowing, no emit).
@@ -1395,5 +1419,72 @@ mod tests {
     #[test]
     fn no_recording_and_no_focused_router_window_means_no_emit() {
         assert_eq!(resolve_trigger_target(None, None), None);
+    }
+
+    /// Issue #840: while a browser tab is open the single-WebView enumeration
+    /// drops the main window, so the cache entry must come from the native
+    /// main handle; browser-tab labels and hwnd-less windows never join.
+    #[test]
+    fn router_hwnd_entries_resolve_main_from_the_native_window_handle() {
+        let entries = router_hwnd_entries(
+            [
+                Some((11, "agent-browser-tab1".to_string())),
+                Some((22, "detached-notes-abc".to_string())),
+                None,
+            ],
+            Some((7, "main".to_string())),
+        );
+        assert_eq!(
+            entries,
+            vec![
+                (22, "detached-notes-abc".to_string()),
+                (7, "main".to_string()),
+            ]
+        );
+    }
+
+    /// Without any tab the enumeration itself carries main; the duplicate is
+    /// dropped so the cache never holds the window twice (the hook matches by
+    /// hwnd, but a doubled entry would make future label-aware consumers see
+    /// the window twice).
+    #[test]
+    fn router_hwnd_entries_ignore_a_stale_enumeration_main() {
+        let entries = router_hwnd_entries(
+            [
+                Some((7, "main".to_string())),
+                Some((22, "detached-notes-abc".to_string())),
+            ],
+            Some((7, "main".to_string())),
+        );
+        assert_eq!(
+            entries,
+            vec![
+                (22, "detached-notes-abc".to_string()),
+                (7, "main".to_string()),
+            ]
+        );
+    }
+
+    /// A missing main window (mid-teardown) leaves only the detached shells
+    /// instead of poisoning the cache with a half entry.
+    #[test]
+    fn router_hwnd_entries_tolerate_a_missing_main_window() {
+        let entries = router_hwnd_entries([Some((22, "detached-notes-abc".to_string()))], None);
+        assert_eq!(entries, vec![(22, "detached-notes-abc".to_string())]);
+    }
+
+    /// Non-router windows (pet, reader, artifacts) are dropped even though
+    /// the enumeration carries them; only main/detached stay routable.
+    #[test]
+    fn router_hwnd_entries_drop_non_router_windows() {
+        let entries = router_hwnd_entries(
+            [
+                Some((31, "pet".to_string())),
+                Some((32, "code-reader".to_string())),
+                Some((33, "artifact-deadbeef".to_string())),
+            ],
+            Some((7, "main".to_string())),
+        );
+        assert_eq!(entries, vec![(7, "main".to_string())]);
     }
 }
