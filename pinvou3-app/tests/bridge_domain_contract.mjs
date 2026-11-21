@@ -17,7 +17,11 @@ export const desktopBridgeApi = {
   feedback: ['submitFeedback'],
   vllm: ['discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
-  models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeLocalServerKind', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
+  // reloadSavedModels (round-1 review M9): post-batch refresh twin of the
+  // saveModel reload tail — one loader burst after a confirmed add-all batch
+  // whose rows were saved with { deferRefresh: true }. Lane-agnostic: both
+  // bridges reload exactly what their own saveModel chain reloads.
+  models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeEndpointModels', 'probeLocalServerKind', 'reloadSavedModels', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
   interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['refreshRemoteControlQr', 'revokeRemoteHostWorkspace', 'startRemoteControl', 'stopRemoteControl'],
@@ -86,7 +90,14 @@ export const desktopOnlyBridgeApi = {
   settings: ['saveSearchSettingsAndRestart', 'setBuiltinFeatureEnabled', 'setGlobalShortcutConfig'],
 
   // Local vLLM discovery probes loopback services on the desktop host; the web capability bit is always false
-  // and the command is not in the access-policy allowlist.
+  // and the command is not in the access-policy allowlist. Deliberate exception (round-2 review M7): the
+  // single-endpoint probe_endpoint_models (one caller-supplied URL per invocation; the remote ladders stay
+  // no-redirect and pinned, while the local lane may follow redirects with Bearer stripped on any host-or-port change (scheme is not compared) —
+  // round-4 amendment) IS web-allowlisted for the model form's fetch-models button —
+  // keyring-blind, caller-supplied key only. Its reach is disclosed (round-3 review M5 amendment) in
+  // tests/web_access_contract.test.mjs: GLOBAL, not loopback-private — the command accepts any caller-supplied
+  // URL and the remote ladders classify any public host (a port/service oracle with the desktop as vantage,
+  // bounded only by MAX_RPC_IN_FLIGHT=32). This local discovery itself stays desktop-only.
   vllm: ['discoverLocalVllm'],
   // In-app upgrade: check/download/install/restart all depend on the local package manager; on the web
   // only the version-number read is available (the appUpdate capability bit is always false).

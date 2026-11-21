@@ -8,6 +8,7 @@ import {
 } from '../../components/icons.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { ModalShell } from '../../components/ModalShell.jsx';
+import { useIntervalWhen } from '../../hooks/useIntervalWhen.js';
 import {
   markAcpModelsProbePending,
   reseedDraftControlsAfterProviderSwitch,
@@ -349,13 +350,11 @@ export function ProvidersSection({ t }) {
   const installInFlight = installing
     || busy === 'install:' + activeAgent
     || (installPhase === 'installing' && installLog && installLog.agent === activeAgent);
-  useEffect(() => {
-    if (!installInFlight) return;
-    const timer = window.setInterval(() => {
-      refresh(false, true);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [installInFlight, refresh]);
+  // 安装中 2s 轮询:#817 B3 起走共享的 useIntervalWhen(ref 经 latest-ref 同步,
+  // refresh 身份变化不再重建定时器,轮询节奏保持)。
+  useIntervalWhen(() => {
+    refresh(false, true);
+  }, 2000, installInFlight);
 
   // 安装进度事件：后端逐行推送（kind=command 为实际执行的命令行，stdout/stderr
   // 为输出最新一行，80ms 限流）。只消费当前标签页 Agent 的事件，避免切页串扰。
@@ -1071,6 +1070,7 @@ export function ProvidersSection({ t }) {
           initial={editing}
           onClose={() => setFormOpen(false)}
           onSaved={() => refresh()}
+          t={t}
         />
       )}
 

@@ -49,8 +49,9 @@ pub mod automation_foundation {
 /// the GUI keeps calling `crate::core::model_endpoint` directly.
 pub mod model_probe {
     pub use crate::core::model_endpoint::{
-        is_anthropic_api_url, is_opencode_gateway_base_url, model_probe_http_code,
-        model_probe_transport_code, models_probe_url, opencode_session_id_for, strip_v1_suffix,
+        error_chain_looks_like_tls, is_anthropic_api_url, is_opencode_gateway_base_url,
+        model_probe_http_code, model_probe_transport_code, models_probe_url,
+        opencode_session_id_for, strip_v1_suffix,
     };
 }
 
@@ -1831,6 +1832,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::probe_endpoint_models,
             commands::settings::test_image_input_capability,
             commands::voice::transcribe_voice_audio,
             commands::voice::postprocess_voice_text,
@@ -1865,6 +1867,7 @@ pub fn run() {
             commands::sessions::get_or_create_aux_session,
             commands::sessions::reset_aux_session,
             commands::timeline::get_session_timeline,
+            commands::timeline::get_session_stats,
             commands::scheduled::list_scheduled_tasks,
             commands::scheduled::read_scheduled_task,
             commands::scheduled::list_scheduled_task_runs,
@@ -2094,7 +2097,10 @@ pub fn run() {
             commands::remote_knowledge::remote_kb_download_model,
             commands::remote_knowledge::remote_kb_devices,
             commands::remote_knowledge::remote_kb_update_device,
+            commands::remote_knowledge::remote_kb_update_collection,
             commands::remote_knowledge::remote_kb_remove_device,
+            commands::remote_knowledge::remote_kb_trashed_collections,
+            commands::remote_knowledge::remote_kb_trashed_documents,
             commands::remote_knowledge::remote_kb_permanently_delete_collection,
             commands::remote_knowledge::remote_kb_permanently_delete_document,
             commands::shared_knowledge_host::shared_kb_host_status,

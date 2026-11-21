@@ -15,7 +15,8 @@ use pinvou_knowledge::client::{
 use pinvou_knowledge::model::{
     AccessScope, Collection, CreateCollectionRequest, DeviceGrant, Document, JoinRequestRecord,
     JoinRequestStatus, ModelStatus, PairResponse, SearchHit, SearchRequest, ShareCreateRequest,
-    ShareCreated, ShareRecord, SourceWindow, SourceWindowRequest, UpdateDeviceRequest,
+    ShareCreated, ShareRecord, SourceWindow, SourceWindowRequest, TrashedDocument,
+    UpdateDeviceRequest,
 };
 use serde::{Deserialize, Serialize};
 use walkdir::{DirEntry, WalkDir};
@@ -993,6 +994,25 @@ impl RemoteKnowledgeService {
         self.client_for(server_id)?.remove_device(device_id).await
     }
 
+    /// Full trash listing: the client pages through every offset (server
+    /// pages clamp to 500 and carry no total) and aggregates, so nothing is
+    /// silently truncated — the same return-everything contract as
+    /// [`Self::collections`]. A peer that never serves a short page
+    /// (ignoring `offset`) trips the client's page cap and errors loudly
+    /// instead of looping. Pinned end-to-end by the loopback-HTTP tests
+    /// in `pinvou-knowledge/src/server.rs` (`trash_listing_*`).
+    pub async fn trashed_collections(&self, server_id: &str) -> Result<Vec<Collection>, String> {
+        self.require_owner(server_id)?;
+        self.client_for(server_id)?.trashed_collections().await
+    }
+
+    /// See [`Self::trashed_collections`]: full aggregation across pages, no
+    /// truncation window.
+    pub async fn trashed_documents(&self, server_id: &str) -> Result<Vec<TrashedDocument>, String> {
+        self.require_owner(server_id)?;
+        self.client_for(server_id)?.trashed_documents().await
+    }
+
     pub async fn permanently_delete_collection(
         &self,
         server_id: &str,
@@ -1155,6 +1175,26 @@ impl RemoteKnowledgeService {
         self.require_manage(server_id)?;
         self.client_for(server_id)?
             .create_collection(&CreateCollectionRequest { name, description })
+            .await
+    }
+
+    /// Full-replace PUT semantics: `description: None` clears the stored
+    /// description on the peer (it is not a keep-as-is marker — compare
+    /// [`Self::update_device`], whose PATCH treats `None` as keep). Callers
+    /// that only intend to rename must echo the current description. The
+    /// peer side is pinned by the
+    /// `update_collection_full_replaces_description_and_blank_name_falls_back`
+    /// contract test in `pinvou-knowledge/src/service.rs`.
+    pub async fn update_collection(
+        &self,
+        server_id: &str,
+        id: i64,
+        name: String,
+        description: Option<String>,
+    ) -> Result<Collection, String> {
+        self.require_manage(server_id)?;
+        self.client_for(server_id)?
+            .update_collection(id, &CreateCollectionRequest { name, description })
             .await
     }
 
@@ -1512,6 +1552,71 @@ mod tests {
         assert!(error.contains("另一个地址"));
         assert!(service.ensure_server_id_not_connected("srv-other").is_ok());
         assert_eq!(load_connections(&path).unwrap(), vec![existing]);
+    }
+
+    // 服务层权限门此前没有执行测试:require_manage→require_owner 的互换
+    // 在整套件下全绿(突变实证)。这里用 legacy_insecure_http 连接把
+    // “通过门之后”的失败固定在凭据读取之前,凭错误信息区分门通过与门
+    // 拒绝:update_collection 是 manage 级(与 create/delete 同类),
+    // trashed_* 是 owner 级(对应 /api/v2/owner/trash 路由)。连接直接
+    // 写入内存态,绕过 load_connections 对 legacy 标志的端点归一化。
+    // 只读连接那半边钉的是门的存在性(而非只钉门级别):整个删掉
+    // require_manage 的话,只读调用会落到 client_for 的旧版拦截,
+    // 与互换突变不同,那在全套件下也是绿的。
+    #[tokio::test]
+    async fn service_guards_separate_manage_from_owner_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote-connections.json");
+        let service = RemoteKnowledgeService::load(path).unwrap();
+        *service.connections.write() = vec![
+            RemoteConnection {
+                server_id: "srv-guard".to_string(),
+                name: "Cube".to_string(),
+                endpoint: "https://100.64.0.1:3210".to_string(),
+                scope: AccessScope::Manage,
+                device_id: "dev-guard".to_string(),
+                tls_ca: "test-ca".to_string(),
+                legacy_insecure_http: true,
+            },
+            RemoteConnection {
+                server_id: "srv-guard-read".to_string(),
+                name: "Cube (read-only)".to_string(),
+                endpoint: "https://100.64.0.1:3210".to_string(),
+                scope: AccessScope::Read,
+                device_id: "dev-guard-read".to_string(),
+                tls_ca: "test-ca".to_string(),
+                legacy_insecure_http: true,
+            },
+        ];
+
+        // Manage 通过 update_collection 的门,随后在 client_for 的旧版
+        // HTTP 拦截处失败——若门被误换成 owner 级,这里会变成“仅限所有者”。
+        let error = service
+            .update_collection("srv-guard", 1, "renamed".to_string(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("旧版保留"),
+            "manage 级门应当放行 update_collection,实际错误:{error}"
+        );
+
+        // 只读连接在 manage 门即被拒——若 require_manage 被整个删除而非
+        // 互换,这里会变成旧版拦截文案,门的存在性由此钉住。
+        let error = service
+            .update_collection("srv-guard-read", 1, "renamed".to_string(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("只读"),
+            "只读连接应当在 manage 门被拒,实际错误:{error}"
+        );
+
+        // Manage 不能通过 trashed_* 的 owner 门;门拒绝发生在 client_for 之前,
+        // 因此错误是权限文案而不是旧版 HTTP 拦截文案。
+        let error = service.trashed_collections("srv-guard").await.unwrap_err();
+        assert!(error.contains("所有者"), "实际错误:{error}");
+        let error = service.trashed_documents("srv-guard").await.unwrap_err();
+        assert!(error.contains("所有者"), "实际错误:{error}");
     }
 
     #[tokio::test]

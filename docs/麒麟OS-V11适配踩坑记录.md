@@ -1,8 +1,12 @@
-# PINVOU 麒麟 V11 适配要点
+# 麒麟OS-V11适配踩坑记录
 
 > 验证版本：PINVOU 0.5.9
 > 验证环境：麒麟 V11 桌面版 x86_64、KVM/libvirt
 > 验证结果：DEB 可安装，应用和 WebKit 主界面可正常启动。
+>
+> 相关评估（2026-11 回填留档，现行以本文为准）：[`品悟-银河麒麟OS原生适配评估.md`](./品悟-银河麒麟OS原生适配评估.md)。
+>
+> 标题口径：原文首标题为「PINVOU 麒麟 V11 适配要点」，回填时改为与文件名一致的现标题（2026-11-19 r22 增补注）。
 
 ## 一览
 
@@ -13,7 +17,7 @@
 | `pinvou3` 未找到 | 实际二进制名是 `pinvou3-tauri` | 统一命令名或提供启动脚本 |
 | WebKit EGL 初始化失败并崩溃 | QXL 图形栈不兼容 | 虚拟显卡改为 VirtIO |
 | 启动时寻找 `/dev/fgt340` | 麒麟同时加载多套厂商 EGL 驱动 | 虚拟机中只加载 Mesa EGL |
-| 网页类任务可能无法运行 | 包内 esbuild 是 ARM64 | 换成 x86_64 esbuild 后再发布 |
+| 网页类任务可能无法运行 | 包内 esbuild 是 ARM64 | 换成 x86_64 esbuild 后再发布（⚠️ 快照口径：现行 bundle 已不再携带 web-template/esbuild，处置见 §5 时点记录） |
 
 ## 1. 使用兼容的 Linux 构建基线
 
@@ -46,15 +50,18 @@ docker run --rm -it \
 ```
 
 容器内默认是 root，Cargo 主目录为 `/root/.cargo`。先装基础工具与 Tauri Linux 构建
-依赖（与 CI 的 ubuntu-22.04 腿同列表），再装 Rust 与 Node——22.04 系统源的 rustc
-过旧（仓库 MSRV 为 1.90，见 `src-tauri/Cargo.toml`），必须走 rustup：
+依赖（`curl`/`ca-certificates` 等基础工具为本地容器自装、不在 CI 列表；Tauri 依赖部分与 CI 的 ubuntu-22.04 发布打包腿包集合与顺序一致、非逐字节同文（续行/空白渲染不尽相同），含 `lld`；pr-check 腿另装（仅 rust-test 腿）
+`time`。CI 另经 `RUSTFLAGS -C link-arg=-fuse-ld=lld` 注入 lld 链接器：rustc ≥1.90 的
+x86_64 已自链 rust-lld，该 flag 实际作用于 arm64 与旧工具链——本地大链接建议照做），
+再装 Rust 与 Node——22.04 系统源的 rustc
+过旧（仓库 MSRV 为 1.90，见 `pinvou3-app/src-tauri/Cargo.toml`），必须走 rustup：
 
 ```bash
 apt-get update
 apt-get install -y --no-install-recommends curl ca-certificates \
   libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev \
   libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
-  build-essential pkg-config cmake
+  build-essential pkg-config cmake lld
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -178,7 +185,7 @@ exec /usr/bin/pinvou3-tauri "$@"
 
   （时点记录：该记录针对 0.5.9 时代的包；当前开源主干的 bundle 已不再携带
   `web-template` 资源，用户目录 `~/.pinvou3/web-template` 与用户生成内容按退役策略
-  保留不删（见 `features/retirement.rs`），自建包如仍内嵌该资源才需处理本项。）
+  保留不删（见 `pinvou3-app/src-tauri/src/features/retirement.rs`），自建包如仍内嵌该资源才需处理本项。）
 
 - 正式 DEB 应直接提供 `pinvou3` 命令。
 
@@ -189,7 +196,7 @@ exec /usr/bin/pinvou3-tauri "$@"
 - 模型配置、真实对话和流式输出；
 - 会话保存与恢复；
 - 本地文件和知识库；
-- 工具调用、MCP 和工作流；
+- 工具调用、MCP 和工作流；（⚠️ 快照口径：「工作流」子系统未随现行主线发布，见 [`品悟-银河麒麟OS原生适配评估.md`](./品悟-银河麒麟OS原生适配评估.md) §8.3（工作流下线的同类时点记录另见本文件 §5 esbuild 条目））
 - OCR、PDF、Office 和压缩包处理；
 - 网页类任务及 x86_64 esbuild；
 - 升级、卸载、重装和非维护模式运行。
@@ -201,7 +208,7 @@ exec /usr/bin/pinvou3-tauri "$@"
 - [ ] DEB 内所有 ELF 文件均为 x86_64。
 - [ ] `pinvou3` 命令与桌面入口一致。
 - [ ] 物理机和 VirtIO 虚拟机分别验证。
-- [ ] 完成模型、文件、知识库、工具和工作流回归。
+- [ ] 完成模型、文件、知识库、工具和工作流回归。（⚠️ 快照口径：「工作流」项作废——子系统未随现行主线发布，现行执行时跳过该项，见《品悟-银河麒麟OS原生适配评估》§8.3 同款注）
 
 ## 结论
 

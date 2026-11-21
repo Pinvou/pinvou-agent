@@ -1,5 +1,7 @@
 # Windows 独立运行时 submodule
 
+> 相关 Windows 接手/验收史料（2026-11 回填留档）：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md) · [`Windows端功能清单与测试用例.md`](./Windows端功能清单与测试用例.md)。
+
 ## 目标
 
 Windows 分支只维护代码、安装器模板和 submodule gitlink。Poppler、Tesseract、Python、
@@ -26,7 +28,7 @@ private-runtimes/windows  -> 公开运行时仓库的确定 commit
 VC Runtime 保持独立文件。二进制由 Git LFS 管理。
 
 `windows-runtime.manifest.json` 当前锁定 9 个仓库级资源，并额外记录四个组件 ZIP 内部
-113 个 7-Zip/Poppler/Tesseract/ASR 文件的路径、大小和 SHA-256。staging 会先校验 ZIP，
+112 个 7-Zip/Poppler/Tesseract/ASR 文件（2026-11 核验：7-Zip 5 + ASR 4 + Poppler 41 + Tesseract 62，按 gitlink `dcde8f01` manifest 计）的路径、大小和 SHA-256。staging 会先校验 ZIP，
 解压后再逐文件复核内部清单。Windows 安装包不映射 `sensevoice-small-q8.gguf`，应用在用户首次启用本地语音识别时
 下载并校验到用户目录；resolver 在复核归档后会从 staging 删除主模型和已解包的 payload，只保留 ASR 引擎与 VAD 模型。
 

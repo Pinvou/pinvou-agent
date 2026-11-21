@@ -97,6 +97,19 @@ const scheduledViewSource = indexHtml.slice(
   indexHtml.indexOf('const ScheduledTasksView'),
   indexHtml.indexOf('export { ScheduledTasksView }')
 );
+const enScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'en.js'), 'utf8');
+const jaScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'ja.js'), 'utf8');
+// Issue #821: the CRON subset validator is a feature module so the
+// cross-surface contract (creation_requests.rs + server.py) is
+// behavior-tested here, not only source-pinned.
+const scheduleCronExpr = require('../src/features/scheduled/schedule-cron-expr.js');
+// (#900 review P2) the RRULE field grammar behind the schedule editor —
+// parse/project/build the stored rule, mirroring the backend's trim.
+const scheduleRruleFields = require('../src/features/scheduled/schedule-rrule-fields.js');
+const scheduleRruleFieldsSrc = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'scheduled', 'schedule-rrule-fields.js'),
+  'utf8'
+);
 
 function mustContain(text) {
   assert.ok(
@@ -173,8 +186,14 @@ assert.ok(
   'scheduled selection must live above the remounted ScheduledTasksView'
 );
 assert.ok(
-  /const refresh = \(\) => bridge\.scheduled\.refreshScheduledTaskData\(20\)[\s\S]{0,260}setInterval\([\s\S]{0,120}refresh\(\)[\s\S]{0,120}3000/.test(indexHtml),
-  'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
+  /refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,200}useIntervalWhen\(\(\) => \{[\s\S]{0,160}refreshScheduledTaskData\(20\)\.catch\(\(\) => \{\}\);[\s\S]{0,40}\}, 3000, !!\(bridge && bridge\.scheduled\.refreshScheduledTaskData\)\)/.test(indexHtml),
+  'the three-second fallback (shared useIntervalWhen since #817 B3) must refresh tasks, selected detail, and runs through one bridge transaction, gated on the bridge capability'
+);
+// r3 复审:创建表单的窗口级 Escape 与迁移后的确认层同视图共存,IME 组合中的
+// Escape(取消候选词)必须与全应用一致地不关闭本层(busyAction 守卫保持)。
+assert.ok(
+  /const closeOnEscape = \(event\) => \{[\s\S]{0,200}if \(event\.key === 'Escape' && !busyAction && !isImeComposing\(event\)\) setCreateForm\(null\);/.test(scheduledViewSource),
+  'the scheduled create dialog Escape must stay busy-guarded and IME-guarded (r3 review)'
 );
 assert.ok(
   /const handleSwitchSession = useCallback\(async \(id\) => \{[\s\S]{0,220}runBrowserUiTransition[\s\S]{0,260}setCurrentView\('chat'\)[\s\S]{0,180}await bridge\.sessions\.switchToSession\(id\)[\s\S]{0,180}!switched \|\| !isCurrent\(\)[\s\S]{0,260}channel: 'session'[\s\S]{0,100}hideMode: 'workspace'[\s\S]{0,80}serialize: true/.test(indexHtml),
@@ -303,8 +322,8 @@ assert(
 assert.ok(
   /editor\.interval/.test(indexHtml) &&
     /editor\.repeat === 'hourly' \? scheduledCopy\.startTime : scheduledCopy\.time/.test(indexHtml) &&
-    /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(indexHtml) &&
-    /previousEditor\.hasTimeAnchor/.test(indexHtml) &&
+    /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(scheduleRruleFieldsSrc) &&
+    /previousEditor\.hasTimeAnchor/.test(scheduleRruleFieldsSrc) &&
     /placeholder=.*scheduledCopy\.setStart/.test(indexHtml) &&
     !indexHtml.includes("repeat === 'minutely'"),
   'hourly schedules should expose an optional start anchor without migrating legacy rules implicitly'
@@ -380,8 +399,8 @@ assert.ok(
   'hourly schedules should expose a themed 1-24 hour interval selector'
 );
 assert.ok(
-  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduledViewSource) &&
-    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduledViewSource),
+  /const byday = days\.length \? `;BYDAY=\$\{days\.join\(','\)\}` : '';/.test(scheduleRruleFieldsSrc) &&
+    /FREQ=HOURLY;INTERVAL=\$\{Math\.max\(1, interval \|\| 1\)\}\$\{byday\}\$\{anchor\}/.test(scheduleRruleFieldsSrc),
   'hourly schedule edits must carry inherited BYDAY restrictions into the rule instead of silently dropping them; the Rust scheduler honors BYDAY when triggering hourly tasks'
 );
 assert.ok(
@@ -432,7 +451,11 @@ assert.ok(
     /data-testid="scheduled-run-history-list" className=\{`overflow-hidden rounded-\[12px\] \$\{iosHistorySurface\}`\}/.test(indexHtml) &&
     /fixed z-\[1000\][\s\S]{0,120}rounded-\[12px\] border/.test(indexHtml) &&
     /fixed z-\[1000\][\s\S]{0,120}rounded-\[14px\] border/.test(indexHtml) &&
-    /data-testid="scheduled-detail-delete-confirmation"[\s\S]{0,260}rounded-\[14px\] border/.test(indexHtml),
+    // #817 B1: the delete confirmation itself moved to the shared ConfirmDialog
+    // (shadow-2xl card, no border) — the floating-surface-border rule above now
+    // applies to the two popover surfaces; the confirm must at least keep the
+    // app's topmost confirm z-index.
+    /<ConfirmDialog\s+testid="scheduled-detail-delete-confirmation"[\s\S]{0,240}zIndexClass="z-\[300\]"/.test(scheduledViewSource),
   'embedded scheduled task form groups should not have outer borders, while floating surfaces keep borders'
 );
 assert.ok(
@@ -474,7 +497,7 @@ assert.ok(
     /const lastRequiredSelection = multiple && active && selectedValues\.length <= minSelected/.test(indexHtml) &&
     /onChange=\{values => editSchedule\('days', values\)\} multiple minSelected=\{1\}/.test(indexHtml) &&
     /onClose=\{\(\) => setScheduleRepeatIntent\(null\)\}/.test(indexHtml) &&
-    /WEEKDAY_CODES\.filter\(day => requested\.has\(day\)\)/.test(indexHtml),
+    /WEEKDAY_CODES\.filter\(day => requested\.has\(day\)\)/.test(scheduleRruleFieldsSrc),
   'weekly schedules should support an ordered one-to-seven day multi-select, reject empty selections, and normalize presets after the menu closes'
 );
 assert.ok(
@@ -563,12 +586,67 @@ assert.ok(
   'backend prompt must teach once-only schedules, reject past one-shot times, and pin AT to local wall-clock format'
 );
 assert.ok(
-  scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
+  scheduleRruleFieldsSrc.includes("fields.FREQ === 'ONCE'") &&
     scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
   'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
 );
+// Issue #821: CRON rules get their own editor mode; the weekly fallback
+// that silently rewrote them on save must be unreachable for FREQ=CRON.
+// The routing pin targets the buildCronRrule call itself so neutering the
+// guard (falling back to the weekly builder) fails the assert.
 assert.ok(
-  scheduledViewSource.includes("function onceScheduleParts"),
+  scheduleRruleFieldsSrc.includes("fields.FREQ === 'CRON'") &&
+    scheduleRruleFieldsSrc.includes("repeat: 'cron'") &&
+    /if \(fields\.FREQ === 'CRON' && key !== 'repeat'\)\s*\{\s*return buildCronRrule\(fields, key, value, currentRrule\);/.test(scheduleRruleFieldsSrc),
+  'the schedule editor must give CRON rules their own mode instead of the weekly fallback that silently rewrote them on save (issue #821)'
+);
+assert.ok(
+  // The real markup is a runtime template literal inside the shared
+  // FormScheduleRows component — the round-2 pin matched only the comment
+  // anchors and stayed green with the whole row deleted (round-3 review),
+  // so pin the construction itself plus the cron-mode row gate.
+  /data-testid=\{`\$\{prefix\}-cron-expr`\}/.test(scheduledViewSource) &&
+    /\{editor\.repeat === 'cron' && \(\(\) => \{/.test(scheduledViewSource) &&
+    scheduledViewSource.includes("{ value: 'cron', label: scheduledCopy.repeatOptions.cron }"),
+  'both schedule forms must expose the CRON expression row for cron-mode tasks'
+);
+assert.ok(
+  /nextEditor\.repeat === 'cron' && cronExprInvalid\(nextEditor\.cronExpr\)/.test(scheduledViewSource) &&
+    /createEditorValue\.repeat === 'cron' && cronExprInvalid\(createEditorValue\.cronExpr\)/.test(scheduledViewSource),
+  'an in-progress invalid CRON expression must stay a local draft in the detail editor (every edit key, so a wheel rewrite cannot bounce a save) and block create submit'
+);
+assert.ok(
+  scheduledViewSource.includes("detailCronEditor && detailCronEditor.repeat === 'cron' && cronExprInvalid(detailCronEditor.cronExpr)") &&
+    scheduledViewSource.includes("createScheduleEditor && createScheduleEditor.repeat === 'cron' && cronExprInvalid(createScheduleEditor.cronExpr)"),
+  'the detail save/run actions and the create submit button must stay disabled while a CRON draft is invalid'
+);
+assert.ok(
+  /function scheduledTaskDraftCronReject\(rrule\)/.test(bridgeSharedHelpers) &&
+    /const cronReject = scheduledTaskDraftCronReject\(lockedDraft\.rrule\);\s*if \(cronReject\) throw new Error\(cronReject\);/.test(bridgeSharedHelpers) &&
+    (bridgeSharedHelpers.match(/scheduledTaskDraftCronReject: b\.scheduledTaskDraftCronReject/g) || []).length === 2,
+  'chat auto-create must structurally reject out-of-subset CRON drafts before createScheduledTask runs, exported from both shared clusters (round-3 review M2)'
+);
+assert.ok(
+  zhScheduledDict.includes("cron:'自定义计划'") &&
+    zhScheduledDict.includes('cronExprHint') &&
+    zhScheduledDict.includes('cronExprInvalid') &&
+    enScheduledDict.includes("cron:'Custom'") &&
+    enScheduledDict.includes('cronExprHint') &&
+    enScheduledDict.includes('cronExprInvalid') &&
+    jaScheduledDict.includes("cron:'カスタム'") &&
+    jaScheduledDict.includes('cronExprHint') &&
+    jaScheduledDict.includes('cronExprInvalid'),
+  'the CRON repeat option and expression hints must exist in the zh/en/ja dictionaries'
+);
+assert.ok(
+  scheduledTaskPromptRust.includes('每月 1 日 09:30：FREQ=CRON;EXPR=30 9 1 * *') &&
+    scheduledTaskPromptRust.includes('分钟字段必须是固定值') &&
+    scheduledTaskPromptRust.includes('rrule 只允许 FREQ 和 EXPR 两个字段') &&
+    scheduledTaskPromptRust.includes('每月指定日期和时间'),
+  'backend prompt must teach the monthly/CRON subset the gates accept (issue #821)'
+);
+assert.ok(
+  scheduleRruleFieldsSrc.includes("function onceScheduleParts"),
   'the schedule editor must resolve once AT to the local wall clock instead of dropping stored UTC offsets'
 );
 assert.ok(
@@ -9077,7 +9155,289 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
   );
 }
 
+// Issue #821: behavioral check of the shared CRON subset validator — the
+// same accept/reject boundary creation_requests.rs and server.py enforce
+// structurally, plus the engine's deterministic semantics (field bounds,
+// range order, step, names, impossible dates): an expression the engine
+// would reject must read invalid so the editor holds it as a local draft
+// instead of bouncing a save off the bridge and wedging the panel.
+function scheduleCronExprBehavior() {
+  assert.strictEqual(scheduleCronExpr.parseCronExprFields(' 30  9 1 * * ').length, 5);
+  assert.strictEqual(scheduleCronExpr.parseCronExprFields('30\t9\u30001 * *').length, 5);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('30 9 1 * *'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('0 9-18 1,15 * MON-FRI'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('15 9 */2 * *'), false);
+  assert.strictEqual(scheduleCronExpr.cronExprInvalid('5 9 1 JAN *'), false);
+  for (const good of [
+    '059 9 1 * *', '30 9 29 2 *', '0 9 31 2,3 *', '30 9 30 2,4 *',
+    '30 9 1-5/2 * *', '30 9 5/2 * *', '30 9 1 * 7', '30 9 1 JAN/2 *',
+    '30\t9 1 * *',
+    // U+0085 (NEL) is Unicode White_Space: the watcher's split_whitespace
+    // and server.py's str.split() both split it, so the mirror must too
+    // (round-3 review minor 2 — the class used to miss exactly this char).
+    '30\u00859\u00851\u0085*\u0085*', '\u008530 9 1 * *\u0085',
+  ]) {
+    assert.strictEqual(scheduleCronExpr.cronExprInvalid(good), false, good);
+  }
+  for (const bad of [
+    '', '30 9 1 *', '30 9 1 * * *', '*/5 * * * *', '0,30 * * * *', '5-55/10 * * * *',
+    '60 9 1 * *', 'abc 9 1 * *', '30 9 1,3 * *;BYDAY=MO', '30 9 1,,3 * *', '30 9 1 * ?',
+    '30 99 1 * *', '30 9 32 * *', '30 9 1 13 *', '30 9 1 * 8',
+    '30 9 31 2 *', '30 9 30 2 *', '30 9 31 2,4 *', '30 9 5-1 * *',
+    '30 9 1-5/0 * *', '30 9 1/0 * *', '30 9 1 * MON/0', '30 9 1 * XYZ',
+    '99999999999999999999 9 1 * *', '\uFEFF30 9 1 * *', '30 9 1 * *\u001c',
+  ]) {
+    assert.strictEqual(scheduleCronExpr.cronExprInvalid(bad), true, bad);
+  }
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('30 9 1 * *'), { minute: '30', hour: '09' });
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('05 8 31 * *'), { minute: '05', hour: '08' });
+  assert.deepStrictEqual(scheduleCronExpr.fixedCronTime('059 9 1 * *'), { minute: '59', hour: '09' });
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('0 9-18 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('* 9 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.fixedCronTime('30 99 1 * *'), null);
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('30 9 1 * *', '07:05'), '5 7 1 * *');
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('059 9 1 * *', '07:05'), '5 7 1 * *');
+  assert.strictEqual(scheduleCronExpr.cronExprWithTime('0 9-18 1 * *', '07:05'), '0 9-18 1 * *');
+}
+
+// (#900 review P2, fixwave 2): the backend accepts and stores whitespace-
+// padded KEY=VALUE rules (validate_product_rrule / server.py both trim keys
+// and values), so the detail editor's field map must project them the same
+// way — the weekly-fallback misread used to turn a CRON time edit into
+// appended BYHOUR/BYMINUTE the domain refuses, and the bounced patch then
+// wedged the pending-patch flush on every later action. Drive the real
+// save → detail time-edit chain through the extracted module.
+function scheduleRruleFieldsBehavior() {
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ = CRON;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'spaces around the separator must not orphan the FREQ field'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ= CRON; EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a space-padded mid-rule segment must parse like the engine segment trim'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('=X;FREQ=WEEKLY'),
+    { FREQ: 'WEEKLY' },
+    'an empty-key segment stays skipped without hiding the real fields'
+  );
+  // the padded CRON rule projects to the CRON editor, not the weekly fallback
+  const editor = scheduleRruleFields.scheduleEditorValue('FREQ = CRON;EXPR=30 9 1 * *');
+  assert.strictEqual(editor.repeat, 'cron');
+  assert.strictEqual(editor.cronExpr, '30 9 1 * *');
+  assert.strictEqual(editor.time, '09:30');
+  assert.strictEqual(editor.hasTimeAnchor, true);
+  // the real chain: a detail time edit rewrites the CRON expression in place
+  // instead of appending BYHOUR/BYMINUTE to it
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ = CRON;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *'
+  );
+  // value trim also rescues ONCE time edits on padded AT segments
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ = ONCE; AT = 2027-06-01T09:30', 'time', '08:15'),
+    'FREQ=ONCE;AT=2027-06-01T08:15'
+  );
+  // round-trip re-emission: keys land in the backend's uppercase form,
+  // values stay verbatim (the stored rule is normalized upstream) and
+  // lose only the separator padding
+  assert.strictEqual(
+    scheduleRruleFields.serializeScheduleFields(
+      scheduleRruleFields.parseScheduleFields('freq = weekly ; byday = MO,WE ; byhour = 9 ; byminute = 30')
+    ),
+    'FREQ=weekly;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30'
+  );
+  // canonical weekly rules keep their existing edit shape
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30', 'time', '07:05'),
+    'FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=7;BYMINUTE=5'
+  );
+  // #900 review P2 (round 2): the backend trims keys and values with the
+  // full Unicode White_Space set and persistence's outer trim preserves an
+  // INTERNAL U+0085, so `FREQ\u0085=CRON` / `FREQ=CRON\u0085` are valid
+  // stored rules the guard and Rust parser both accept — JS trim() used to
+  // leave them orphaned and re-wedge the pending patch. The padded
+  // spellings must project to the CRON editor and survive a real time edit
+  // (guard → stored-rule projection → time-edit round trip, padding
+  // adjacent to '=').
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ\u0085=CRON;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a U+0085-padded key must not orphan the field'
+  );
+  assert.deepStrictEqual(
+    scheduleRruleFields.parseScheduleFields('FREQ=CRON\u0085;EXPR=30 9 1 * *'),
+    { FREQ: 'CRON', EXPR: '30 9 1 * *' },
+    'a U+0085-padded value must not split the classification'
+  );
+  const paddedKeyEditor = scheduleRruleFields.scheduleEditorValue('FREQ\u0085=CRON;EXPR=30 9 1 * *');
+  assert.strictEqual(paddedKeyEditor.repeat, 'cron', 'padded-key rule must project to the CRON editor');
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ\u0085=CRON;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *',
+    'a padded-key rule must rewrite the CRON expression, not append BYHOUR/BYMINUTE'
+  );
+  const paddedValueEditor = scheduleRruleFields.scheduleEditorValue('FREQ=CRON\u0085;EXPR=30 9 1 * *');
+  assert.strictEqual(paddedValueEditor.repeat, 'cron', 'padded-value rule must project to the CRON editor');
+  assert.strictEqual(
+    scheduleRruleFields.buildRrule('FREQ=CRON\u0085;EXPR=30 9 1 * *', 'time', '07:05'),
+    'FREQ=CRON;EXPR=5 7 1 * *',
+    'a padded-value rule must rewrite the CRON expression, not append BYHOUR/BYMINUTE'
+  );
+}
+
+// Round-3 review M2 (issue #821): the chat draft fence auto-creates with the
+// model's rrule and the engine accepts the full cron vocabulary, so the
+// shared helpers must structurally reject out-of-subset CRON drafts — the
+// one product constraint with no engine backstop. Run the real helpers file
+// in a bare context and drive the exported predicate like the lane does.
+function scheduledTaskDraftCronRejectBehavior() {
+  const helpersContext = {
+    window: {},
+    console: { log: function () {}, warn: function () {}, error: function () {} },
+  };
+  vm.runInNewContext(bridgeSharedHelpers, helpersContext, { filename: 'bridge-shared-helpers.js' });
+  const reject = helpersContext.window.PinvouBridgeShared
+    .create('tauriScheduled', {}).scheduledTaskDraftCronReject;
+  assert.strictEqual(typeof reject, 'function');
+  // out-of-subset CRON drafts are refused, with gate-aligned wording
+  assert.match(reject('FREQ=CRON;EXPR=*/5 * * * *'), /minute field must be a fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=0,30 9 1 * *'), /minute field must be a fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1 * *;BYDAY=MO'), /unsupported field/);
+  assert.match(reject('FREQ=CRON;BYDAY=MO'), /requires EXPR/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1 *'), /exactly 5 fields/);
+  assert.match(reject('FREQ=CRON;EXPR=abc 9 1 * *'), /fixed value/);
+  assert.match(reject('FREQ=CRON;EXPR=30 9 1,,3 * *'), /empty list item/);
+  // everything the engine rejects on its own stays engine's error: the
+  // structural subset passes it through so the engine message surfaces
+  assert.strictEqual(reject('FREQ=CRON;EXPR=30 9 1 * *'), null);
+  assert.strictEqual(reject('freq=cron;expr=05 08 31 JAN *'), null);
+  // deliberately out of scope: impossible dates are the engine's semantic
+  // authority — the guard must not duplicate the editor mirror here
+  assert.strictEqual(reject('FREQ=CRON;EXPR=30 9 31 2 *'), null);
+  // non-CRON drafts are untouched (engine validates those shapes itself)
+  assert.strictEqual(reject('FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30'), null);
+  assert.strictEqual(reject('FREQ=ONCE;AT=2027-06-01T09:30'), null);
+  assert.strictEqual(reject('FREQ=HOURLY;INTERVAL=6;BYMINUTE=0'), null);
+  // #900 review P2: classify AFTER parsing — reordered, space-padded and
+  // duplicate-FREQ spellings are all engine-valid CRON drafts the old
+  // startsWith prefix check waved through without the product fence.
+  assert.match(
+    reject('EXPR=*/5 * * * *;FREQ=CRON'),
+    /minute field must be a fixed value/,
+    'reordered EXPR-first must still be classified as CRON and refused'
+  );
+  assert.match(
+    reject('FREQ = CRON;EXPR=*/5 * * * *'),
+    /minute field must be a fixed value/,
+    'space-padded FREQ must still be classified as CRON and refused'
+  );
+  assert.match(
+    reject('FREQ = cron;EXPR=*/5 * * * *'),
+    /minute field must be a fixed value/,
+    'the effective FREQ is compared case-insensitively'
+  );
+  assert.match(
+    reject('FREQ=WEEKLY;FREQ=CRON;EXPR=*/5 * * * *'),
+    /duplicate field\(s\) FREQ/,
+    'duplicate FREQ with an effective CRON must be rejected, not last-wins accepted'
+  );
+  assert.strictEqual(
+    reject('FREQ=WEEKLY;FREQ=WEEKLY;BYDAY=MO'),
+    null,
+    'duplicates on a non-CRON effective FREQ stay engine\'s business'
+  );
+  // #900 review P3: the EXPR split uses the editor's exact Unicode
+  // White_Space set — U+0085 is a valid separator for the engine and the
+  // editor, and must not be refused by this final product entry point.
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=30\u00859\u00851\u0085*\u0085*'),
+    null,
+    'a U+0085-separated minute-fixed EXPR must pass the fence'
+  );
+  assert.match(
+    reject('FREQ=CRON;EXPR=*/5\u00859\u00851\u0085*\u0085*'),
+    /minute field must be a fixed value/,
+    'a U+0085-separated wildcard-minute EXPR must still be refused'
+  );
+  // #900 review P3 (round 2): JS trim() misses U+0085, which the engine
+  // trims — edge padding used to orphan the key (dodging classification
+  // entirely) or leave a phantom empty field the editor never sees.
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=\u008530 9 1 * *'),
+    null,
+    'a U+0085 edge-padded fixed-minute EXPR must pass like the editor'
+  );
+  assert.strictEqual(
+    reject('FREQ=CRON;EXPR=30 9 1 * *\u0085'),
+    null,
+    'trailing U+0085 edge padding must not become a phantom sixth field'
+  );
+  assert.match(
+    reject('\u0085FREQ=CRON;EXPR=*/5 9 1 * *'),
+    /minute field must be a fixed value/,
+    'a U+0085-padded rrule is an engine-valid CRON draft the fence must still refuse'
+  );
+  assert.match(
+    reject('FREQ=CRON\u0085;EXPR=*/5 9 1 * *'),
+    /minute field must be a fixed value/,
+    'a U+0085-padded value must not split the FREQ classification'
+  );
+}
+
+  /// (#900 review P2, fixwave): the reordered / space-padded / duplicate-FREQ
+  /// spellings drive the ACTUAL auto-create path (chat auto-create is the
+  /// surface that must carry the product fence) — none may reach the
+  /// backend creation command; each surfaces the cron rejection through the
+  /// creation error instead.
+  function cronGuardRefusesVariantsThroughAutoCreate() {
+    const helpersContext = {
+      window: {},
+      console: { log: function () {}, warn: function () {}, error: function () {} },
+    };
+    vm.runInNewContext(bridgeSharedHelpers, helpersContext, { filename: 'bridge-shared-helpers.js' });
+    const state = { scheduledTaskError: null };
+    const invokes = [];
+    const api = helpersContext.window.PinvouBridgeShared.create('tauriScheduled', {
+      state,
+      notify() {},
+      bt(key) { return key; },
+      invoke(name) { invokes.push(name); return Promise.reject(new Error('backend must not be reached')); },
+      runSyncOnSession(sessionId, fn) { fn(); },
+      addSystemItem() {},
+      scheduledTaskAutoCreateInFlight: { value: {} },
+      scheduledTaskAutoCreateSeq: { value: 0 },
+    });
+    const variants = [
+      'EXPR=*/5 * * * *;FREQ=CRON',
+      'FREQ = CRON;EXPR=*/5 * * * *',
+      'FREQ=WEEKLY;FREQ=CRON;EXPR=*/5 * * * *',
+    ];
+    return Promise.all(variants.map(function (rrule, index) {
+      return new Promise(function (resolve) {
+        api.autoCreateScheduledTaskDraft({ rrule, name: 'n' + index }, 'session-' + index);
+        setTimeout(resolve, 0);
+      });
+    })).then(function () {
+      assert.strictEqual(
+        invokes.indexOf('create_scheduled_task'), -1,
+        'no variant may reach the backend creation command; got: ' + invokes.join(',')
+      );
+      assert.ok(
+        state.scheduledTaskError && /invalid rrule/.test(JSON.stringify(state.scheduledTaskError)),
+        'each variant surfaces the cron rejection through the creation error: ' +
+        JSON.stringify(state.scheduledTaskError)
+      );
+    });
+  }
+
 Promise.resolve()
+  .then(scheduleCronExprBehavior)
+  .then(scheduleRruleFieldsBehavior)
+  .then(scheduledTaskDraftCronRejectBehavior)
+  .then(cronGuardRefusesVariantsThroughAutoCreate)
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)

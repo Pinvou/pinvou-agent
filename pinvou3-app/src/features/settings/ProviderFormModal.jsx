@@ -3,10 +3,14 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { bridge } from '../../hooks/useBridge.js';
 import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
 } from './acp-provider-catalog.js';
+import EndpointModelPicker from './endpoint-model-picker.jsx';
 
 // Dropdown mechanism shared by ModelSuggestInput and PresetSelect: 150ms blur-delayed close,
 // Esc to close, onMouseDown to select. Keep the blur-timeout approach (not outside-pointer detection):
@@ -137,7 +141,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
   );
 }
 
-export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
+export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t }) {
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || '');
   // Kimi Agent 默认走 Kimi 原生协议（Kimi Code 官方文档的专用类型）；
@@ -164,6 +168,19 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   // save 校验通过后暂存模型槽位/上下文窗口 payload：doSave 与自绘确认
   // 回调（JSX onClick）跨函数共享，不能直接引用 save 内的局部变量。
   const payloadRef = useRef({ slotPayload: null, contextWindowPayload: null });
+  // base URL 实时镜像(复审 M5):探测在飞时改了 base URL,resolve 后的旧端点
+  // 结果作废,不在新 URL 的表单下展示。
+  const baseUrlRef = useRef(baseUrl);
+  baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
+  // wire 实时镜像(round-5 审 m1):kimi 表单是唯一带 wire 切换的面,探测
+  // 在飞时切换 wire,resolve 后的旧协议结果同样作废——URL 没变但协议变了,
+  // listing 的语义(乃至 auth_required 与否)属于旧 wire。
+  const wireRef = useRef(wireApi);
+  wireRef.current = wireApi; // eslint-disable-line react-hooks/refs -- mirror the live wire so an in-flight probe result can be discarded when the protocol toggled (round-5 review m1)
+  // key 实时镜像(review P2 2026-11-17):探测在飞时换 key,旧 key 探得的
+  // 列表不得在新 key 的表单下打开——picker 的 Add 会按当前凭证落库。
+  const apiKeyRef = useRef(apiKey);
+  apiKeyRef.current = apiKey; // eslint-disable-line react-hooks/refs -- mirror the live key so an in-flight probe result can be discarded when the credential changed
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   // 自绘确认步骤（null = 无）：'emptyKey'（新建空 key）/ 'deleteKey'（编辑删除已存密钥）
@@ -171,6 +188,14 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   const [error, setError] = useState('');
   // 预设下拉：'' = 其它（自定义，不应用任何预设）。
   const [presetKey, setPresetKey] = useState('');
+  // 端点模型自动发现（规格 §2.7）：候选列表只进本地 state 打开共享 picker，
+  // 绝不自动发请求、绝不写库；「获取模型列表」仅按钮显式点击触发。
+  const [endpointListing, setEndpointListing] = useState(null);
+  const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  // 每次「获取模型列表」点击递增,作为共享 picker 的 React key:新列表重挂,
+  // filterDraft/滚动位置干净复位(与聊天线同一处理)。
+  const [endpointFetchSeq, setEndpointFetchSeq] = useState(0);
 
   // 模型建议列表：选择预设后按该厂商官方在列名单筛选；「其它」显示全部官方在列模型。
   // Claude 额外提供该厂商的 1M 上下文变体（仅 CC 需要显式声明 [1m]；选中预设
@@ -197,15 +222,23 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
 
   useEffect(() => {
     const onKey = event => {
-      // 二级确认弹窗打开时 Escape 只关确认层，不连带关闭整个表单
-      if (event.key === 'Escape') {
+      // Escape 逐层关闭(复审 ACP minor;r3 复审修正层级顺序):二级确认弹窗
+      // 打开时只关确认层(视觉顶层,z-[120]),其次候选面板(z-[100]),最后才是
+      // 整个表单——上层浮层绝不连带下层一起消失。旧顺序「面板优先」在键盘
+      // 路径下面板+确认层可同时打开(面板无焦点圈禁,Tab 可达面板底下的保存
+      // 键),一次 Escape 曾连关两层;确认层自身的 ModalShell 监听也只关确认
+      // 层,与本处理器幂等。行为级回归钉:acp_providers_ui_smoke ⑥.18e/f。
+      // 与全应用对话框一致,IME 组合中的 Escape(取消候选词)不关闭任何层
+      // (shared/ime-guard.mjs)。
+      if (event.key === 'Escape' && !isImeComposing(event)) {
         if (confirmStep) setConfirmStep(null);
+        else if (endpointPickerOpen) setEndpointPickerOpen(false);
         else onClose();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, confirmStep]);
+  }, [onClose, confirmStep, endpointPickerOpen]);
 
   // 编辑有 key 的 Provider 时回填真实密钥：输入框 type=password 自然掩码，
   // 点「显示」切 text 变明文（密码管理器范式）。仅编辑时拉取，列表永不回传。
@@ -235,10 +268,27 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   // 「不可自行填写」的误解，也兼容中转商自有的模型名。
   // wire 按 Agent 适配：Kimi 原生预设（Moonshot/Kimi Code）用于非 Kimi Agent
   // 时落到 OpenAI 兼容（这些端点同样提供 OpenAI 协议）；Claude 固定 Anthropic。
+  // base URL 变更即失效既有探测结果(复审 M5,与聊天线同一不变量):URL A 上
+  // 探到的候选列表绝不许当 URL B 的结果展示/使用。手输与预设回填两条路径都要清。
+  // round-4 审 m1-1:探测失败写在本表单共享的 error 条上,此前只清 listing/picker,
+  // 旧 URL 的红色失败条会挂在已改走的新 URL/协议下(与聊天线 fetchModelsMessage
+  // 的 round-3 minor 同因)。error 的其余写入方是表单校验与保存失败,同属
+  // 「上一次尝试」的过期提示,随失效点一并清扫不会丢失任何活跃状态。
+  const clearEndpointProbeState = () => {
+    setEndpointListing(null);
+    setEndpointPickerOpen(false);
+    setError('');
+  };
+  const handleBaseUrlChange = value => {
+    setBaseUrl(value);
+    clearEndpointProbeState();
+  };
+
   const applyPreset = preset => {
     if (!preset) return;
     const useAnthropicEndpoint = agent === 'claude' || preset.wireApi === 'anthropic';
     setBaseUrl((useAnthropicEndpoint && preset.baseUrlAnthropic) || preset.baseUrl || '');
+    clearEndpointProbeState();
     if (wireLocked) return;
     if (preset.wireApi === 'kimi' && agent !== 'kimi') {
       setWireApi('openai');
@@ -260,6 +310,74 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       return next;
     });
     setModel(value);
+  };
+
+  // 按钮探活（与 SettingsView 聊天线同一语义）：老版本桌面或 web 白名单未放行时
+  // bridge.models.probeEndpointModels 不存在，按钮禁用并以 title 提示。
+  const probeEndpointModelsAvailable = typeof bridge?.models?.probeEndpointModels === 'function';
+
+  // 获取模型列表（规格 §2.7）：按表单 base_url + 当前 wire 协议 + 表单 key 探测
+  // （key 为空传 null，keyless 端点照常探测）。ACP 线没有 ModelPreset，wire 之外
+  // 不传 preset。失败透传到表单错误条（命令层已脱敏，不携带 URL/key）。
+  const handleFetchEndpointModels = async () => {
+    if (!probeEndpointModelsAvailable || fetchingModels) return;
+    const probedBaseUrl = String(baseUrl || '').trim();
+    const probedWire = wireApi;
+    const probedKey = String(apiKey || '').trim() || null;
+    if (!probedBaseUrl) return;
+    setEndpointFetchSeq(seq => seq + 1);
+    setFetchingModels(true);
+    setError('');
+    try {
+      const listing = await bridge.models.probeEndpointModels({
+        baseUrl: probedBaseUrl,
+        apiKey: probedKey,
+        wire: probedWire,
+      });
+      // 探测期间 base URL 已被改走 → 结果作废(复审 M5 同因);wire 切换了
+      // 也同样作废(round-5 审 m1)——URL 没变但协议变了,listing 的语义属于
+      // 旧 wire(kimi 表单是唯一带 wire 切换的面)。
+      if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
+      if (wireRef.current !== probedWire) return;
+      // review P2 2026-11-17:凭据维度并入失效键——换 key 后旧 key 探得的
+      // 列表不得在新 key 表单下打开(Add 按当前凭证落库)。
+      if ((String(apiKeyRef.current || '').trim() || null) !== probedKey) return;
+      setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
+      setEndpointPickerOpen(true);
+    } catch (e) {
+      // reject 穿透的是命令层错误,直接 String(e) 会把英文原始串透出到表单;
+      // 按聊天线 normalizeConnectionTestResult 的同一映射归一为三语文案。
+      // round-3 审 minor:reject 路径与 try 路径同一 resolve 时刻守卫——
+      // URL A 的探测失败不许以错误条挂在已改走的 URL B 表单下;wire 同因
+      // (round-5 审 m1)。
+      if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
+      if (wireRef.current !== probedWire) return;
+      // reject 路径同键(review P2 2026-11-17)。
+      if ((String(apiKeyRef.current || '').trim() || null) !== probedKey) return;
+      const connectionCopy = t.uiSettingsDetail.connectionMessages;
+      if (e && typeof e === 'object' && !Array.isArray(e)) {
+        const code = String(e.code || (e.ok ? 'ok' : 'unknown'));
+        setError(String(connectionCopy[code] || connectionCopy.unknown || e.message || code));
+      } else {
+        setError(String(connectionCopy.unknown || ''));
+      }
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  // 候选行「添加」（ACP 线 onPick）：模型 id 走输入框同一 changeModel 通道填入；
+  // contextWindow **仅在当前为空**时用条目的 context_window_tokens 填入，绝不
+  // 覆盖非空值（与聊天线同一不变量；anthropic wire 条目的长度字段核心层已归一）。
+  // 填入即完成本面板使命，关闭面板（ACP 线无批量添加）。
+  const handleEndpointModelPick = row => {
+    if (!row || !row.id) return;
+    changeModel(row.id);
+    const probedContext = Number(row.contextWindowTokens);
+    if (!String(contextWindow || '').trim() && Number.isFinite(probedContext) && probedContext > 0) {
+      setContextWindow(String(probedContext));
+    }
+    setEndpointPickerOpen(false);
   };
 
   const save = async () => {
@@ -356,6 +474,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
+      {/* 这层 stopPropagation 仍承载作用：二级确认弹层虽已 portal 到 body，
+          但 React 合成事件沿 React 树冒泡——删掉它，确认弹层的背景点击就会
+          一路冒到表单根节点的 onClose，连带关掉整个表单（#817 B1 复审钉回）。 */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
       <div
@@ -407,7 +528,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             data-testid="acp-provider-base-url"
             className={`${inputClass} mt-1.5 font-mono`}
             value={baseUrl}
-            onChange={event => setBaseUrl(event.target.value)}
+            onChange={event => handleBaseUrlChange(event.target.value)}
             placeholder={copy.baseUrlPlaceholder}
             spellCheck={false}
           />
@@ -433,7 +554,13 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
                   key={option.key}
                   data-testid={`acp-provider-wire-${option.key}`}
                   type="button"
-                  onClick={() => setWireApi(option.key)}
+                  onClick={() => {
+                    setWireApi(option.key);
+                    // round-3 审 minor:wire 切换使既有探测结果跨协议失效——
+                    // anthropic wire 下探到的列表不许在 openai wire 的表单下
+                    // 打开/回填(与 base URL 变更同一不变量)。
+                    clearEndpointProbeState();
+                  }}
                   className={`h-9 px-3.5 rounded-full text-[12px] font-semibold transition-colors ${
                     wireApi === option.key
                       ? 'bg-[#007AFF] text-white'
@@ -455,14 +582,33 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
 
         <div className="block mb-4">
           <span className="text-[12px] font-medium opacity-70">{copy.model} · {copy.modelOptional}</span>
-          <ModelSuggestInput
-            testId="acp-provider-model"
-            inputClass={inputClass}
-            value={model}
-            onChange={changeModel}
-            placeholder={copy.modelPlaceholder}
-            suggestions={suggestedModels}
-          />
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 flex-1">
+              <ModelSuggestInput
+                testId="acp-provider-model"
+                inputClass={inputClass}
+                value={model}
+                onChange={changeModel}
+                placeholder={copy.modelPlaceholder}
+                suggestions={suggestedModels}
+              />
+            </span>
+            {/* 端点模型自动发现（规格 §2.7）：仅 codex/kimi 且 base URL 非空时提供
+                「获取模型列表」；claude 的模型槽位走官方编辑器，不提供该按钮。
+                bridge 方法缺失时探活禁用并以 title 提示（见 probeEndpointModelsAvailable）。 */}
+            {(agent === 'codex' || agent === 'kimi') && String(baseUrl || '').trim() !== '' && (
+              <button
+                type="button"
+                data-testid="acp-provider-fetch-models"
+                onClick={handleFetchEndpointModels}
+                disabled={fetchingModels || !probeEndpointModelsAvailable}
+                title={probeEndpointModelsAvailable ? undefined : copy.fetchUnavailable}
+                className="shrink-0 mt-1.5 h-10 px-3 rounded-xl text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+              >
+                {fetchingModels ? copy.fetchingModels : copy.fetchModels}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Claude Code 细化模型槽位：默认跟随主模型，可单独修改；必填（留空
@@ -554,53 +700,28 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           {copy.thirdPartyWarning}
         </div>
 
-        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹，应用内
-            自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
-            z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
+        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹）：新建/无密钥
+            编辑 + 空 key、编辑清空已存密钥。z-[120] 压在整个表单弹窗（z-[110]）
+            之上；#817 B1 起统一走 components/ConfirmDialog（portal 到 body，
+            自带 Esc/IME/busy 守卫，背景点击只关确认层——不再冒泡到表单） */}
         {confirmStep && (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the real buttons inside the confirm layer
-          // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
-          <div
-            data-testid="acp-provider-form-confirm"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-            onClick={event => {
-              event.stopPropagation();
+          <ConfirmDialog
+            testid="acp-provider-form-confirm"
+            confirmTestId="acp-provider-form-confirm-ok"
+            zIndexClass="z-[120]"
+            description={confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
+            destructive={confirmStep === 'deleteKey'}
+            busy={saving}
+            confirmLabel={confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
+            cancelLabel={copy.cancel}
+            onConfirm={() => {
+              const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
+              const key = String(apiKey || '').trim();
               setConfirmStep(null);
+              doSave(action, key);
             }}
-          >
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
-            <div
-              onClick={event => event.stopPropagation()}
-              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
-            >
-              <p className="text-[13px] leading-relaxed opacity-85">
-                {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
-              </p>
-              <div className="mt-6 flex justify-end gap-2">
-                <button type="button"
-                  onClick={() => setConfirmStep(null)}
-                  disabled={saving}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
-                >
-                  {copy.cancel}
-                </button>
-                <button type="button"
-                  data-testid="acp-provider-form-confirm-ok"
-                  onClick={() => {
-                    const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
-                    const key = String(apiKey || '').trim();
-                    setConfirmStep(null);
-                    doSave(action, key);
-                  }}
-                  disabled={saving}
-                  className={`h-9 px-4 rounded-full text-white text-[13px] font-semibold disabled:opacity-50 ${confirmStep === 'emptyKey' ? 'bg-[#007AFF]' : 'bg-red-500'}`}
-                >
-                  {confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
-                </button>
-              </div>
-            </div>
-          </div>
+            onCancel={() => setConfirmStep(null)}
+          />
         )}
 
         <div className="mt-6 flex justify-end gap-2">
@@ -621,6 +742,20 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             {saving ? copy.saving : copy.save}
           </button>
         </div>
+
+        {/* 端点模型候选面板（规格 §2.7）：纯 props 驱动复用聊天线组件；ACP 线
+            不传 onAddAll（无批量添加），不传 savedKeys（provider 无已保存模型
+            去重语义，组件按「无已保存」处理：行恒可添加、无「已保存」标记）。 */}
+        <EndpointModelPicker
+          key={endpointFetchSeq}
+          open={endpointPickerOpen}
+          onClose={() => setEndpointPickerOpen(false)}
+          listing={endpointListing}
+          loading={fetchingModels}
+          onPick={handleEndpointModelPick}
+          baseUrl={baseUrl.trim()}
+          t={t}
+        />
       </div>
     </div>
   );

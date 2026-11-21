@@ -10,8 +10,21 @@
 //! user's real desktop when it happens to be active). This module therefore
 //! never borrows the physical backend's input path: all input is delivered
 //! as window messages (`PostMessageW`) directly to the windows living on the
-//! hidden desktop, and the cursor is the hidden desktop's own per-desktop
-//! cursor (`SetCursorPos`/`GetCursorPos` from an attached thread).
+//! hidden desktop.
+//!
+//! **Why the cursor is a tracked virtual pointer:** `SetCursorPos` and
+//! `GetCursorPos` are documented as requiring "the input desktop [to] be the
+//! current desktop" (winuser.h remarks) — the hidden desktop is never the
+//! input desktop (the user's real one is), so both fail with
+//! ERROR_ACCESS_DENIED no matter which thread calls them (observed live:
+//! 0x80070005 from an attached thread). There is no real cursor to move on a
+//! hidden desktop, so this backend tracks its own pointer state: hit-testing
+//! (`WindowFromPoint` from the attached thread works — it is a desktop-
+//! relative query, not input-queue state) and the synthesized messages use
+//! that tracked position, exactly the recipe mature HVNC stacks use. The
+//! deprecated journal-playback hook was evaluated and rejected: it is
+//! global-only, blocks real user input while active, and is documented as
+//! debug-only.
 //!
 //! **Why capture is a per-window composite:** a hidden desktop has no DWM
 //! composition, so a plain `BitBlt` from the screen DC produces an all-black
@@ -48,13 +61,24 @@
 //!
 //! Known fidelity limits (disclosed in `Capabilities`): message-level input
 //! is app-level injection — apps that ignore synthetic messages cannot be
-//! driven; title-bar/system-button (non-client) interactions are not
-//! injected; UAC elevation prompts appear on the secure desktop, which no
-//! hidden-desktop API can drive; cross-desktop UI Automation needs an
-//! attached helper process and stays explicitly Unsupported; and there is
-//! no mid-session wind-down: a Stop/revoke only stops driving — the hidden
-//! desktop and its apps remain until the backend is dropped at session end
-//! (the Linux backend winds down on stop; Windows does not, this release).
+//! driven (Microsoft Store packaged apps — UWP/WinUI, including the Windows 11
+//! Notepad — are the common case; the backend detects a packaged keyboard
+//! target via its process image path and attaches an explicit warning to the
+//! action's receipt instead of letting a silent no-op read as success);
+//! title-bar/system-button (non-client) interactions are not injected; UAC
+//! elevation prompts appear on the secure desktop, which no hidden-desktop
+//! API can drive; cross-desktop UI Automation needs an attached helper
+//! process and stays explicitly Unsupported; programs that resolve to a
+//! packaged-app activation (Paint on Windows 11 is the observed case)
+//! cannot join the session's kill-on-close job and fail the open with an
+//! explicit error; a console program's window is delegated to the default
+//! Windows Terminal host (packaged, broker-activated outside the hidden
+//! desktop), so a console open can fail the same way or surface no visible
+//! window; and
+//! there is no mid-session wind-down: a Stop/revoke only stops driving — the
+//! hidden desktop and its apps remain until the backend is dropped at
+//! session end (the Linux backend winds down on stop; Windows does not, this
+//! release).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -63,7 +87,7 @@ use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_BUSY, GENERIC_ALL, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM,
+    CloseHandle, E_ACCESSDENIED, ERROR_BUSY, GENERIC_ALL, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
@@ -86,7 +110,8 @@ use windows::Win32::System::StationsAndDesktops::{
 use windows::Win32::System::Threading::{
     AttachThreadInput, CREATE_SUSPENDED, CreateProcessW, GR_GDIOBJECTS, GR_USEROBJECTS,
     GetCurrentProcess, GetCurrentThreadId, GetGuiResources, OpenProcess, PROCESS_INFORMATION,
-    PROCESS_TERMINATE, ResumeThread, STARTUPINFOW, TerminateProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    QueryFullProcessImageNameW, ResumeThread, STARTUPINFOW, TerminateProcess,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, MAPVK_VK_TO_VSC, MapVirtualKeyW, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
@@ -96,10 +121,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, FindWindowW, GA_ROOT,
-    GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT, GetAncestor, GetClassLongW, GetClassNameW, GetCursorPos,
+    GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT, GetAncestor, GetClassLongW, GetClassNameW,
     GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetTopWindow, GetWindow,
     GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -950,12 +975,11 @@ unsafe fn current_thread_desktop() -> Result<HDESK, ComputerUseError> {
 /// The hidden desktop's virtual-screen bounding rect: origin and size of the
 /// WHOLE multi-monitor session, not just the primary monitor. Both capture
 /// and input are specified in this space — screen coordinates are
-/// virtual-screen-global on Windows (`WindowFromPoint`/`SetCursorPos`/
-/// `GetCursorPos`/`GetWindowRect` all take or return them, negatives
-/// included), so hit-testing already spans every monitor; capture composites
-/// the same rect and reports it as the `Capture` origin. Re-read per capture:
-/// a monitor joining or leaving mid-session changes the metrics, and the
-/// query is cheap.
+/// virtual-screen-global on Windows (`WindowFromPoint`/`GetWindowRect` all
+/// take or return them, negatives included), so hit-testing already spans
+/// every monitor; capture composites the same rect and reports it as the
+/// `Capture` origin. Re-read per capture: a monitor joining or leaving
+/// mid-session changes the metrics, and the query is cheap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VirtualScreenRect {
     origin_x: i32,
@@ -993,6 +1017,55 @@ unsafe fn desktop_virtual_screen_rect() -> VirtualScreenRect {
 /// primary makes real window coordinates negative).
 fn composite_pos(window_x: i32, window_y: i32, origin_x: i32, origin_y: i32) -> (i32, i32) {
     (window_x - origin_x, window_y - origin_y)
+}
+
+/// The virtual pointer's conventional start position: the center of the
+/// session's virtual screen (`origin + size / 2`, integer-truncating like a
+/// real cursor's default placement; a degenerate/zero-size rect — a session
+/// whose monitors all vanished — degrades to the rect's origin, which is what
+/// the coordinate space itself collapses to). The additions saturate at the
+/// i32 edges: unreachable from `GetSystemMetrics`' 16-bit GDI values, but
+/// the helper stays total for any caller. Pure; unit-pinned because it
+/// feeds the first hit-test of every session.
+fn pointer_center_of_rect(rect: &VirtualScreenRect) -> (i32, i32) {
+    (
+        rect.origin_x.saturating_add(rect.width / 2),
+        rect.origin_y.saturating_add(rect.height / 2),
+    )
+}
+
+/// Clamp a virtual-screen-global point into the rect — mirroring
+/// `SetCursorPos`'s edge adjustment (whose bound is the `ClipCursor` rect,
+/// the virtual screen by default), so a coordinate from a stale screenshot
+/// taken before a monitor left cannot address a point with no window space
+/// behind it. Pure; unit-pinned (negative origins are the normal
+/// multi-monitor case; `saturating_add` bounds huge origins, and the
+/// `.max(origin)` guard collapses inverted/degenerate rects — zero or
+/// negative width — onto the origin instead of panicking in `clamp`).
+fn clamp_point_to_rect(point: (i32, i32), rect: &VirtualScreenRect) -> (i32, i32) {
+    let max_x = rect.origin_x.saturating_add(rect.width.saturating_sub(1));
+    let max_y = rect.origin_y.saturating_add(rect.height.saturating_sub(1));
+    (
+        point.0.clamp(rect.origin_x, max_x.max(rect.origin_x)),
+        point.1.clamp(rect.origin_y, max_y.max(rect.origin_y)),
+    )
+}
+
+/// Whether a process image path identifies a Microsoft Store **packaged**
+/// app: the OS installs those under the per-user/per-machine `WindowsApps`
+/// tree, and their windows' processes are the ones whose input pipelines
+/// (UWP/WinUI) ignore message-level injection. Pure string check (case-
+/// insensitive; the drive/volume prefix plays no part — the match is a plain
+/// substring) so it is unit-test pinable; the caller feeds it
+/// `QueryFullProcessImageNameW` output. A query failure must NOT be
+/// interpreted by this function — it returns no verdict at the call site
+/// (best-effort detection, never a hard gate). Residual (advisory-only):
+/// a classic app a user placed under a same-named `...\WindowsApps\...`
+/// directory would also match — the cost is one spurious "may not have
+/// landed" advisory, never a hard gate.
+fn process_path_is_packaged(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    lowered.contains("\\windowsapps\\")
 }
 
 /// Per-process GDI/user object counts for the leak tripwire.
@@ -1213,6 +1286,36 @@ unsafe fn launch_suspended_in_job(
             let _ = TerminateProcess(info.hProcess, 1);
             let _ = CloseHandle(info.hProcess);
             let _ = CloseHandle(info.hThread);
+            // ACCESS_DENIED is the packaged-app activation shape: a Store
+            // (MSIX) process is placed in an OS-owned package job at
+            // creation — consistent with the access-denied shape of the
+            // one-job rule in the AssignProcessToJobObject remarks (the
+            // doc's one-job wording is version-gated; the live signal on
+            // Windows 11 is 0x80070005 for programs like Paint whose exe is
+            // an app-execution alias resolved by the store broker). The
+            // containment is load-bearing — an
+            // uncontained process outlives the session AND its window can
+            // surface on the USER'S real desktop (broker activation ignores
+            // lpDesktop) — so the launch stays fail-closed, but the verdict
+            // is `unavailable` (an environment property, not a code fault)
+            // and the message names the resolution path instead of a bare
+            // OS error.
+            if error.code() == E_ACCESSDENIED {
+                // The verdict hedges rather than asserts the packaged shape:
+                // ACCESS_DENIED is also the generic already-in-another-job
+                // rule's code, so the message names the observed dominant
+                // cause ("commonly"), keeps the alternative path, and
+                // appends the raw OS error the fallback branch keeps.
+                return Err(ComputerUseError::unavailable(format!(
+                    "the program could not join the hidden-desktop session's \
+                     kill-on-close job (ACCESS_DENIED) and was terminated \
+                     while still suspended. On Windows 11 this is commonly a \
+                     packaged-app (Microsoft Store) activation — e.g. Paint \
+                     — whose process the OS places in its own job at \
+                     creation; open a classic Win32 executable instead \
+                     ({error})"
+                )));
+            }
             return Err(ComputerUseError::failed(format!(
                 "the launched process could not be contained by the session job \
                  object and was terminated while still suspended: {error}"
@@ -1910,9 +2013,35 @@ struct WindowsVirtualDesktopBackend {
     /// waypoints to), so the up must go back to THAT window even after the
     /// pointer moved, not to whatever the cursor now hovers over (the
     /// re-hit-test shape stranded the pressed state in the press target and
-    /// delivered an orphan up to a bystander — R18). A stale target's
-    /// post fails and surfaces honestly.
+    /// delivered an orphan up to a bystander — R18). The recorded client
+    /// point ADVANCES with every delivered captured move (`move_pointer_to`),
+    /// so the up lands at the release-time position — real captured input
+    /// posts the up with the current cursor point, and the drag path
+    /// likewise delivers its up at the fresh drop point; an up at the stale
+    /// press point would resolve release-position-sensitive targets (e.g. a
+    /// context menu item) at the wrong spot. A stale target's post fails and
+    /// surfaces honestly. The record is single-slot: a second press
+    /// overwrites it (the notes disclose the orphaned first target), and
+    /// `drag` finishes a held LEFT press before its own assembly.
     held_press: Option<(MouseButton, HWND, i32, i32)>,
+    /// The session's **virtual pointer** in virtual-screen-global screen
+    /// coordinates. A hidden desktop has no reachable OS cursor (`SetCursorPos`
+    /// /`GetCursorPos` require the input desktop to be the current desktop —
+    /// winuser.h remarks — and the hidden desktop is never it: both return
+    /// ERROR_ACCESS_DENIED from an attached thread, observed live as
+    /// 0x80070005), so hit-testing and the synthesized messages track this
+    /// state instead. Initialized to the virtual screen's center at creation
+    /// (the conventional "cursor at screen center" start), and clamped into
+    /// the virtual screen — mirroring `SetCursorPos`'s own clamping — on
+    /// every CONSUMED write: `move_to`, drag's start (via `move_to`) and
+    /// drag's whole delivered path (the waypoints interpolate the clamped
+    /// start into the clamped drop, and a segment between two in-rect points
+    /// stays in the rect, so nothing ever observes a raw coordinate).
+    pointer: (i32, i32),
+    /// Backend-accumulated warnings drained by the trait's `take_warnings`
+    /// after each executed action (the packaged-keyboard-target advisory —
+    /// see [`Self::warn_if_packaged_keyboard_target`]).
+    warnings: Vec<String>,
 }
 
 // SAFETY: the raw OS handles (HDESK / HANDLE / HWND) are kernel objects that
@@ -1999,15 +2128,22 @@ impl WindowsVirtualDesktopBackend {
             capture_wedges: 0,
             opened_app_count: 0,
             held_press: None,
+            pointer: (0, 0),
+            warnings: Vec::new(),
         };
 
         // 3. Attach the worker thread (this thread — BackendHandle runs the
         //    factory on the dedicated worker, which owns no windows); the
-        //    real original desktop was already recorded above.
+        //    real original desktop was already recorded above. The virtual
+        //    pointer starts at the session's screen center (the SM_* metrics
+        //    describe the session-wide monitor topology; the read still sits
+        //    after the attach so every desktop query in the setup sequence
+        //    keeps the same ordering).
         // SAFETY: the worker thread owns no windows/hooks (contract).
         unsafe {
             attach_thread_to_desktop(desktop)?;
         }
+        backend.pointer = pointer_center_of_rect(&unsafe { desktop_virtual_screen_rect() });
 
         // 4. Kill-on-close job (NO JOB_OBJECT_UILIMIT_* — BSOD caveat).
         // SAFETY: configuration only.
@@ -2119,17 +2255,112 @@ impl WindowsVirtualDesktopBackend {
         )
     }
 
-    /// The hidden desktop's cursor position (per-desktop input state; this
-    /// thread is attached).
-    fn cursor_point(&self) -> Result<POINT, ComputerUseError> {
-        let mut point = POINT { x: 0, y: 0 };
-        // SAFETY: out-pointer write; thread attached.
-        unsafe { GetCursorPos(&mut point) }.map_err(|error| {
-            ComputerUseError::unavailable(format!(
-                "cannot read the hidden desktop's cursor position: {error}"
-            ))
-        })?;
-        Ok(point)
+    /// The virtual pointer's current position (see the `pointer` field doc —
+    /// there is no reachable OS cursor on a hidden desktop; the tracked state
+    /// IS the session's cursor). Returns virtual-screen-global screen
+    /// coordinates, the same space the tool layer's input mapping consumes.
+    fn cursor_point(&self) -> (i32, i32) {
+        self.pointer
+    }
+
+    /// Move the virtual pointer and feed the hover state: updates the
+    /// tracked position (clamped into the session's virtual screen — the
+    /// same edge adjustment `SetCursorPos` performs), then posts
+    /// WM_MOUSEMOVE so hover states/cursors update the way a real move's
+    /// arrival does. With a button held (a manual down→move→up assembly),
+    /// the move is CAPTURED input — it goes to the remembered press target
+    /// with the pressed MK_* mark, exactly like drag's waypoints
+    /// (SetCapture semantics; re-hit-testing would deliver moves to
+    /// bystander windows and strip the mark, so sliders and canvas gestures
+    /// assembled from the primitives would not track). No OS cursor is
+    /// touched — `SetCursorPos` is documented as requiring the input
+    /// desktop to be the current desktop and fails with
+    /// ERROR_ACCESS_DENIED on a hidden desktop regardless of attachment.
+    fn move_pointer_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
+        // SAFETY: metric query on the attached worker thread.
+        let rect = unsafe { desktop_virtual_screen_rect() };
+        self.pointer = clamp_point_to_rect((x, y), &rect);
+        let (px, py) = self.pointer;
+        if let Some((pressed_button, press_target, _, _)) = self.held_press {
+            // A held-button move carries the pressed mark to the press
+            // target, exactly like real captured input (see the doc).
+            let (_, _, _, mark) = mouse_button_messages(pressed_button);
+            // SAFETY: coordinate translation on a desktop window from
+            // the attached worker.
+            let (move_x, move_y) = unsafe { Self::client_of(press_target, px, py) };
+            let posted = self.post(
+                press_target,
+                WM_MOUSEMOVE,
+                mark,
+                pack_mouse_lparam(move_x, move_y),
+            );
+            // A DELIVERED captured move also advances the remembered press
+            // point, so the matching up lands at the release-time position
+            // (see the `held_press` field doc). A failed move leaves the
+            // record at its last delivered position — the same honesty rule
+            // as `mouse_down` (only what actually posted counts).
+            if posted.is_ok() {
+                self.held_press = Some((pressed_button, press_target, move_x, move_y));
+            }
+            return posted;
+        }
+        let Some((target, client_x, client_y)) = self.hit_test_at(px, py) else {
+            return Ok(()); // pointer moved; nothing to notify
+        };
+        self.post(
+            target,
+            WM_MOUSEMOVE,
+            0,
+            pack_mouse_lparam(client_x, client_y),
+        )
+    }
+
+    /// Detect a packaged (Microsoft Store) keyboard target and record the
+    /// receipt warning: packaged UWP/WinUI input pipelines ignore
+    /// message-level injection, so a posted keystroke reports delivery while
+    /// the app drops it — the warning is what turns that silent no-op into a
+    /// told-to-the-model fact ("verify with a screenshot" is the follow-up
+    /// the notes already advise). Best-effort: the process image query can
+    /// fail (a dying process, a hardened target) and then no warning is
+    /// recorded — the posting itself is unaffected either way.
+    fn warn_if_packaged_keyboard_target(&mut self, window: HWND) {
+        // SAFETY: pid query on a desktop window from the attached worker.
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+        if pid == 0 {
+            return;
+        }
+        // SAFETY: limited-information open of another process (query-only
+        // access right); the handle is closed on every path below.
+        let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+        else {
+            return;
+        };
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let queried = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+        };
+        let _ = unsafe { CloseHandle(process) };
+        let Ok(()) = queried else {
+            return;
+        };
+        if process_path_is_packaged(&String::from_utf16_lossy(&buf[..len as usize])) {
+            self.warnings.push(
+                "the keyboard target is a Microsoft Store packaged app; UWP/WinUI \
+                 input pipelines (the common packaged shape — e.g. the Windows 11 \
+                 Notepad) ignore message-level keyboard injection, so the typed \
+                 text or keys may not have landed (a full-trust Win32 app shipped \
+                 via MSIX can still process it) — verify with a follow-up \
+                 screenshot and prefer a classic Win32 app for keyboard input"
+                    .to_string(),
+            );
+        }
     }
 
     /// Client coordinates of a screen point relative to `window` (the drag
@@ -2326,6 +2557,9 @@ impl WindowsVirtualDesktopBackend {
             ordered.insert(modifiers.len(), VK_SHIFT.0);
         }
         let focus = self.keyboard_target()?;
+        // Same packaged-target honesty as type_text: a Store-app chord target
+        // drops the posted keys silently.
+        self.warn_if_packaged_keyboard_target(focus);
         // SAFETY: parent-walk on a desktop window from the attached worker.
         let top = unsafe { top_level_of(focus) };
         // Real Windows delivers EVERY key pressed while Alt is held as the
@@ -2471,7 +2705,10 @@ impl WindowsVirtualDesktopBackend {
 fn capability_notes() -> String {
     "windows hidden desktop: input is app-level message injection \
      (PostMessageW) — apps that ignore synthetic messages cannot be \
-     driven, shell-managed chords (e.g. Alt+Tab) are handled by the \
+     driven (Microsoft Store packaged apps — UWP/WinUI, including the \
+     Windows 11 Notepad — are the common case; the tool attaches an \
+     explicit warning to the receipt when the keyboard target is a \
+     packaged app), shell-managed chords (e.g. Alt+Tab) are handled by the \
      shell rather than the posted-to app and cannot fire at all, \
      typed dialog keys (Enter/Tab delivered by type_text) ride the \
      WM_CHAR text channel, which dialog managers do not act on — the \
@@ -2498,7 +2735,25 @@ fn capability_notes() -> String {
      calculator stub activating a store app) get their real \
      process created OUTSIDE the session's job object — such apps \
      are not contained by the session and are not terminated with \
-     it; the hidden desktop shares this user account's clipboard \
+     it, and a program that resolves to a packaged-app activation \
+     outright (Paint on Windows 11 is the observed case) cannot join \
+     the session job at all and fails the open with an explicit \
+     error; a console program's window is delegated to the default \
+     Windows Terminal host (packaged, broker-activated outside the \
+     hidden desktop), so a console open can fail the same way or come \
+     up with no visible window — verify with a screenshot instead of \
+     retrying blindly; there is no OS cursor on the hidden desktop \
+     (the input-desktop cursor APIs are documented to fail there), \
+     so the session tracks a virtual pointer that starts at the \
+     screen center and follows every move and drag; a manual press \
+     assembly tracks a single button — a second mouse_down replaces \
+     the tracked press, the first target stays pressed, and only a \
+     matching up that still reaches it (its button released while the \
+     pointer hovers it) or the session end releases it — so release a \
+     held button before pressing another; a drag finishes a \
+     still-held left press first, delivering its recorded up at the \
+     held point before the drag's own press; the hidden \
+     desktop shares this user account's clipboard \
      with the user's own desktop (a window station has one \
      clipboard for all its desktops) — what the agent copies or \
      cuts inside the session reaches the user's real clipboard and \
@@ -2572,32 +2827,19 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
-        let point = self.cursor_point()?;
-        Ok((point.x, point.y))
+        Ok(self.cursor_point())
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        // The per-desktop cursor is what click/scroll hit-test against; the
+        // The virtual pointer is what click/scroll hit-test against; the
         // WM_MOUSEMOVE post additionally feeds hover states.
-        // SAFETY: per-desktop cursor move on the attached worker thread.
-        unsafe { SetCursorPos(x, y) }.map_err(|error| {
-            ComputerUseError::failed(format!("cannot move the hidden desktop's cursor: {error}"))
-        })?;
-        let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
-            return Ok(()); // cursor moved; nothing to notify
-        };
-        self.post(
-            target,
-            WM_MOUSEMOVE,
-            0,
-            pack_mouse_lparam(client_x, client_y),
-        )
+        self.move_pointer_to(x, y)
     }
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        let point = self.cursor_point()?;
-        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let (x, y) = self.cursor_point();
+        let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop; \
                  move_to a window first",
@@ -2646,8 +2888,8 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     }
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        let point = self.cursor_point()?;
-        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let (x, y) = self.cursor_point();
+        let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
             ));
@@ -2664,9 +2906,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let (_, _, up, _) = mouse_button_messages(button);
-        // Deliver the up to the REMEMBERED press target at the press point
-        // (SetCapture semantics — see the `held_press` field doc). A
-        // different button's up does not consume the record: the press it
+        // Deliver the up to the REMEMBERED press target at the recorded
+        // point (SetCapture semantics for the target; the point advances
+        // with delivered captured moves — see the `held_press` field doc).
+        // A different button's up does not consume the record: the press it
         // names is still held.
         if let Some((pressed_button, target, client_x, client_y)) = self.held_press.take() {
             if pressed_button == button {
@@ -2674,8 +2917,8 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             }
             self.held_press = Some((pressed_button, target, client_x, client_y));
         }
-        let point = self.cursor_point()?;
-        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let (x, y) = self.cursor_point();
+        let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             // An up with no window under the cursor is a harmless no-op —
             // the emergency release path relies on this being non-fatal.
             return Ok(());
@@ -2686,12 +2929,42 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
         self.move_to(from.0, from.1)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        let Some((target, client_x, client_y)) = self.hit_test_at(from.0, from.1) else {
+        // Hit-test the CLAMPED pointer, not the raw `from`: `move_to` above
+        // clamped an out-of-range start into the virtual screen (and posted
+        // the hover for it), so the press must consume the same position or
+        // a valid clamped start would falsely report "no window".
+        let (start_x, start_y) = self.cursor_point();
+        let Some((target, client_x, client_y)) = self.hit_test_at(start_x, start_y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window at the drag start point on the hidden desktop",
             ));
         };
         self.focus_dance(target);
+        // A drag completes a press+release assembly — the tool layer clears
+        // its held-left flag on drag success on exactly that assumption — so
+        // a LEFT press this session still holds is finished first: its
+        // recorded up is delivered here (SetCapture target and advanced
+        // client point) instead of being stranded by the drag's own press.
+        // Without this, a manual down the model never released stays stuck
+        // pressed on its target until teardown: its matching up was the only
+        // thing that could release it, and after this drag succeeds the tool
+        // layer considers the left button free (its failed-drag best-effort
+        // release would only hit-test a bystander). A held non-left press is
+        // restored untouched — drag never touches those buttons, and its
+        // record still serves the matching up. The record is consumed once
+        // the up is delivered; the only realistic post failure is a
+        // destroyed press target, which already took the press with it.
+        match self.held_press.take() {
+            Some((MouseButton::Left, press_target, press_x, press_y)) => {
+                let _ = self.post(
+                    press_target,
+                    WM_LBUTTONUP,
+                    0,
+                    pack_mouse_lparam(press_x, press_y),
+                );
+            }
+            other => self.held_press = other,
+        }
         self.post(
             target,
             WM_LBUTTONDOWN,
@@ -2707,21 +2980,35 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // bounds, list reorders, and canvas pans crossing into a sibling
         // window all broke, and the button-up could land on a different
         // window than the press.
+        // The delivered drop is the CLAMPED endpoint, not the raw `to`: the
+        // tool layer clamps model coordinates to the LAST screenshot, which
+        // can exceed the live virtual screen once a monitor leaves
+        // mid-session (the exact case this file's clamp doc names). The
+        // press above was delivered at the clamped start, so the waypoints
+        // and the button-up must interpolate between and land on the
+        // clamped endpoints too — a raw endpoint would deliver the drop
+        // outside the screen (past ±32767 the lParam packing wraps it
+        // negative) while `pointer` claims the clamped edge, leaving state
+        // and delivered messages disagreeing about where the drop landed.
+        // A segment between two in-rect points stays in the rect (convex),
+        // so every waypoint here is a clamped position by construction.
+        let drop_point = clamp_point_to_rect(
+            to,
+            // SAFETY: metric query on the attached worker thread.
+            &unsafe { desktop_virtual_screen_rect() },
+        );
         let move_result = (|| {
-            for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+            for (x, y) in drag_waypoints((start_x, start_y), drop_point, DRAG_STEPS) {
                 if self.cancelled() {
                     return Err(ComputerUseError::unavailable(
                         "drag was cancelled (caller timeout or stop); the button \
-                         is released and the hidden desktop's cursor is moved \
-                         best-effort toward the drop point",
+                         is released and the virtual pointer is left at the \
+                         (clamped) drop point",
                     ));
                 }
-                // SAFETY: per-desktop cursor move on the attached worker.
-                unsafe { SetCursorPos(x, y) }.map_err(|error| {
-                    ComputerUseError::failed(format!(
-                        "cannot move the hidden desktop's cursor during drag: {error}"
-                    ))
-                })?;
+                // The virtual pointer follows the drag path (no OS cursor to
+                // move — see the `pointer` field doc).
+                self.pointer = (x, y);
                 // SAFETY: coordinate translation on a desktop window from
                 // the attached worker.
                 let (move_x, move_y) = unsafe { Self::client_of(target, x, y) };
@@ -2739,21 +3026,21 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         })();
         // The button must be released regardless of whether the path
         // movement errored — to the press target (capture semantics above).
-        // SAFETY: per-desktop cursor move on the attached worker.
-        unsafe {
-            let _ = SetCursorPos(to.0, to.1);
-        }
+        // The virtual pointer ends at the clamped drop point, which is also
+        // where the up is delivered: state and messages must agree on where
+        // the drop landed.
+        self.pointer = drop_point;
         // SAFETY: coordinate translation on a desktop window from the
         // attached worker.
-        let (up_x, up_y) = unsafe { Self::client_of(target, to.0, to.1) };
+        let (up_x, up_y) = unsafe { Self::client_of(target, drop_point.0, drop_point.1) };
         let release = self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(up_x, up_y));
         combine_drag_errors(move_result, release)
     }
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         let clicks = clicks.min(MAX_SCROLL_CLICKS);
-        let point = self.cursor_point()?;
-        let Some((target, _, _)) = self.hit_test_at(point.x, point.y) else {
+        let (x, y) = self.cursor_point();
+        let Some((target, _, _)) = self.hit_test_at(x, y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
             ));
@@ -2766,7 +3053,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // ancestors by DefWindowProc, so a deep child target still reaches
         // a scrollable parent — WM_MOUSEHWHEEL is NOT bubbled, so a deep
         // child that does not handle it silently drops the event.
-        let lparam = pack_mouse_lparam(point.x, point.y);
+        let lparam = pack_mouse_lparam(x, y);
         for _ in 0..clicks {
             self.post(target, message, wheel_wparam(delta), lparam)?;
         }
@@ -2776,6 +3063,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         let text = normalize_typed_newlines(text);
         let target = self.keyboard_target()?;
+        // A packaged (Store) target drops message-level input silently; the
+        // warning rides the receipt instead of a positive "typed N chars"
+        // reading as success.
+        self.warn_if_packaged_keyboard_target(target);
         for run in split_type_runs(&text, TYPE_CHUNK_CHARS) {
             if self.cancelled() {
                 return Err(ComputerUseError::unavailable(
@@ -2860,6 +3151,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
 
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         self.cancel = flag;
+    }
+
+    fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
     }
 
     fn open_app(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
@@ -3483,10 +3778,17 @@ mod tests {
         );
         assert_eq!(
             src.matches("self.held_press").count(),
-            3,
-            "mouse_down stores the press target and mouse_up consumes (and \
-             restores on a button mismatch) it — a re-hit-test mouse_up \
-             loses the record and fails this pin"
+            7,
+            "mouse_down stores the press target, mouse_up consumes (and \
+             restores on a button mismatch) it, move_pointer_to routes \
+             held-button moves to it (capture semantics) and advances its \
+             recorded point on a delivered move, and drag finishes a held \
+             LEFT press with its recorded up before its own assembly while \
+             restoring a held non-left record untouched — a re-hit-test \
+             mouse_up, a re-hit-test held move, an up at the stale press \
+             point, a drag that strands the manual press, or a drag that \
+             silently drops a non-left record loses the record or \
+             misplaces the release and fails this pin"
         );
     }
 
@@ -3594,6 +3896,245 @@ mod tests {
                 && note.contains("pull the session surface onto the user's screen"),
             "the pull-out direction of the naming residual must be disclosed \
              in both note surfaces (each in its shipped phrasing)"
+        );
+        // The virtual pointer replaces the unreachable OS cursor: the model
+        // must know there is no real cursor and where the pointer starts.
+        assert!(
+            notes.contains("virtual pointer") && notes.contains("screen center"),
+            "the no-OS-cursor/virtual-pointer contract must be disclosed"
+        );
+        // The packaged typing trap must be disclosed up front (the Win11
+        // Notepad shape): the warning alone fires only after a failed type.
+        assert!(
+            notes.contains("packaged apps") && notes.contains("Windows 11 Notepad"),
+            "packaged (UWP/WinUI) apps ignoring message-level input must be \
+             disclosed as the common case"
+        );
+        // The packaged-activation open failure (Paint on Win11) and the
+        // console-host delegation (Windows Terminal) must be disclosed: both
+        // read as mystery failures without the OS context.
+        assert!(
+            notes.contains("Windows Terminal"),
+            "the console-host delegation must be disclosed (cmd.exe windows \
+             are delegated to the default Windows Terminal host)"
+        );
+        assert!(
+            notes.contains("fails the open with an explicit error"),
+            "the packaged-activation open failure must be disclosed"
+        );
+        // The single-slot manual-press record must be disclosed: a second
+        // mouse_down orphans the first target's pressed state, whose
+        // release is then up to a matching up that still reaches it or the
+        // session end — and the drag finishing a held left press at its
+        // held point must be disclosed alongside.
+        assert!(
+            notes.contains("tracks a single button"),
+            "the single-slot manual-press record must be disclosed"
+        );
+        assert!(
+            notes.contains("only a matching up that still reaches it")
+                && notes.contains("finishes a still-held left press first"),
+            "the orphaned-target recovery truth and the drag's held-left \
+             finish must be disclosed, not a rosier promise"
+        );
+    }
+
+    /// The virtual pointer's geometry helpers: center placement (the
+    /// conventional start) and SetCursorPos-style edge clamping, both across
+    /// negative origins (the normal multi-monitor case) and degenerate rects.
+    #[test]
+    fn virtual_pointer_geometry_follows_the_rect() {
+        // Center of a plain rect.
+        assert_eq!(
+            pointer_center_of_rect(&VirtualScreenRect {
+                origin_x: 0,
+                origin_y: 0,
+                width: 1920,
+                height: 1080
+            }),
+            (960, 540)
+        );
+        // Negative-origin union (secondary left of/above primary): center of
+        // -1920..1920 × -1080..1080 is the shared corner.
+        assert_eq!(
+            pointer_center_of_rect(&VirtualScreenRect {
+                origin_x: -1920,
+                origin_y: -1080,
+                width: 3840,
+                height: 2160
+            }),
+            (0, 0)
+        );
+        // Odd sizes truncate toward the origin.
+        assert_eq!(
+            pointer_center_of_rect(&VirtualScreenRect {
+                origin_x: 0,
+                origin_y: 0,
+                width: 3,
+                height: 3
+            }),
+            (1, 1)
+        );
+        // A degenerate rect (no monitor space) degrades to its origin.
+        assert_eq!(
+            pointer_center_of_rect(&VirtualScreenRect {
+                origin_x: 5,
+                origin_y: 7,
+                width: 0,
+                height: 0
+            }),
+            (5, 7)
+        );
+
+        let rect = VirtualScreenRect {
+            origin_x: -1920,
+            origin_y: 0,
+            width: 3840,
+            height: 1080,
+        };
+        // Inside stays put.
+        assert_eq!(clamp_point_to_rect((0, 500), &rect), (0, 500));
+        // All four edges clamp (SetCursorPos's own virtual-screen clamping).
+        assert_eq!(clamp_point_to_rect((-2000, 500), &rect), (-1920, 500));
+        assert_eq!(clamp_point_to_rect((2000, 500), &rect), (1919, 500));
+        assert_eq!(clamp_point_to_rect((100, -5), &rect), (100, 0));
+        assert_eq!(clamp_point_to_rect((100, 1080), &rect), (100, 1079));
+        // A degenerate rect collapses every point onto its origin (the
+        // inverted-range guard, not a clamp panic).
+        let degenerate = VirtualScreenRect {
+            origin_x: 10,
+            origin_y: 20,
+            width: 0,
+            height: 0,
+        };
+        assert_eq!(clamp_point_to_rect((0, 0), &degenerate), (10, 20));
+        // A NEGATIVE width (a truly inverted range, not just empty) also
+        // collapses via the same guard: deleting the `.max(origin)` guard
+        // would make `clamp` panic on min > max instead of failing here.
+        let inverted = VirtualScreenRect {
+            origin_x: 10,
+            origin_y: 20,
+            width: -5,
+            height: -5,
+        };
+        assert_eq!(clamp_point_to_rect((0, 0), &inverted), (10, 20));
+
+        // Overflow-adjacent metrics cannot panic or wrap: the additions
+        // saturate at the i32 edges (unreachable from GetSystemMetrics'
+        // 16-bit GDI space, but the helpers stay total for any caller).
+        let huge = VirtualScreenRect {
+            origin_x: i32::MAX - 1,
+            origin_y: i32::MIN,
+            width: 4,
+            height: 4,
+        };
+        // (MAX-1) + 4/2 = MAX+1 would overflow plain `+`; saturation pins
+        // it at MAX.
+        assert_eq!(pointer_center_of_rect(&huge), (i32::MAX, i32::MIN + 2));
+        // max_x = (MAX-1) + 3 would also overflow; saturation keeps the
+        // clamp inside i32 and inside the rect.
+        assert_eq!(
+            clamp_point_to_rect((i32::MAX, i32::MIN), &huge),
+            (i32::MAX, i32::MIN)
+        );
+        assert_eq!(
+            clamp_point_to_rect((i32::MIN, i32::MAX), &huge),
+            (i32::MAX - 1, i32::MIN + 3)
+        );
+    }
+
+    /// The packaged-app detection keys on the OS `WindowsApps` install tree
+    /// (case-insensitive, both the per-machine Program Files layout and the
+    /// per-user execution-alias layout) and stays false for classic Win32
+    /// binaries — including System32's classic notepad, which a caller can
+    /// no longer assume from the name alone on Windows 11.
+    #[test]
+    fn packaged_app_detection_keys_on_the_windowsapps_tree() {
+        assert!(process_path_is_packaged(
+            "C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad_11.2407.9.0_x64__8wekyb3d8bbwe\\Notepad.exe"
+        ));
+        assert!(process_path_is_packaged(
+            "c:\\users\\u\\appdata\\local\\microsoft\\windowsapps\\mspaint.exe"
+        ));
+        assert!(!process_path_is_packaged("C:\\Windows\\System32\\cmd.exe"));
+        assert!(!process_path_is_packaged(
+            "C:\\Windows\\System32\\notepad.exe"
+        ));
+        // A look-alike directory name is not the install tree.
+        assert!(!process_path_is_packaged(
+            "C:\\tools\\WindowsApps-mirror\\tool.exe"
+        ));
+    }
+
+    /// The packaged-keyboard advisory has no runtime seam a CI leg could
+    /// exercise, so its wiring is source-counted like the other stay-wired
+    /// pins: deleting a push site (or the drain impl) silently weakens the
+    /// honesty channel instead of failing loudly.
+    #[test]
+    fn packaged_keyboard_warning_stays_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("warn_if_packaged_keyboard_target(").count(),
+            3,
+            "definition + the chord_to (key/hold) call site + the type_text \
+             call site: an unwired keyboard action drops the count and fails \
+             here"
+        );
+        assert_eq!(
+            src.matches("fn take_warnings(&mut self) -> Vec<String> {")
+                .count(),
+            1,
+            "the trait impl that drains the accumulated warnings must exist"
+        );
+        assert_eq!(
+            src.matches("self.warnings.push(").count(),
+            1,
+            "exactly one producer: the packaged-keyboard-target advisory"
+        );
+    }
+
+    /// The virtual-pointer wiring has no runtime seam a CI leg could
+    /// exercise either (no hidden desktop in CI), so it is source-counted
+    /// the same way: the tracked pointer replaced the unreachable OS
+    /// cursor, and a revert to `SetCursorPos`/`GetCursorPos` — the pre-PR
+    /// bug that failed the whole mouse class with 0x80070005 — would
+    /// compile and pass every leg that cannot run a hidden desktop.
+    #[test]
+    fn virtual_pointer_stays_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("clamp_point_to_rect(").count(),
+            3,
+            "definition + the move_pointer_to clamp + the drag's clamped \
+             drop-point binding: an unclamped move or drag endpoint drops \
+             the count and fails here"
+        );
+        assert_eq!(
+            src.matches("self.pointer =").count(),
+            3,
+            "move_pointer_to's clamped write + drag's clamped-path waypoint \
+             write + drag's clamped drop write: a pointer the cursor APIs \
+             bypass fails here"
+        );
+        assert_eq!(
+            src.matches("drop_point").count(),
+            5,
+            "the drag's clamped drop wiring — the binding, the waypoint \
+             endpoint, the pointer's final write, and the delivered \
+             button-up's two coordinates: reverting the drop or its up to a \
+             raw endpoint drops the count and fails here"
+        );
+        assert_eq!(
+            src.matches("pointer_center_of_rect(").count(),
+            2,
+            "definition + the constructor's screen-center start: a pointer \
+             without its conventional start position fails here"
+        );
+        assert!(
+            !src.contains("SetCursorPos(") && !src.contains("GetCursorPos("),
+            "no input-desktop cursor-API call may return: both require the \
+             input desktop and fail with ERROR_ACCESS_DENIED on the hidden \
+             desktop regardless of attachment"
         );
     }
 

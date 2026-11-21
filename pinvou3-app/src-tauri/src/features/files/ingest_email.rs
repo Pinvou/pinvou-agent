@@ -427,7 +427,7 @@ fn collapse_text(value: &str) -> String {
 /// 用 python 标准库 email 模块把 .eml 解析成可读文本（收发件人/主题/日期/正文/
 /// 附件名）。脚本走 argv[1] 取邮件路径、argv[2] 取正文落盘路径、argv[3] 取
 /// 附件段落盘路径，正文优先纯文本、回退 HTML。正文单独落盘（可能涨到
-/// 20 MiB 输入量级，超 4 MiB 捕获上限）；附件段也走文件而非 stdout，让
+/// 50 MiB 输入量级，超 4 MiB 捕获上限）；附件段也走文件而非 stdout，让
 /// Rust 侧能按「表头 → 正文 → 附件」的原始顺序拼装——正文若直接拼在
 /// stdout 之后，附件名单会跑到正文前面（评审 Jensen P3）。
 fn parse_eml_via_python(path: &Path) -> Result<String, String> {
@@ -461,7 +461,7 @@ if atts:
     let program = crate::platform::paths::python_command();
     // 本地纯解析脚本，正常毫秒级返回；卡死（损坏的 .eml、杀软占用）按超时
     // kill-tree，避免上传永久转圈。
-    // 正文可随输入涨到 20 MiB 上限量级，超出 4 MiB 捕获上限，单独落盘回读
+    // 正文可随输入涨到 50 MiB 上限量级，超出 4 MiB 捕获上限，单独落盘回读
     // （32 MiB 上限，同 pdftotext/pandoc），不走 stdout。
     let body_dir = tempfile::tempdir().map_err(|e| format!("创建临时目录失败: {e}"))?;
     let body_path = body_dir.path().join("body.txt");

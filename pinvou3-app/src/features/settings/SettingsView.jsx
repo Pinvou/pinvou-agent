@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
+import { ConfirmDialog } from '../../components/ConfirmDialog.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
@@ -44,6 +46,13 @@ import {
 import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
 import { StatusChip } from './StatusChip.jsx';
+import EndpointModelPicker from './endpoint-model-picker.jsx';
+import {
+  ADD_ALL_BATCH_LIMIT,
+  normalizeDiscoveredRows,
+  savedModelKeys,
+  splitBatchAdd,
+} from './endpoint-model-picker-logic.js';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -433,6 +442,46 @@ function hasStoredCredential(record) {
       // Inline validation message for the custom port. Kept separate from
       // localDetectResult so a failed validation never hides previous candidates.
       const [localPortError, setLocalPortError] = useState(null);
+      // 端点模型自动发现(规格 §2.6):「获取模型列表」按钮显式点击才探测,面板仅
+      // 展示候选行——添加一律由用户在 picker 内逐行/批量显式触发,组件本身绝不
+      // 发请求、绝不自动写库(与本地检测面板同一安全不变量)。
+      const [endpointListing, setEndpointListing] = useState(null);
+      const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
+      const [fetchingModels, setFetchingModels] = useState(false);
+      // 每次「获取模型列表」点击递增:作为 picker 的 React key,按探测结果重挂
+      // 组件,让 filterDraft/滚动位置在新列表上干净复位(复审 picker minor)。
+      const [endpointFetchSeq, setEndpointFetchSeq] = useState(0);
+      // 探测请求失败(reject)时的行内提示,经 normalizeConnectionTestResult 映射
+      // 为三语 connectionMessages 文案,不透出原始 URL/key。
+      const [fetchModelsMessage, setFetchModelsMessage] = useState(null);
+      // 测试连接成功后按「仅空字段」规则自动填入的端点事实;一次性小字,手动
+      // 改字段或显式换模型即清除,绝不覆盖用户已填值。
+      const [filledFromEndpoint, setFilledFromEndpoint] = useState(false);
+      // 逐行/批量添加后的行内结果:{ ok, text } | null——ok 决定状态行红/绿
+      // (复审 M4:失败曾硬编码绿色);失败时 picker 保持打开重试,同一份提示经
+      // addNotice 透传进 picker,不再被其全屏遮罩挡住。
+      const [endpointAddResult, setEndpointAddResult] = useState(/** @type {{ ok: boolean, text: string } | null} */ (null));
+      const [addingAllModels, setAddingAllModels] = useState(false);
+      // 单行添加在飞(round-3 审 M3):state 驱动 picker 行按钮禁用,ref 同步
+      // 挡同一 tick 的双击(异步 setState 在下一次渲染才可见,挡不住连击)。
+      const [pickSavingModel, setPickSavingModel] = useState(false);
+      const pickInFlightRef = useRef(false);
+      // 「全部添加」挂起批次(应用内 ConfirmDialog 确认闸门的数据):先记
+      // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
+      const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
+      // 最新表单字段镜像(复审 M6):「测试连接」是异步探测,resolve 时空字段
+      // 判定必须看当时的输入值,而不是点击瞬间捕获的旧值——否则探测期间用户
+      // 手输的 context/max_output 会被过期的「空」判定清掉。每次渲染同步。
+      const latestFieldsRef = useRef({ contextWindow, maxOutput });
+      latestFieldsRef.current = { contextWindow, maxOutput }; // eslint-disable-line react-hooks/refs -- synchronously mirror the latest field drafts during render so the async probe callback judges emptiness against current values (round-1 review M6)
+      // base URL 同款镜像(复审 M5):探测在飞时改 URL,resolve 后的旧端点结果
+      // 必须作废,不允许在 URL B 的表单头/落库 payload 下展示 URL A 的列表。
+      const baseUrlRef = useRef(baseUrl);
+      baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
+      // wire 模型 ID 同款镜像(复审 M2):端点事实按模型探得,测试在飞时换了模型
+      // (目录切换/手输 ID/候选行填充),旧模型的数字不得填进新模型的空字段。
+      const modelRef = useRef(model);
+      modelRef.current = model; // eslint-disable-line react-hooks/refs -- synchronously mirror the live wire model so per-model probed facts are discarded when the model moved on (round-2 review M2)
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -532,6 +581,16 @@ function hasStoredCredential(record) {
         // The output cap is no longer prefilled with 24K: left empty like
         // cloud/custom, declared uniformly by the runtime window tiers.
         setMaxOutput('');
+        // 显式换模型:上一次端点探测的自动填入提示已失效,一并清除。
+        setFilledFromEndpoint(false);
+        // 目录切换会改写 base_url(复审 M5 同因):旧 URL 上探到的候选列表、
+        // 打开的 picker 与挂起的批量确认一并作废,绝不许在新 URL 下复用;
+        // 旧 URL 下的添加提示与探测失败提示同因作废(复审 M4 + round-3 minor)。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
+        setFetchModelsMessage(null);
         // Reset the thinking effort to the new entry's default tier when the
         // catalog item changes (vllm→low (lowest thinking tier), others→high;
         // models without tiers get null = not explicitly set). Pass nextBaseUrl
@@ -560,6 +619,10 @@ function hasStoredCredential(record) {
       function handleModelIdChange(value) {
         setModel(value);
         renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+        // 手输模型 ID 是显式换模型(round-3 审 minor:此前只有目录项切换/
+        // chooseModel 清除):上一次端点探测的自动填入提示已失效,一并清除,
+        // 不让旧模型的「已从端点填入」小字挂在新模型下面误导。
+        setFilledFromEndpoint(false);
         // 手输模型 ID 命中目录标注同样预填;手动改过档位后不再跟随。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(value));
       }
@@ -569,6 +632,16 @@ function hasStoredCredential(record) {
         // 避免红色提示挂在已修正的 URL 上（端口框下次输入会重新校验）。
         setBaseUrlPortError(null);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
+        // base URL 变更即失效既有探测结果(复审 M5):URL A 上探到的列表绝不许
+        // 在 URL B 的表单里打开或落库(picker 头部与保存 payload 都按当前输入
+        // 的 URL 走),挂起的批量确认一并丢弃;旧 URL 下的添加提示与探测失败
+        // 提示同因作废(round-3 审 minor:fetchModelsMessage 此前漏在失效
+        // 清扫外,旧 URL 的红色失败提示会挂在新 URL 下)。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
+        setFetchModelsMessage(null);
       }
       // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
       // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
@@ -616,6 +689,19 @@ function hasStoredCredential(record) {
         const serialized = parsed.toString();
         return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
       }
+      // 测试连接成功后,把端点探测到的 context/max_output 仅填入空字段
+      // (规格 §2.6:绝不覆盖非空值)。空字段判定读 latestFieldsRef(复审 M6):
+      // resolve 时刻的最新输入,而非点击瞬间捕获的旧值。context_window_tokens/
+      // max_output_tokens 是可选新字段,老后端不返回时 Number() 落 NaN 自然跳过。
+      function applyProbedFacts(result) {
+        if (!result || typeof result !== 'object' || !result.ok) return;
+        const probedContext = Number(result.context_window_tokens);
+        const probedOutput = Number(result.max_output_tokens);
+        let filled = false;
+        if (!latestFieldsRef.current.contextWindow && Number.isFinite(probedContext) && probedContext > 0) { setContextWindow(String(probedContext)); filled = true; }
+        if (!latestFieldsRef.current.maxOutput && Number.isFinite(probedOutput) && probedOutput > 0) { setMaxOutput(String(probedOutput)); filled = true; }
+        if (filled) setFilledFromEndpoint(true);
+      }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
@@ -624,16 +710,205 @@ function hasStoredCredential(record) {
         const testKey = !isLocalPreset && !isCodingPlan && noAuth
           ? ''
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // resolve 时刻守卫(复审 M5):点击瞬间快照 base URL,resolve 时发现
+        // 表单已改走就整份丢弃——结果(含失败结果)属于旧端点,静默丢弃,
+        // 不打扰用户。
+        const probedBaseUrl = baseUrl.trim();
         try {
           // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
           // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
+          // round-3 审 M2:端点事实按**已保存记录**的 model 字段探得并匹配
+          // (后端经 fact_model 回带这个名字),编辑表单里未保存的 model-ID
+          // 改动会让表单模型与事实模型分叉——旧守卫拿表单模型跟自己比,
+          // 分叉时旧模型的数字会填进新模型的空字段并存盘。守卫对齐到
+          // fact_model:表单当前模型仍是事实所属模型才填;fact_model 缺席
+          // (新建表单/未知 id)时结果必无事实字段,照旧调用为空操作。
+          const factModel = typeof result.fact_model === 'string' ? result.fact_model.trim() : '';
+          if (!factModel || modelRef.current.trim() === factModel) applyProbedFacts(result);
         } catch (e) {
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setTesting(false); }
       }
+      // 获取模型列表(规格 §2.6):仅由按钮显式点击触发(无 effect/启动期调用,
+      // settings_ui_smoke 源码守卫钉住);凭据阶梯与 handleTest 一致——表单新填
+      // key 优先。列表只写入 state 打开 picker,不落库。
+      async function handleFetchModels() {
+        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
+        const probedBaseUrl = baseUrl.trim();
+        if (!probedBaseUrl) return;
+        const probedAuth = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        const probedPreset = preset;
+        // 探测序号递增:picker 以此为 key 重挂,新列表的 filter/滚动干净复位。
+        setEndpointFetchSeq(seq => seq + 1);
+        setFetchingModels(true);
+        // 新一轮探测开始:上一次探测提示与逐行/批量添加的行内结果一并作废(复审 M4)。
+        setFetchModelsMessage(null);
+        setEndpointAddResult(null);
+        try {
+          const listing = await bridge.models.probeEndpointModels({
+            baseUrl: probedBaseUrl,
+            // 与 handleTest/图片能力测试同一口径(round-5 审 M1,#851 一致性):
+            // 免鉴权声明生效时不携带已输入的 key——开关开着时 key 行隐藏,
+            // 但已输入的 key 仍残留 state;探测要与保存后的鉴权形态一致
+            // (免鉴权记录运行时不发鉴权头),残留 key 也不得发往新填的 URL。
+            apiKey: probedAuth,
+            preset: probedPreset,
+          });
+          // 复审 M5:探测在飞时用户改了 base URL → 这份 URL A 的结果作废
+          // (baseUrlRef 是 resolve 时刻的实时输入);静默丢弃,不打扰用户。
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          // review P2 2026-11-17:凭据/协议维度并入失效键——在飞时换 key、
+          // 切免鉴权或换 preset,旧凭证探得的列表不得在新凭证下打开
+          // (picker 的 Add 会按当前凭证落库,旧列表的模型可能无权访问)。
+          if (probeAuthRef.current !== probedAuth) return;
+          if (probePresetRef.current !== probedPreset) return;
+          setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
+          setEndpointPickerOpen(true);
+        } catch (e) {
+          // round-3 审 minor:reject 路径与 try 路径同一 resolve 时刻守卫——
+          // URL A 的探测失败不许以红色提示挂在已改走的 URL B 表单下
+          // (handleTest 的 catch 早已同款守卫,这里是补齐)。
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          // reject 路径同键(review P2 2026-11-17):旧凭证的探测失败同样不得
+          // 以提示挂在新凭证表单下。
+          if (probeAuthRef.current !== probedAuth) return;
+          if (probePresetRef.current !== probedPreset) return;
+          setFetchModelsMessage(normalizeConnectionTestResult(e, isCodingPlan));
+        }
+        finally { setFetchingModels(false); }
+      }
+      // picker 逐行「添加」(聊天线):构建 draft(当前 preset/base_url/表单 key)
+      // → bridge.models.saveModel(桥内自带 loadModels 刷新),成功后行内提示;
+      // 失败保持弹窗与提示,不静默丢弃。
+      function buildEndpointModelPayload(row, overrides) {
+        // 与 doSave 同一凭据阶梯 + 免鉴权声明,收口后 picker 添加的记录不会在
+        // chat 门被免鉴权声明外的凭据要求挡住。
+        const nextKeyAction = isLocalPreset
+          ? (localKeyEnabled && apiKey.trim() ? 'replace' : 'keep_existing')
+          : cloudCredentialAction();
+        const nextApiKey = isLocalPreset
+          ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
+          : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
+        // 与 buildLocalModelPayload 同一教义:listing 带 server_kind 时
+        // ollama / lm_studio 行的 context_window_tokens 是运行时生效值
+        // (/api/ps 生效窗口、loaded_context_length),持久化成声明会在
+        // resolve_context_window 里永久 min-clamp 后续探测——存 null,
+        // 行内徽章照常显示探测值,仅落库被闸。
+        const serverKind = endpointListing && typeof endpointListing === 'object' ? endpointListing.server_kind : null;
+        const runtimeProbedLane = serverKind === 'ollama' || serverKind === 'lm_studio';
+        return {
+          id: makeModelId(),
+          name: row.title || row.id,
+          preset: overrides && overrides.preset !== undefined ? overrides.preset : preset,
+          alias: null,
+          context_window_tokens: runtimeProbedLane ? null : row.contextWindowTokens,
+          max_output_tokens: row.maxOutputTokens,
+          model: row.id,
+          base_url: overrides && overrides.baseUrl !== undefined ? overrides.baseUrl : baseUrl.trim(),
+          api_key: nextApiKey,
+          credential_action: nextKeyAction,
+          provider_kind: providerKind || null,
+          vendor: vendor || null,
+          endpoint_mode: endpointMode || null,
+          auth_mode: !isLocalPreset && !isCodingPlan && noAuth ? 'none' : null,
+          image_capability_override: imageCapability || 'pinvou',
+          vision_model_id: null,
+          reasoning_effort: null,
+        };
+      }
+      async function handleEndpointModelPick(row) {
+        // round-3 审 M3:单行添加此前没有在飞守卫——savingModel/addingAllModels
+        // 都不在这条路径上置位,行按钮也只在 alreadySaved 后才禁用,快速
+        // 双击会以两个新 id 把同一 (model, base_url) 落库两次。ref 在同步
+        // 序列里立即置位挡住同一 tick 的第二次点击,state 驱动行按钮禁用
+        // (保存 IPC + 刷新链路的窗口内不给可点的第二下)。round-4 M4 补充:
+        // 批量确认弹窗挂着时同样禁入——挂起批次是「添加前」的旧快照,单行
+        // 若在其窗口内落库,确认后的批量保存会把它当未保存行再落一次。
+        if (pickInFlightRef.current || savingModel || addingAllModels || addAllModelsConfirm) return;
+        pickInFlightRef.current = true;
+        setPickSavingModel(true);
+        try {
+          await onSave(buildEndpointModelPayload(row));
+          setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
+        } catch (e) {
+          // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
+          setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
+        }
+        finally {
+          pickInFlightRef.current = false;
+          setPickSavingModel(false);
+        }
+      }
+      // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
+      // (addable, truncated) 快照进应用内确认弹窗(原生 confirm 在 Tauri
+      // WebView2 不渲染;>100 时提示截断到 100)。确认是硬闸门:入口只记录挂起
+      // 批次、绝不落库(settings_ui_smoke 源码守卫钉住)。
+      async function handleAddAllEndpointModels() {
+        // round-4 M4(批量×单行交错):单行添加在飞时(pickInFlightRef 同步挡
+        // 同 tick、pickSavingModel/savingModel 盖保存 IPC+刷新窗口)禁入——
+        // 此刻的去重快照会把正在保存的那一行当成未保存,确认后重复落库。
+        if (addingAllModels || pickInFlightRef.current || pickSavingModel || savingModel || !endpointListing) return;
+        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
+        if (addable.length === 0) return;
+        // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
+        // 以在批量保存循环进行中改 URL(URL 变更清扫只摘弹窗,已开跑的循环
+        // 不受影响)。去重与落库都以确认时刻的快照为准——循环内的 payload
+        // 用快照 URL/preset,后改的 URL 只影响下一轮,绝不产生 A/B 拆批。
+        setAddAllModelsConfirm({ addable, truncated, baseUrl: baseUrl.trim(), preset });
+      }
+      // 确认后的批量保存(复审 M9):逐行 saveModel 带 deferRefresh 跳过桥内
+      // 的三连 reload(100 行 × 3 次 IPC 的风暴),循环结束后统一刷新一次;
+      // 失败路径也补一次刷新,让已落库的前缀行正确出现在列表里。全部成功才
+      // 关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。老桌面/web 桥
+      // 没有 reloadSavedModels 时回退旧行为(逐行全量刷新,不加 options)。
+      async function confirmAddAllEndpointModels() {
+        if (!addAllModelsConfirm || addingAllModels) return;
+        const { addable, baseUrl: confirmBaseUrl, preset: confirmPreset } = addAllModelsConfirm;
+        const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
+        setAddingAllModels(true);
+        let added = 0;
+        try {
+          for (const row of addable) {
+            // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
+            // 本批行永远落在确认时刻的端点上。
+            await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            added += 1;
+          }
+          if (batchReloadAvailable) await bridge.models.reloadSavedModels();
+          setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(added) });
+          setEndpointPickerOpen(false);
+        } catch (e) {
+          if (batchReloadAvailable) {
+            try { await bridge.models.reloadSavedModels(); } catch { /* best-effort: keep the save error visible */ }
+          }
+          // 中途失败:已落库的前缀行保留,picker 保持打开并就地透传失败原因
+          // (表单状态行在遮罩下方不可见,复审 M4)。
+          setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
+        }
+        finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
+      }
+      // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
+      // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
+      // 确认弹窗(z-[110])先于 picker(z-100);批量保存在飞时不入(忙碌中
+      // 丢弃确认只会把「是否完成」变得不可见)。IME 组合中的 Escape(取消
+      // 候选词)不关闭任何层(r3 复审补齐;若无此守卫,面板层监听会绕过确认
+      // 层自身的 IME 守卫,把叠在其上的确认弹窗一并关掉)。
+      // onClose 的清扫语义与 X 按钮一致(摘 picker + 行内添加结果)。
+      useEffect(() => {
+        if (!endpointPickerOpen && !addAllModelsConfirm) return;
+        const onPickerKeyDown = e => {
+          if (e.key !== 'Escape' || isImeComposing(e)) return;
+          if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
+          else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
+        };
+        window.addEventListener('keydown', onPickerKeyDown);
+        return () => window.removeEventListener('keydown', onPickerKeyDown);
+      }, [endpointPickerOpen, addAllModelsConfirm, addingAllModels]);
       // 测试图片能力(设计 §7.3):与测试连接同一模式——表单未保存也按当前表单值发测,
       // 凭据优先用新填的 key,否则由后端按 model_id 读已保存凭据。
       function normalizeImageCapabilityTestResult(value) {
@@ -669,6 +944,15 @@ function hasStoredCredential(record) {
         finally { setImageTesting(false); }
       }
       const isLocalPreset = preset === 'local_vllm';
+      // 端点探测的有效鉴权载荷同款镜像(review P2 2026-11-17):探测在飞时换 key
+      // 或切免鉴权姿态,旧账号的列表不得在新凭证下打开——凭据维度并入失效键。
+      // (镜像必须位于 isLocalPreset/isCodingPlan 声明之后:render 路径在此处
+      // 直读它们,声明前直读是 TDZ 崩溃——noInvalidUseBeforeDeclaration。)
+      const probeAuthRef = useRef('');
+      probeAuthRef.current = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : ''; // eslint-disable-line react-hooks/refs -- synchronously mirror the effective auth payload
+      // 协议 preset 同款镜像:同 URL 同凭证但 preset 切换,列表语义同样属于旧协议。
+      const probePresetRef = useRef(preset);
+      probePresetRef.current = preset; // eslint-disable-line react-hooks/refs -- synchronously mirror the live protocol preset
       // base_url 的解析结果：端口框的回显值与只读态都由它派生（URL 不可解析
       // 时端口框只读置空）。
       const parsedBaseUrl = parseHttpUrl(baseUrl);
@@ -905,6 +1189,14 @@ function hasStoredCredential(record) {
         setBaseUrlPortError(null);
         setCustomModel(true);
         setPickerOpen(false);
+        // 显式切换路由与 applyCatalogItem 同一纪律(复审 minor-14):残留的端点
+        // 探测状态(候选列表/picker/挂起批量/添加提示)一律清空,绝不许在手动
+        // 本地模型表单下复用上一个表单的探测结果。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
+        setFetchModelsMessage(null);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
         // Local model → manual add is an explicit route switch: drop the
@@ -920,6 +1212,9 @@ function hasStoredCredential(record) {
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
+      // 「获取模型列表」与「测试连接」共用同一颗蓝色胶囊按钮(样式去重,主入口
+      // chunk 有启动预算红线)。
+      const actionPillClass = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]';
       // Custom-entry description for the provider model picker and the catalog
       // picker: both key off the same group fields (key/providerKind/preset).
       const customModelDescFor = (group, copy) => (group && group.key === 'tencent_token_plan'
@@ -948,8 +1243,10 @@ function hasStoredCredential(record) {
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
-          // Explicit model switches also reset the manual context window so it never leaks across models (same reset discipline as applyCatalogItem).
+          // Explicit model switches also reset the manual context window and the output cap so neither leaks across models (same reset discipline as applyCatalogItem).
           setContextWindow('');
+          setMaxOutput('');
+          setFilledFromEndpoint(false);
           // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
           if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
           setProviderModelPickerOpen(false);
@@ -1217,6 +1514,13 @@ function hasStoredCredential(record) {
       // 一律识图探测,supported 才允许选中(探测是唯一闸门;disabled 可能是
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
+      // 端点面板的「已保存」标记与批量去重键(规格 §2.6:model id + base_url)。
+      // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
+      // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
+      const endpointSavedKeys = savedModelKeys(models);
+      // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
+      // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
+      const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
       const visionOptions = [
         { key: '', label: settingsCopy.visionModelNone },
         ...visionCandidates.map(item => ({ key: item.id, label: selectorMainLabel(item, t) || item.model })),
@@ -1499,9 +1803,22 @@ function hasStoredCredential(record) {
                     {!isLocalPreset && renderInlineField({
                       label: t.modelContextWindow,
                       value: contextWindow,
-                      onChange: e => setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)), // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
+                      onChange: e => { setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)); setFilledFromEndpoint(false); }, // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
                       placeholder: settingsCopy.modelContextWindowPlaceholder,
                       testId: 'model-form-context-window',
+                      inputMode: 'numeric',
+                      spellCheck: false,
+                    })}
+                    {/* Max output (optional for cloud models): resolved_output_limit
+                        prefers the user declaration; empty = declared uniformly by
+                        the runtime window tiers. Same u32 9-digit truncation as the
+                        context window (max_output_tokens persists as u32). */}
+                    {!isLocalPreset && renderInlineField({
+                      label: settingsCopy.modelMaxOutput,
+                      value: maxOutput,
+                      onChange: e => { setMaxOutput(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)); setFilledFromEndpoint(false); }, // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first, same as the context window row
+                      placeholder: settingsCopy.modelMaxOutputPlaceholder,
+                      testId: 'model-form-max-output',
                       inputMode: 'numeric',
                       spellCheck: false,
                     })}
@@ -1519,7 +1836,14 @@ function hasStoredCredential(record) {
                     {showLocalKeyField && renderApiKeyField({ withBorder: true })}
                   </div>
                   {!isLocalPreset && (
-                    <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
+                    <>
+                      <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
+                      <div className={`px-1 mt-1 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelMaxOutputHint}</div>
+                      {/* 一次性小字:测试连接成功后按空字段规则自动填入的提示;手动改字段即清除。 */}
+                      {filledFromEndpoint && (
+                        <div data-testid="model-form-filled-from-endpoint" className={`px-1 mt-1 text-[12px] leading-4 ${isDark ? 'text-[#30D158]' : 'text-[#137333]'}`}>{settingsCopy.filledFromEndpoint}</div>
+                      )}
+                    </>
                   )}
                 </section>
               )}
@@ -1549,12 +1873,27 @@ function hasStoredCredential(record) {
                       <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? ('text-[#137333] dark:text-[#93D5A6]') : 'text-[#FF3B30]') : ('text-[#8A8A8E] dark:text-[#98989D]')}`}>
                         {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
+                      {/* 获取模型列表:仅显式点击触发探测(规格 §2.6);bridge 方法未
+                          就绪(老桌面/白名单未放行)时探活禁用并以 title 提示。 */}
+                      <button type="button" data-testid="settings-model-fetch-lists" onClick={handleFetchModels}
+                        disabled={fetchingModels || !baseUrl.trim() || !probeEndpointModelsAvailable}
+                        title={probeEndpointModelsAvailable ? undefined : settingsCopy.fetchUnavailable}
+                        className={actionPillClass}>
+                        {fetchingModels ? settingsCopy.fetchingModelList : settingsCopy.fetchModelList}
+                      </button>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
-                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]`}>
+                        className={actionPillClass}>
                         {testing ? t.testingConn : t.testConnection}
                       </button>
                     </div>
                   </div>
+                  {(fetchModelsMessage || endpointAddResult) && (
+                    // 复审 M4:添加结果按 .ok 双色显示,不再硬编码绿色;失败时
+                    // picker 保持打开,同一份提示经 addNotice 在 picker 内可见。
+                    <div data-testid="model-form-fetch-lists-status" className={`px-1 mt-1.5 text-[12px] leading-4 ${fetchModelsMessage ? (fetchModelsMessage.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]') : (endpointAddResult.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]')}`}>
+                      {fetchModelsMessage ? fetchModelsMessage.message : endpointAddResult.text}
+                    </div>
+                  )}
                 </section>
               )}
             </div>
@@ -1575,6 +1914,41 @@ function hasStoredCredential(record) {
             </div>
             </div>
           </div>
+          {/* 端点模型选择面板(规格 §2.6):纯 props 驱动,绝不自行发请求、
+              绝不自动添加;聊天线传 onAddAll(批量 confirm 在父层),ACP 线复用时不传。 */}
+          <EndpointModelPicker
+            key={endpointFetchSeq}
+            open={endpointPickerOpen}
+            onClose={() => { setEndpointPickerOpen(false); setEndpointAddResult(null); }}
+            listing={endpointListing}
+            loading={fetchingModels}
+            onPick={handleEndpointModelPick}
+            onAddAll={handleAddAllEndpointModels}
+            baseUrl={baseUrl.trim()}
+            savedKeys={endpointSavedKeys}
+            addNotice={endpointAddResult}
+            pickBusy={pickSavingModel || savingModel}
+            t={t}
+          />
+          {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与
+              MemoryDeleteDialog 同一 ConfirmDialog stacked 配方,z-[110] 压过
+              picker 的 z-[100]):标题=数量+与已保存模型去重说明,截断时 desc
+              追加提示;确认前不落库,取消不动任何状态。 */}
+          {addAllModelsConfirm && (
+            <ConfirmDialog
+              layout="stacked"
+              destructive
+              testid="add-all-models-confirm"
+              confirmTestId="add-all-models-confirm-ok"
+              title={settingsCopy.addAllConfirm(addAllModelsConfirm.addable.length)}
+              description={addAllModelsConfirm.truncated ? settingsCopy.addAllTruncated(ADD_ALL_BATCH_LIMIT) : undefined}
+              confirmLabel={addingAllModels ? settingsCopy.saving : settingsCopy.addAllModels}
+              cancelLabel={settingsCopy.cancel}
+              onConfirm={confirmAddAllEndpointModels}
+              onCancel={() => setAddAllModelsConfirm(null)}
+              busy={addingAllModels}
+            />
+          )}
         </div>
       );
     };
@@ -1733,28 +2107,17 @@ function hasStoredCredential(record) {
         </div>
       </div>
     );
-    // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
-    // Four isomorphic sites: model delete / search source delete / memory delete / feedback close; RestartDialog (two-column grid, wider) is not one of them.
-    // Optional testid/confirmTestId mount the test pins the memory-delete and feedback-close dialogs need; desc is omitted where the dialog carries no description row.
-    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId }) => (
-      <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-        <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-          <div className="px-5 pt-5 pb-4 text-center">
-            <h3 className="text-[17px] leading-6 font-semibold">{title}</h3>
-            {desc && <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>}
-          </div>
-          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
-            <button type="button" onClick={onCancel} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{cancelLabel}</button>
-          </div>
-        </div>
-      </div>
-    );
+    // The stacked-confirm idiom (red destructive action on top, cancel below)
+    // lives on components/ConfirmDialog.jsx since #817 B1 — SheetConfirmDialog
+    // was the last hand-rolled copy of it. RestartDialog (two-column grid,
+    // wider, save-then-confirm semantics) is deliberately not folded in.
     /** @param {{ model: SettingsModelEntry, settingsCopy: { deleteModelTitle: string, deleteModelDesc: string, deleteModel: string, cancel: string }, onDeleteModel: (model: SettingsModelEntry) => void, setModelDeleteConfirm: (next: SettingsModelEntry | null) => void }} props - Delete-model confirm state and actions. */
     const ModelDeleteDialog = ({ model, settingsCopy, onDeleteModel, setModelDeleteConfirm }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         title={settingsCopy.deleteModelTitle}
-        desc={settingsCopy.deleteModelDesc}
+        description={settingsCopy.deleteModelDesc}
         confirmLabel={settingsCopy.deleteModel}
         cancelLabel={settingsCopy.cancel}
         onConfirm={() => { onDeleteModel(model); setModelDeleteConfirm(null); }}
@@ -1763,9 +2126,11 @@ function hasStoredCredential(record) {
     );
     /** @param {{ source: { key: string, label: string }, settingsCopy: { deleteSearchTitle: string, deleteSearchDesc: (label: string) => string, deleteSearch: string, cancel: string }, onDeleteSearchProvider?: (key: string) => void, setSearchDeleteConfirm: (next: { key: string, label: string } | null) => void, setRestartDialog: (next: string | null) => void }} props - Delete-search confirm state and actions. */
     const SearchDeleteDialog = ({ source, settingsCopy, onDeleteSearchProvider, setSearchDeleteConfirm, setRestartDialog }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         title={settingsCopy.deleteSearchTitle}
-        desc={settingsCopy.deleteSearchDesc(source.label)}
+        description={settingsCopy.deleteSearchDesc(source.label)}
         confirmLabel={settingsCopy.deleteSearch}
         cancelLabel={settingsCopy.cancel}
         onConfirm={() => { onDeleteSearchProvider && onDeleteSearchProvider(source.key); setSearchDeleteConfirm(null); setRestartDialog('search'); }}
@@ -1774,7 +2139,9 @@ function hasStoredCredential(record) {
     );
     /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. The native window.confirm does not render in Tauri WebView2, so this uses the same in-app confirm dialog as the model/search deletes. */
     const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
-      <SheetConfirmDialog
+      <ConfirmDialog
+        layout="stacked"
+        destructive
         testid="memory-delete-confirm"
         confirmTestId="memory-delete-confirm-ok"
         title={copy.memoryDeleteConfirm}
@@ -3405,7 +3772,7 @@ function hasStoredCredential(record) {
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
-          {/* Delete confirm: same iOS dialog recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click does not close) */}
+          {/* Delete confirm: same ConfirmDialog stacked recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click closes, same as Cancel) */}
           {memoryDeleteConfirm && (
             <MemoryDeleteDialog
               item={memoryDeleteConfirm}
@@ -3591,9 +3958,11 @@ function hasStoredCredential(record) {
               </div>
             </div>
           )}
-          {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same recipe as MemoryDeleteDialog (backdrop click does not close) */}
+          {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same ConfirmDialog stacked recipe as MemoryDeleteDialog */}
           {feedbackOpen && feedbackCloseConfirm && (
-            <SheetConfirmDialog
+            <ConfirmDialog
+              layout="stacked"
+              destructive
               testid="feedback-close-confirm"
               confirmTestId="feedback-close-confirm-ok"
               title={t.feedbackCloseConfirm}

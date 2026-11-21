@@ -646,121 +646,101 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         return Ok(());
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        // 15 minutes per candidate source (reqwest's client timeout counts per
-        // request; the whole install is a serial wheel chain): wheels are
-        // capped at 64 MiB and 180s falls just short on common slow links; a
-        // timeout would restart the whole serial wheel chain from scratch.
-        // Shares the same constant as native_installer; with multi-candidate
-        // fallback the worst case multiplies by the candidate count.
-        .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            let refused = attempt.previous().len() >= 10
-                || attempt.url().scheme() != "https"
-                || !is_allowed_wheel_host(attempt.url());
-            if refused {
-                // Name the refused redirect instead of letting the 3xx body fail the
-                // later checksum comparison with a misleading mismatch error.
-                let redirect_url = attempt.url().clone();
-                attempt.error(format!(
-                    "Python wheel redirect left the trusted host: {redirect_url}"
-                ))
-            } else {
-                attempt.follow()
-            }
-        }))
-        .user_agent("Pinvou-Agent python-dependency-installer")
-        .build()
-        .map_err(|e| format!("failed to build the Python dependency download client: {e}"))?;
-
-    let candidates = wheel_download_urls(wheel);
-    let total_candidates = candidates.len();
-    let mut failures: Vec<String> = Vec::new();
-    for url_text in candidates {
-        // Invalid candidates (parse failure/non-HTTPS) are only skipped and
-        // recorded in the aggregate, not a total failure (same convention as
-        // the connectors installer, including userinfo redaction): the
-        // official-source fallback must not be dragged down by one badly built
-        // candidate.
-        let url = match reqwest::Url::parse(&url_text) {
-            Ok(url) if url.scheme() == "https" => url,
-            _ => {
-                let error = format!(
-                    "invalid or non-HTTPS Python wheel URL: {}",
-                    crate::platform::download::redact_url_credentials(&url_text)
-                );
-                log::warn!(
-                    "[marketplace] skipping candidate for {}: {error}",
-                    wheel.name
-                );
-                failures.push(error);
-                continue;
-            }
-        };
-        match download_wheel_from(&client, &url, destination, wheel) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                // Non-default ports go into the prefix so same-host candidates
-                // on different ports stay distinguishable in errors.
-                let host = match url.port() {
-                    Some(port) => {
-                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
-                    }
-                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
-                };
-                log::warn!(
-                    "[marketplace] Python dependency {} failed from {host}, trying next mirror: {error}",
-                    wheel.name
-                );
-                failures.push(format!("[{host}] {error}"));
-            }
+    let part_extension = format!("part-{}", std::process::id());
+    let spec = crate::platform::download::BlockingArtifactDownload {
+        user_agent: "Pinvou-Agent python-dependency-installer",
+        log_tag: "marketplace",
+        subject: &wheel.name,
+        max_bytes: MAX_WHEEL_BYTES,
+        expected_sha256: &wheel.sha256,
+        part_extension: &part_extension,
+        redirect_guard: wheel_redirect_guard,
+    };
+    let localize = |failure: &crate::platform::download::BlockingDownloadFailure| {
+        localize_wheel_download_failure(failure, wheel)
+    };
+    match crate::platform::download::download_verified_blocking(
+        &spec,
+        &wheel_download_urls(wheel),
+        destination,
+        &localize,
+    ) {
+        Ok(_) => Ok(()),
+        Err(crate::platform::download::BlockingDownloadError::ClientBuild(e)) => Err(format!(
+            "failed to build the Python dependency download client: {e}"
+        )),
+        Err(crate::platform::download::BlockingDownloadError::Exhausted(failures)) => {
+            // When every candidate fails, carry "how many sources were tried
+            // and each source's own failure reason" into the error (release
+            // builds have no logger, so the per-candidate log::warn! is
+            // invisible; the error itself must show that the mirror was tried
+            // and at which layer it failed). Every tried candidate pushes
+            // exactly one entry, so failures.len() equals the candidate count.
+            Err(match failures.as_slice() {
+                [] => format!("Python dependency {} has no download URL", wheel.name),
+                list => format!(
+                    "Python dependency {} download failed ({} candidate source(s) exhausted): {}",
+                    wheel.name,
+                    list.len(),
+                    list.join("; ")
+                ),
+            })
         }
     }
-    // When every candidate fails, carry "how many sources were tried and each
-    // source's own failure reason" into the error (release builds have no
-    // logger, so per-candidate log::warn! is invisible; the error itself must
-    // show that the mirror was tried and at which layer it failed).
-    Err(match failures.as_slice() {
-        [] => format!("Python dependency {} has no download URL", wheel.name),
-        list => format!(
-            "Python dependency {} download failed ({} candidate source(s) exhausted): {}",
-            wheel.name,
-            total_candidates,
-            list.join("; ")
-        ),
-    })
 }
 
-/// Download a wheel from a single URL to `destination` (`.part` staging ->
-/// sha256 verification -> atomic rename). A verification mismatch is treated
-/// as a failure; the caller decides whether to switch to the next candidate
-/// URL.
-fn download_wheel_from(
-    client: &reqwest::blocking::Client,
-    url: &reqwest::Url,
-    destination: &Path,
+/// Redirect policy of the wheel lane (unchanged wording): refuse hops beyond
+/// 10, any hop leaving HTTPS, and any hop leaving the trusted wheel hosts —
+/// named at the redirect instead of letting the 3xx body fail the later
+/// checksum comparison with a misleading mismatch error.
+fn wheel_redirect_guard(hops: usize, url: &reqwest::Url) -> Option<String> {
+    if hops >= 10 || url.scheme() != "https" || !is_allowed_wheel_host(url) {
+        Some(format!(
+            "Python wheel redirect left the trusted host: {url}"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Wheel lane's wording for the shared skeleton's failure steps (kept
+/// verbatim from the pre-#817 body).
+fn localize_wheel_download_failure(
+    failure: &crate::platform::download::BlockingDownloadFailure,
     wheel: &PythonWheel,
-) -> Result<(), String> {
-    let response = client
-        .get(url.clone())
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("failed to download Python dependency {}: {e}", wheel.name))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_WHEEL_BYTES)
-    {
-        return Err(format!(
+) -> String {
+    use crate::platform::download::BlockingDownloadFailure as F;
+    match failure {
+        F::InvalidUrl(url) => format!("invalid or non-HTTPS Python wheel URL: {url}"),
+        // The shared skeleton redacts userinfo from the reqwest error text
+        // before handing it over (the wheel lane pre-#817 echoed the URL
+        // verbatim here; mirror prefixes can carry credentials, same
+        // exposure the connector lane already closed in round-40).
+        F::Request(text) => format!(
+            "failed to download Python dependency {}: {text}",
+            wheel.name
+        ),
+        F::TooLarge => format!(
             "Python dependency {} exceeds the 64 MiB safety limit",
             wheel.name
-        ));
+        ),
+        F::CreatePart(e) => format!("failed to create the wheel staging file: {e}"),
+        F::WritePart(e) => format!("failed to save the wheel: {e}"),
+        F::SyncPart(e) => format!("failed to sync the wheel staging file: {e}"),
+        F::HashRead(e) => format!("failed to read the wheel: {e}"),
+        F::ShaMismatch { expected, actual } => format!(
+            "Python dependency {} checksum mismatch (expected {expected}, got {actual})",
+            wheel.name
+        ),
+        F::ReplaceDest(e) => format!("failed to replace the wheel cache: {e}"),
+        F::Promote(e) => format!("failed to save the wheel cache: {e}"),
     }
-
-    let mut reader = response.take(MAX_WHEEL_BYTES + 1);
-    persist_wheel_download(&mut reader, destination, wheel)
 }
 
+/// `.part` staging -> sha256 verification -> atomic rename, wheel lane
+/// wording; the mechanism lives in
+/// `platform::download::persist_verified_download_with_sync` (#817 B5) and
+/// this wrapper exists for the feature's injectable-reader/sync tests.
 fn persist_wheel_download<R: Read>(
     reader: &mut R,
     destination: &Path,
@@ -779,36 +759,16 @@ where
     R: Read,
     S: FnOnce(&File) -> io::Result<()>,
 {
-    let partial = destination.with_extension(format!("part-{}", std::process::id()));
-    let _ = fs::remove_file(&partial);
-    let mut cleanup = PartialFileCleanup::new(partial.clone());
-    let mut file = File::create(&partial)
-        .map_err(|e| format!("failed to create the wheel staging file: {e}"))?;
-    let copied =
-        io::copy(reader, &mut file).map_err(|e| format!("failed to save the wheel: {e}"))?;
-    sync(&file).map_err(|e| format!("failed to sync the wheel staging file: {e}"))?;
-    drop(file);
-    if copied > MAX_WHEEL_BYTES {
-        return Err(format!(
-            "Python dependency {} exceeds the 64 MiB safety limit",
-            wheel.name
-        ));
-    }
-    let actual = sha256_file(&partial).map_err(|e| format!("failed to read the wheel: {e}"))?;
-    if actual != wheel.sha256 {
-        return Err(format!(
-            "Python dependency {} checksum mismatch (expected {}, got {})",
-            wheel.name, wheel.sha256, actual
-        ));
-    }
-    if destination.exists() {
-        fs::remove_file(destination)
-            .map_err(|e| format!("failed to replace the wheel cache: {e}"))?;
-    }
-    fs::rename(&partial, destination)
-        .map_err(|e| format!("failed to save the wheel cache: {e}"))?;
-    cleanup.disarm();
-    Ok(())
+    let part_extension = format!("part-{}", std::process::id());
+    crate::platform::download::persist_verified_download_with_sync(
+        reader,
+        destination,
+        &wheel.sha256,
+        MAX_WHEEL_BYTES,
+        &part_extension,
+        sync,
+    )
+    .map_err(|failure| localize_wheel_download_failure(&failure, wheel))
 }
 
 fn extract_wheel(
@@ -1040,29 +1000,6 @@ fn remove_prunable_file(path: &Path) -> Result<(), String> {
     fs::remove_file(path).map_err(|e| format!("failed to remove the unused Python wheel: {e}"))
 }
 
-struct PartialFileCleanup {
-    path: PathBuf,
-    armed: bool,
-}
-
-impl PartialFileCleanup {
-    fn new(path: PathBuf) -> Self {
-        Self { path, armed: true }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for PartialFileCleanup {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
 fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1199,6 +1136,117 @@ mod tests {
                 "https://pypi.tuna.tsinghua.edu.cn/packages/d0/00/abc/python_docx-1.2.0-py3-none-any.whl"
             )
         );
+    }
+
+    /// The wheel redirect guard keeps the lane's exact refusal wording and
+    /// policy after #817 B5 moved the loop into `platform::download`: trusted
+    /// wheel hosts over HTTPS follow; untrusted hosts, plain HTTP, and hops
+    /// beyond 10 are refused by name.
+    #[test]
+    fn wheel_redirect_guard_refuses_untrusted_hosts_and_plain_http() {
+        let trusted = reqwest::Url::parse("https://files.pythonhosted.org/packages/x.whl").unwrap();
+        let mirror =
+            reqwest::Url::parse("https://pypi.tuna.tsinghua.edu.cn/packages/x.whl").unwrap();
+        let foreign = reqwest::Url::parse("https://evil.example/x.whl").unwrap();
+        let plain = reqwest::Url::parse("http://files.pythonhosted.org/x.whl").unwrap();
+        assert_eq!(wheel_redirect_guard(0, &trusted), None);
+        assert_eq!(wheel_redirect_guard(4, &mirror), None);
+        assert_eq!(
+            wheel_redirect_guard(0, &foreign).as_deref(),
+            Some("Python wheel redirect left the trusted host: https://evil.example/x.whl")
+        );
+        assert_eq!(
+            wheel_redirect_guard(10, &trusted).as_deref(),
+            Some(
+                "Python wheel redirect left the trusted host: https://files.pythonhosted.org/packages/x.whl"
+            )
+        );
+        assert!(wheel_redirect_guard(0, &plain).is_some());
+    }
+
+    /// The lane's localized wording for the shared skeleton's failure steps
+    /// is pinned verbatim (release builds surface these strings to the user;
+    /// mirrors the connector lane's wording pin).
+    #[test]
+    fn wheel_download_failure_wording_is_pinned() {
+        use crate::platform::download::BlockingDownloadFailure as F;
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.name = "pyfoo".to_string();
+        let text = |failure: &F| localize_wheel_download_failure(failure, &wheel);
+        // The shared loop redacts userinfo BEFORE localize (end-to-end
+        // redaction is pinned in platform::download's loop tests); localize
+        // only formats.
+        assert_eq!(
+            text(&F::InvalidUrl("https://h/x".into())),
+            "invalid or non-HTTPS Python wheel URL: https://h/x"
+        );
+        assert_eq!(
+            text(&F::Request("boom for url (https://h/x)".into())),
+            "failed to download Python dependency pyfoo: boom for url (https://h/x)"
+        );
+        assert_eq!(
+            text(&F::TooLarge),
+            "Python dependency pyfoo exceeds the 64 MiB safety limit"
+        );
+        assert_eq!(
+            text(&F::CreatePart("denied".into())),
+            "failed to create the wheel staging file: denied"
+        );
+        assert_eq!(
+            text(&F::WritePart("denied".into())),
+            "failed to save the wheel: denied"
+        );
+        assert_eq!(
+            text(&F::SyncPart("denied".into())),
+            "failed to sync the wheel staging file: denied"
+        );
+        assert_eq!(
+            text(&F::HashRead("denied".into())),
+            "failed to read the wheel: denied"
+        );
+        assert_eq!(
+            text(&F::ShaMismatch {
+                expected: "a".repeat(64),
+                actual: "b".repeat(64),
+            }),
+            format!(
+                "Python dependency pyfoo checksum mismatch (expected {}, got {})",
+                "a".repeat(64),
+                "b".repeat(64)
+            )
+        );
+        assert_eq!(
+            text(&F::ReplaceDest("denied".into())),
+            "failed to replace the wheel cache: denied"
+        );
+        assert_eq!(
+            text(&F::Promote("denied".into())),
+            "failed to save the wheel cache: denied"
+        );
+    }
+
+    /// The exhausted-aggregate wording is pinned end-to-end without network:
+    /// the only candidate fails the HTTPS gate, so the loop exhausts with
+    /// exactly one entry and never touches the destination.
+    #[test]
+    fn wheel_exhausted_aggregate_wording_is_pinned() {
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.name = "pyfoo".to_string();
+        wheel.url = "http://insecure.example/x.whl".to_string();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-wheel-aggregate-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let destination = root.join("x.whl");
+        let error = ensure_cached(&wheel, &destination).unwrap_err();
+        assert_eq!(
+            error,
+            "Python dependency pyfoo download failed (1 candidate source(s) exhausted): \
+             invalid or non-HTTPS Python wheel URL: http://insecure.example/x.whl"
+        );
+        assert!(!destination.exists(), "no staging may materialize");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

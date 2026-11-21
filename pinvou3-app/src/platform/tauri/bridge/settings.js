@@ -96,12 +96,26 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
   // model 对象字段须与 Rust 侧 SavedModel 的 serde 契约逐字段一致(snake_case):
   // 字段清单以 src-tauri/src/platform/prefs/mod.rs 的 SavedModel 定义为准,此处
   // 不逐一列举以免两处漂移。
- async function saveModel(model) {
+ async function saveModel(model, options) {
+   // options.deferRefresh (round-1 review M9): the batch add-all loop saves
+   // up to 100 rows back-to-back; skipping the three reloads per row avoids a
+   // 100x IPC storm. The caller reloads once via reloadSavedModels() when the
+   // loop finishes. Default (no options) keeps the save-then-refresh chain
+   // every single-row caller relies on.
    await invoke("save_model", { model });
+   if (options && options.deferRefresh) return;
    await loadModels();
    await loadSettings();
    await loadEffectiveModelConfig();
  }
+// Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
+// exactly the three loaders the save chain runs, executed once for the whole
+// confirmed add-all batch.
+async function reloadSavedModels() {
+  await loadModels();
+  await loadSettings();
+  await loadEffectiveModelConfig();
+}
 async function revealModelApiKey(id) { return pinvouSharedtauriSettings().revealModelApiKey(id); }
  async function deleteModel(id) {
    await invoke("delete_model", { id });
@@ -135,6 +149,9 @@ async function testModelConnection(baseUrl, apiKey, modelId, noAuth) { return pi
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
 async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth) { return pinvouSharedtauriSettings().testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth); }
+// 端点模型自动发现(冻结契约 §2.5):probe_endpoint_models。失败必须 reject
+// 穿透,由 SettingsView 归一为三语 connectionMessages 提示。
+async function probeEndpointModels(request) { return pinvouSharedtauriSettings().probeEndpointModels(request); }
   async function probeLocalServerKind(baseUrl, apiKey, modelId, noAuth) {
     // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
     // Rust 侧按 base_url TTL 缓存；命令失败（老版本桌面/命令被拒）在这里 reject，
@@ -232,6 +249,7 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth)
       getImageInputCapability,
       loadModels,
       saveModel,
+      reloadSavedModels,
       revealModelApiKey,
       deleteModel,
       setActiveModel,
@@ -239,6 +257,7 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth)
       switchModel,
       testModelConnection,
       testImageInputCapability,
+      probeEndpointModels,
       probeLocalServerKind,
       setGlobalShortcutConfig,
       listBuiltinFeatures,

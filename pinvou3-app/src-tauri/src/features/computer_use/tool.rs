@@ -2170,8 +2170,45 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
 
         // Execute the action.
         let map = parts.state.lock().last_map.clone();
-        let mut outcome = execute_action(&parts, &action, map.as_ref(), &mut warnings)
-            .map_err(|e| backend_error_text(&e))?;
+        let mut outcome = match execute_action(&parts, &action, map.as_ref(), &mut warnings) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // The failed action's accumulated warnings are drained and
+                // discarded: an advisory names THAT action's target ("the
+                // keyboard target is a packaged app"), so letting it ride a
+                // later action's receipt would misattribute it. Best-effort
+                // by design — the drain is a plain request on the serialized
+                // worker: on a healthy worker it runs free once the action's
+                // reply is back (a timeout-latched zombie exits at its next
+                // event boundary), and the query is deliberately not
+                // stop-cancellable so a stop sweep cannot strand it. A
+                // worker wedged in a single OS call defers the drain up to
+                // the drain's own call budget; the discard is unconditional
+                // once a reply comes back, while past that budget the
+                // timed-out drain is skipped at dequeue and the residual on
+                // `BackendHandle::take_warnings` applies (the next executed
+                // action's drain consumes it — rendered on that action's
+                // success receipt, discarded on its failure).
+                let _ = parts.backend.take_warnings();
+                return Err(backend_error_text(&error));
+            }
+        };
+        // Backend-accumulated warnings for the action just executed (e.g. the
+        // Windows hidden-desktop stack's packaged-keyboard-target advisory):
+        // drained right after the action so the strings attribute to exactly
+        // that action (exact under sequential dispatch — the concurrency and
+        // wedge residuals disclosed on `BackendHandle::take_warnings` name
+        // the only exceptions) — rendered on the success receipt like the
+        // local warnings; on the error path above they are drained and
+        // discarded. One bounded exception: for Screenshot a failed
+        // follow-up capture — or a Wait/Screenshot readonly rejection in the
+        // same follow-up block — returns Err AFTER this drain, dropping
+        // already-drained warnings — the safe direction (no misattribution;
+        // the only producer is the keyboard advisory, which a screenshot
+        // never pushes).
+        for warning in parts.backend.take_warnings() {
+            warnings.push(warning);
+        }
 
         // Follow-up screenshot.
         if action.attaches_screenshot() {

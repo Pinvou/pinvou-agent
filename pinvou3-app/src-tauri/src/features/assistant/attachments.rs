@@ -831,7 +831,7 @@ mod staged_copy_limit_tests {
 
     /// The cap the assertions below exercise. It is injected instead of using
     /// the real `MAX_FILE_BYTES`: the copy streams every byte of the source
-    /// into the destination, so pinning a `take()` at the real 20 MiB cap cost
+    /// into the destination, so pinning a `take()` at the real 50 MiB cap cost
     /// tens of megabytes of disk I/O per `cargo test` run to prove a bound
     /// that is the same comparison at 8 bytes. `copy_bounded`'s own staging
     /// tests in `product_runtime::agentic_task` use the same 8-byte trick.

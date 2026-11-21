@@ -252,6 +252,98 @@ def _extract_install_contract_script_reads(contract_test):
     return sorted(set(targets))
 
 
+def _extract_install_contract_src_tauri_reads(contract_test):
+    r"""从 connector_online_install_contract.test.js 源码派生全部 src-tauri 读取目标。
+
+    `read("src-tauri", …)` 多段字面量逐段拼接成精确文件目标;无扩展名的
+    字面量段落累积为目录前缀,带文件扩展名(.rs/.jsx/.js/.mjs/.sh/.json/.md)
+    的字面量发射目标且**不消费**前缀——三元选择分支(connector === "lark-cli"
+    ? "feishu.rs" : …)的三个分支字面量因此各成一条目标。三元比较分支的
+    字面量(`\w+ === "…"` 形态)先剔除,不参与路径拼接。首参必须是完整的
+    引号字面量 "src-tauri"(scripts 读取由 _extract_install_contract_script_reads
+    锁定,前端 src 读取天然被前端任务触发,均不在本提取器范围);含计算段
+    (osDir/archDir 变量)的调用按字面前缀目录派生 `/**` 目录目标——路由宁过
+    勿漏。精确文件目标必须真实存在(注释里提及的 .rs 不在 read( 内,不受
+    影响);目录目标其目录必须存在。派生结果为空即红。
+    """
+    targets = set()
+    for args in re.findall(r"read\(([^)]*)\)", contract_test, re.S):
+        parts = re.findall(r'"([^"]*)"', args)
+        if not parts or parts[0] != "src-tauri":
+            continue
+        if not re.match(r'\s*"src-tauri"', args):
+            raise AssertionError(
+                f"read() 首参必须是完整的 \"src-tauri\" 字面量: {args[:80]}"
+            )
+        # 剔除比较分支字面量(三元条件),它们不是路径段。
+        args_wo_cmp = re.sub(r'\w+\s*===\s*"[^"]*"', "", args)
+        # 逐项切分:引号字面量内容 vs 标识符(变量参数,单组交替下捕获为 '')。
+        items = re.findall(r'"([^"]*)"|[A-Za-z_$][A-Za-z0-9_$.]*', args_wo_cmp)
+        computed_idx = next((i for i, s in enumerate(items) if s == ""), None)
+        prefix = ["pinvou3-app/src-tauri"]
+        emitted = 0
+        for i, lit in enumerate(items[1:], start=1):
+            if computed_idx is not None and i >= computed_idx:
+                break  # 计算段之后的字面量不再参与精确拼接(路由取宽前缀)
+            if re.search(r"\.(rs|jsx|js|mjs|sh|json|md)$", lit):
+                targets.add("/".join(prefix + [lit]))
+                emitted += 1
+            else:
+                prefix.append(lit)
+        if computed_idx is not None:
+            targets.add("/".join(prefix) + "/**")
+        elif emitted == 0:
+            raise AssertionError(
+                f"read(\"src-tauri\", …) 未能派生任何文件目标(形态变更须同步"
+                f"本提取器): {args[:80]}"
+            )
+    if not targets:
+        raise AssertionError(
+            "connector_online_install_contract.test.js 未派生出任何 src-tauri"
+            " 读取目标——读取形态变更须同步本提取器"
+        )
+    for target in sorted(targets):
+        if target.endswith("/**"):
+            if not (ROOT / target[:-3]).is_dir():
+                raise AssertionError(
+                    f"派生的目录目标不存在(提取器解析出错误路径): {target}"
+                )
+        elif not (ROOT / target).is_file():
+            raise AssertionError(
+                f"派生的读取目标不存在(提取器解析出错误路径): {target}"
+            )
+    return sorted(targets)
+
+
+def _extract_mcp_wheel_contract_src_tauri_reads(contract_test):
+    """从 mcp_python_dependencies_contract.test.js 源码派生全部 src-tauri 读取目标。
+
+    该测试的读取形态:`read('src-tauri/<rel>.rs')` 单引号整相对路径,每个以
+    src-tauri/ 开头、.rs 结尾的引号字面量即一条精确文件目标(与
+    _extract_consent_marker_read_targets 同款归一化)。manifest() 的模板串
+    读取(resources/mcp-servers JSON)非 Rust 源,不在此列。目标必须真实
+    存在;派生结果为空即红;数量断言防正则漂移——新增读取会使计数失配,
+    强制同步提取器与路由。
+    """
+    targets = sorted(
+        {
+            "pinvou3-app/" + literal
+            for literal in re.findall(r"'(src-tauri/[^']*\.rs)'", contract_test)
+        }
+    )
+    if not targets:
+        raise AssertionError(
+            "mcp_python_dependencies_contract.test.js 未派生出任何 src-tauri"
+            " 读取目标——读取形态变更须同步本提取器"
+        )
+    for target in targets:
+        if not (ROOT / target).is_file():
+            raise AssertionError(
+                f"派生的读取目标不存在(提取器解析出错误路径): {target}"
+            )
+    return targets
+
+
 def _frontend_filter_entries(workflow_text):
     """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
     changes = _changes_block(workflow_text)
@@ -983,6 +1075,62 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"install contract 测试读取的 {target}"
                 " 未被 frontend filter 覆盖,scripts-only 改动会静默跳过该"
                 " node 门禁",
+            )
+
+    def test_install_contract_src_tauri_reads_fully_routed(self):
+        # connector_online_install_contract.test.js 除 scripts/ 外还读取十处
+        # src-tauri Rust 源与 platforms resources 锁(版本钉/HTTPS 门/重定向
+        # 守卫断言都在这些源上)——Rust-only PR 若不在 frontend filter 中,
+        # frontend-test 被静默跳过,契约漂移在该 node 门禁不可见。从测试
+        # 源码派生全部 src-tauri 读取目标逐一断言 frontend filter 覆盖;
+        # 新增读取而未路由、或已路由文件被挪走,都会在这里失败(本套件在
+        # fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        contract_test = (
+            ROOT
+            / "pinvou3-app/tests/connector_online_install_contract.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_install_contract_src_tauri_reads(contract_test)
+
+        # 数量锁防正则漂移:一次重构若把字面量读改成模板串/计算值,派生
+        # 集合会静默缩水而覆盖循环照常通过——计数失配宁可误红。
+        self.assertEqual(
+            len(targets),
+            12,
+            f"install contract src-tauri 读取目标漂移，实际解析出： {targets}",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_paths),
+                f"install contract 测试读取的 {target} 未被 frontend filter "
+                "覆盖,Rust-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_mcp_wheel_contract_src_tauri_reads_fully_routed(self):
+        # mcp_python_dependencies_contract.test.js 读取六处 src-tauri Rust 源
+        # (wheel 钉扎/runtime bundle 提取断言)——Rust-only PR 若不在
+        # frontend filter 中,frontend-test 被静默跳过,契约漂移在该 node
+        # 门禁不可见。从测试源码派生全部 src-tauri 读取目标逐一断言
+        # frontend filter 覆盖;新增读取而未路由会使计数锁失配,在这里失败
+        #(本套件在 fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        contract_test = (
+            ROOT / "pinvou3-app/tests/mcp_python_dependencies_contract.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_mcp_wheel_contract_src_tauri_reads(contract_test)
+
+        self.assertEqual(
+            len(targets),
+            6,
+            f"mcp wheel contract src-tauri 读取目标漂移，实际解析出： {targets}",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_paths),
+                f"mcp wheel contract 测试读取的 {target} 未被 frontend filter "
+                "覆盖,Rust-only 改动会静默跳过该 node 门禁",
             )
 
     def test_script_read_derivation_covers_quote_and_shape_variants(self):

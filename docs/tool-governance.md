@@ -3,6 +3,8 @@
 本文档描述 pinvou3 在 **CodeWhale v0.9.12** 基线上的模型工具治理（子模块随 main 持续演进，以仓库当前 gitlink 为准；v0.9.12 首次落地时的 gitlink 见 §8 迁移记录）。v0.9.12 以 canonical model-visible tool name 作为模型侧工具面，由 `allowed_tools` 正向白名单同时约束首轮目录、`tool_search` 结果和实际执行；v0.9.0 的 `PINVOU3_HIDDEN_TOOLS`、`hidden_tools` 注入和逐个旧工具名放出机制已经退役。v0.9.5 → v0.9.12 的迁移过程见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`。
 
 > **沿革**：`docs/tool-governance.md` 这一文件名曾在 #287 中被删除，本文是其继任者（后随通用文档回流恢复并按 v0.9.12 工具面重写）。它与被删除的旧文档不是同一份内容，旧外链请勿按其内容理解本文。
+>
+> **相关历史/推导文档**（2026-11 回填留档，现状以本文为准）：[`工具表精简方案.md`](./工具表精简方案.md)（v0.8.37→v0.8.65 时代工具面裁剪方案与实测）、[`DeepSeek-TUI-工具系统.md`](./DeepSeek-TUI-工具系统.md)（v0.8.37 工具注册/派发机制史料）、[`DeepSeek-TUI源码职责分析.md`](./DeepSeek-TUI源码职责分析.md)（上游 crate 职责与 pinvou3 接入演化）、[`skills-loading-status.md`](./skills-loading-status.md)（skill 加载/卡牌池 2026-06 状态史）。
 
 ## 1. 当前治理链路
 
@@ -30,7 +32,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 | 职责 | 文件 |
 |---|---|
 | Pinvou 正向白名单 | `pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs` |
-| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2279-2510）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
+| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2374-2605）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
 | 模式能力静态表 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs` 的 `MODE_TABLE` |
 | 模式与动态拒绝整形 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs`、`features/assistant/platform/bridge.rs::shape_disallowed_tools` |
 | 能力包与 scope 治理 | `docs/capability-governance.md` |
@@ -84,13 +86,13 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 |---|---|---|
 | `Bash`、`File` | 保存的 v0.9.x 转录回放仍可 dispatch；经产品白名单时 `Bash` 命中 `bash` 规则可执行，`File` 无规则不可执行 | `HIDDEN_COMPAT_TOOL_NAMES = ["Bash", "File"]`（`canonical_action.rs:237`）；lib.rs `tool_allowlist_contract` |
 | `read_file`、`write_file`、`edit_file`、`git_status`/`git_diff`/`git_log`/`git_show`/`git_blame`、`exec_shell*`、`web_search`、`fetch_url`、`wait_for_dev_server`、`run_tests`、`run_verifiers` 等 | 拼写已彻底移除，`ToolRegistry::resolve` 无模糊解析，完全不能 dispatch | `RETIRED_TOOL_NAMES`（`canonical_action.rs:211`） |
-| `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`、`update_plan` | 进度工具的隐藏 replay 别名；写进白名单只是死条目，且会让进度工具整体不可见 | `tool_policy.rs:17-19`；`registry.rs:1344-1360`（`update_plan` 经 `with_plan_tool` 另行注册，约 :1365）；lib.rs 反向测试 |
+| `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`、`update_plan` | 进度工具的隐藏 replay 别名；写进白名单只是死条目，且会让进度工具整体不可见 | `tool_policy.rs:17-19`；`registry.rs:1344-1368`（`update_plan` 经 `with_plan_tool` 另行注册，`:1372`）；lib.rs 反向测试 |
 
 兼容解析：`CANONICAL_ACTION_ALIASES` 把旧名 + `action`（如 `File{read}`、`Bash{run}`）解析到现行工具，实时调用与保存的历史转录得到相同的下游行为；前端渲染器同时识别旧名与 canonical 名，以保证历史会话可读。
 
 ## 4. work / code 模式差量
 
-模式差量由编译期静态表 `MODE_TABLE` 声明（`session_policy.rs:58-75`），不再维护运行时能力档案：
+模式差量由编译期静态表 `MODE_TABLE` 声明（`session_policy.rs:56-73`），不再维护运行时能力档案：
 
 | 维度 | work（plain） | code |
 |---|---|---|
@@ -109,9 +111,9 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 
 ## 5. 动态拒绝与优先级
 
-`shape_disallowed_tools`（`features/assistant/platform/bridge.rs:1009`）在持久禁用集上按以下顺序叠加：
+`shape_disallowed_tools`（`features/assistant/platform/bridge.rs:1041`）在持久禁用集上按以下顺序叠加：
 
-1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1013-1017` 顺序约束）；
+1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1045-1049` 顺序约束）；
 2. 对应模式 scope 的连接器禁用工具（非 plain 模式先剔除 plain scope 禁用集、再并入本 scope 禁用集）；
 3. 当前模式要求且技能组合目录为空时的 `load_skill`（表字段 `skills_empty_hides_load_skill` 门控）；
 4. 知识库、会话或产品状态产生的其他动态拒绝项。
@@ -141,7 +143,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 - `tool_search` 只能发现白名单内且未被拒绝的工具：`allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行（`tool_policy.rs:3-5`；lib.rs `conditional_allowlist_rules_match_model_visible_registry_entries` 以 v0.9.12 真实 registry 投影验证条件性宿主/MCP 条目均有白名单规则）。
 - canonical `write` 单次内容有 64 KiB 硬上限（`CodeWhale/crates/tui/src/tools/file_tool.rs:121`；`file/tests.rs` 断言超限写入在触盘前失败），并继续受工作区边界和审批/claim 约束。
 - canonical `bash` 执行前经命令安全分析（`CodeWhale/crates/tui/src/command_safety.rs`：命令前缀分类与危险模式预检）；破坏性命令不能被自动批准绕过。
-- 宿主额外工具经 `spawn_for_session` 的单一注入路径进入引擎（`engine_pool.rs` 的 `extra_tools` 组装与 `AppEngine::spawn_for_session` 调用，约 :2678-2740；如 `kb_tool.rs` 经 `EngineConfig.extra_tools` 注入），并继续受白名单（lib.rs、`multiagent_regression_tests.rs` 对真实 bridge 回合目录的逐项校验）和拒绝集约束。
+- 宿主额外工具经 `spawn_for_session` 的单一注入路径进入引擎（`engine_pool.rs` 的 `extra_tools` 组装（:2735-2736）与 `AppEngine::spawn_for_session` 调用（:2797，函数本体在 `features/assistant/engine.rs:1839`）；如 `kb_tool.rs` 经 `EngineConfig.extra_tools` 注入），并继续受白名单（lib.rs、`multiagent_regression_tests.rs` 对真实 bridge 回合目录的逐项校验）和拒绝集约束。
 - 宿主产生的结构化产出与审计文件写声明过的位置（会话执行根与应用审计根，见 `SessionStore::session_roots` 与 `bridge.rs::audit_workspace`）；工具不应借 canonical `write`/`edit` 扩大权限。原「三省六部」结构化产出子系统已随 bundle 0.21 完整移除（`runtime_bundle/platform/mod.rs` 变更记录），不再是安全边界的承载者。
 
 ## 8. 迁移记录
@@ -151,7 +153,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 | 2026-08-10 | v0.9.0 能力档案曾为 code 模式从底座隐藏集放出 5 个 Git 工具及 `apply_patch`、`run_verifiers`、`exec_shell_cancel`。 |
 | 2026-08-11 | 升级 CodeWhale v0.9.5：切换到 canonical family、`allowed_tools` 正向白名单和单一 `disallowed_tools` 差量通道；旧 8 项 include 被等价迁移，不再作为模型侧工具名维护。 |
 | 2026-08-14 | 退役无运行时写入者的能力档案，模式架构差量收敛为 `MODE_TABLE`；plain 放开 `Git` family，外部能力默认姿态改由按模式 scope 管理。 |
-| 2026-09-09 | 升级 CodeWhale v0.9.12（gitlink `pinvou-v0.9.12-r1-18-g92427bd8d`）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
+| 2026-09-09 | 升级 CodeWhale v0.9.12（#453 初始 pin `1fafee7e26`；gitlink `pinvou-v0.9.12-r1-18-g92427bd8d` 系 2026-09-17 经 #530 推进后的口径）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
 | 2026-11-05 | v0.9.12 白名单组成变更（随 #832）：准入证据恢复对 `retrieve_tool_result` / `handle_read`（底座溢出尾行与 worker 记录按名点教，见 §2）；移除死条目 `revert_turn`（`snapshots_enabled=false` 使每次调用在支付一次 side-repo init 后恒败，回退由应用侧 `rewind_to_turn` 承接）。同批披露同类残留：`Run`（`agent` 描述括注）与 `create_goal` / `update_goal`（goal 面）仍不在白名单，披露见 `tool_policy.rs`；`notes_path` 死链经注释披露（NoteTool 被白名单剥离，父会话永不写、UI 不读；子代理注册面不受白名单约束仍可写，见 `bridge.rs`）。 |
 
 每次 CodeWhale 升级都必须重新核对 canonical 名称、各模式注册面、首轮/延迟加载策略、前端历史回放兼容和本文档；不能只凭旧工具名相同就判定行为等价。

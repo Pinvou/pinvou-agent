@@ -3776,7 +3776,6 @@ const App = () => {
             <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
                 <LazyArchiveConfirmDialog
-                  theme={activeTheme}
                   t={t}
                   onCancel={() => setArchiveConfirm(null)}
                   onConfirm={confirmArchiveSession}
@@ -4478,7 +4477,7 @@ const App = () => {
                   setSearchApiKey={handleSetSearchApiKey}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
-                  onSaveModel={(m) => bridge.available && bridge.models.saveModel(m)}
+                  onSaveModel={(m, options) => bridge.available && bridge.models.saveModel(m, options)}
                   onDeleteModel={(m) => { if (bridge.available) bridge.models.deleteModel(m.id); }}
                   onSetActiveModel={(id) => bridge.available && bridge.models.setActiveModel(id)}
                   onSaveSearchConfig={handleSaveSearchConfig}
@@ -4612,7 +4611,6 @@ const App = () => {
                 <Suspense fallback={null}>
                   <LazySavedPersonaConfirmDialog
                     savedConfirm={savedConfirm}
-                    theme={activeTheme}
                     t={t}
                     onClose={() => setSavedConfirm(null)}
                     onView={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }}

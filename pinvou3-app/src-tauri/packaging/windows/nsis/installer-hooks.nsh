@@ -70,6 +70,13 @@ pinvou_vc_redist_install:
 
   IntCmp $5 0 pinvou_vc_redist_ready 0 0
   IntCmp $5 3010 pinvou_vc_redist_reboot 0 0
+  ; 1638 = ERROR_PRODUCT_VERSION ("another version of this product is
+  ; already installed"): for the VC++ redistributable this fires when a
+  ; newer runtime is present, so continue without touching it. This
+  ; outcome is reachable when the registry version values above are stale
+  ; or missing while a newer runtime is actually installed - aborting here
+  ; would leave the machine un-installable despite an adequate runtime.
+  IntCmp $5 1638 pinvou_vc_redist_ready 0 0
   IntCmp $5 1632 pinvou_vc_redist_temp_failed 0 0
   IntCmp $5 -2147023264 pinvou_vc_redist_temp_failed 0 0
   IntCmp $5 1641 pinvou_vc_redist_reboot pinvou_vc_redist_exit_failed pinvou_vc_redist_exit_failed
@@ -140,6 +147,86 @@ pinvou_vc_redist_ready:
     DetailPrint "Configuring the bundled runtime environment (PINVOU3_PYTHON)..."
     !insertmacro PinvouRunRuntimeEnv Install true
   !endif
+!macroend
+
+; Remove the prompting user's application data behind the delete-app-data
+; checkbox. The uninstaller runs elevated, and under over-the-shoulder
+; elevation (a standard user supplies different admin credentials) the
+; shell constants - $PROFILE, $APPDATA, $LOCALAPPDATA, like
+; SetShellVarContext current - resolve against the elevation token's
+; account, so deleting through them could wipe the admin's data instead of
+; the prompting user's (the MSI custom action runs Impersonate="yes" and
+; stays correct). Resolve the interactive session owner's profile through
+; pinvou-user-profile.ps1 (session-scoped, SID-matched, fail-closed) and
+; derive every deletion target from the resolved path, and fail safe: when
+; the owner cannot be determined unambiguously, keep the data and tell the
+; user how to remove it manually instead of guessing a profile to wipe.
+!macro PinvouDeleteInteractiveUserData
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "/oname=$PLUGINSDIR\pinvou-user-profile.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\pinvou-user-profile.ps1"
+  ; Transport contract: the resolver prints ONLY ASCII - the resolved path
+  ; encoded as lowercase hex of its UTF-16LE code units (four digits per
+  ; unit) - so the exchange is lossless under every OEM code page (ASCII is
+  ; a fixed point of all of them, including 65001) and no consumer-side
+  ; text decoding is trusted. /OEM stays: on an ASCII payload it is an
+  ; identity transform, and the separate-argument form is still required by
+  ; the nsExec switch parser. On spawn failure nsExec pushes the literal
+  ; "error", and LogicLib "=" is numeric ("error" parses as 0), so the
+  ; guard must string-compare ("==").
+  nsExec::ExecToStack /OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-user-profile.ps1"'
+  Pop $8
+  Pop $9
+  ; Positional decode with per-unit validation: every four-digit unit is
+  ; hex-parsed, re-encoded canonically with %04x, and compared back to its
+  ; source before acceptance - an uppercase digit, a non-hex character, or
+  ; an odd trailing length fails the round-trip. A decoded zero unit is
+  ; rejected EXPLICITLY (U+0000 cannot appear in a Win32 path and would
+  ; terminate the accumulator string; the canonical round-trip alone would
+  ; not reject it - "0000" re-encodes to "0000" and the %c append silently
+  ; contributes nothing, letting a spliced path pass). All malformed shapes
+  ; land in the keep-data branch. Surrogate pairs for non-BMP characters
+  ; (emoji) ride through as two ordinary units.
+  StrCpy $R2 ""
+  StrCpy $R6 0
+  ${If} $8 == 0
+  ${AndIf} $9 != ""
+    StrLen $R0 $9
+    IntOp $R1 $R0 % 4
+    ${If} $R1 == 0
+      StrCpy $R3 0
+      ${While} $R3 < $R0
+        StrCpy $R4 "$9" 4 $R3
+        IntOp $R1 "0x$R4" + 0
+        IntFmt $R5 "%04x" $R1
+        ${If} $R5 != $R4
+          ${ExitWhile}
+        ${EndIf}
+        ${If} $R1 == 0
+          ${ExitWhile}
+        ${EndIf}
+        IntFmt $R5 "%c" $R1
+        StrCpy $R2 "$R2$R5"
+        IntOp $R3 $R3 + 4
+      ${EndWhile}
+      ${If} $R3 == $R0
+      ${AndIf} $R2 != ""
+        StrCpy $R6 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $R6 == 1
+    ; Every target derives from the resolved profile: the two bundle-id
+    ; app-data folders carry user data (the WebView2 profile with its
+    ; localStorage/IndexedDB/cookies plus logs), not just caches, so they
+    ; follow the resolved user - never the elevation token.
+    RmDir /r "$R2\AppData\Roaming\${BUNDLEID}"
+    RmDir /r "$R2\AppData\Local\${BUNDLEID}"
+    RmDir /r "$R2\.pinvou3"
+  ${Else}
+    DetailPrint "Could not identify the interactive user's profile; their app data was kept (resolver: $8)."
+    MessageBox MB_ICONEXCLAMATION|MB_OK "无法确认当前交互用户的用户目录，已保留其应用数据（~/.pinvou3 与应用数据目录）；如需删除请在您自己的账户下手动移除这些目录。$\r$\nCould not identify the interactive user's profile, so their application data (~/.pinvou3 and the app data folders) has been kept. To delete it, remove those folders manually under your own account.$\r$\n現在の対話ユーザーのプロファイルを特定できなかったため、そのアプリデータ（~/.pinvou3 とアプリデータフォルダー）は残しています。削除する場合はご自身のアカウントで手動で削除してください。" /SD IDOK
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
