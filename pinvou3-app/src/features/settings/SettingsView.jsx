@@ -64,6 +64,12 @@ import {
 // (handleLocalModelAdd)、端点单行(handleEndpointModelPick)、批量确认
 // (confirmAddAllEndpointModels);查册的入口彼此互斥,弹窗重开不丢。
 const inFlightModelCreates = new Set();
+// settled-but-maybe-unlisted 簿(复审 P2 r5):挂在既有 Set 的实例属性上而非
+// 新顶层绑定——本文件任何顶层绑定的增删都会改变 rollup 的 chunk 拆分边界,
+// 实测让某个 lazy view chunk 模块求值顺序翻转入 TDZ(Cannot access 'br'
+// before initialization)。跨弹窗实例/设置重开存活。
+inFlightModelCreates.committed = new Set();
+inFlightModelCreates.listed = new Set();
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -972,7 +978,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
             // 本批行永远落在确认时刻的端点上。
             const rowIdentity = modelDuplicationKey(row.id, confirmBaseUrl);
-            if (inFlightModelCreates.has(rowIdentity) || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
+            // 复审 P2 r5:实时镜像(模块级 live listed set)是本行的权威——
+            // 闭包三源停在首次 await 前,重开弹窗在本行等待期间落库的同一
+            // 身份只出现在实时镜像里。
+            if (inFlightModelCreates.has(rowIdentity) || inFlightModelCreates.listed.has(rowIdentity)
+              || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
             inFlightModelCreates.add(rowIdentity);
             batchIdentities.push(rowIdentity);
             await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
@@ -1641,7 +1651,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
                   const rowKey = modelDuplicationKey(row.model, row.base_url);
                   // 在途身份(任一入口,跨弹窗重开)与已保存同等禁行(复审 P2×2):
                   // 保存待定时旧列表不得把同一身份显示成可添加。
-                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey) || pendingSavedKeys.has(rowKey);
+                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey) || pendingSavedKeys.has(rowKey)
+                    || (inFlightModelCreates.listed && inFlightModelCreates.listed.has(rowKey));
                   return (
                     <LocalModelRow key={row.key} row={row} saved={rowSaved} busyAny={localAddBusyKey}
                       settingsCopy={settingsCopy} actionClass={actionClass} mutedText={mutedText}
@@ -3227,6 +3238,18 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       };
       // filter already returns a fresh array; no extra spread needed.
       const userModels = (savedModels || []).filter(model => model && model.id);
+      // 已保存身份的**实时镜像**+committed 簿清理(复审 P2 r5,zhuowp「检查
+      // 与提交共享实时身份状态」):两者都必须活在 **SettingsView 层**——
+      // modal 内的 effect 随弹窗实例死亡;旧批次的闭包正是旧实例,新弹窗
+      // 在其等待期间落库的身份只有这一层能同时记账与出簿。Set 突变,
+      // 无 setState——本组件渲染链实测脆弱(不做 setState-in-effect)。
+      useEffect(() => {
+        const listed = savedModelKeys(userModels);
+        inFlightModelCreates.listed = listed;
+        for (const key of [...inFlightModelCreates.committed]) {
+          if (listed.has(key)) inFlightModelCreates.committed.delete(key);
+        }
+      });
       // (model id + base_url) identity keys of saves that COMMITTED but are
       // not yet confirmed by the models list. Complements the module-level
       // in-flight registry: the registry holds identities until the save

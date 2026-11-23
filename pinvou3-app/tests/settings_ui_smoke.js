@@ -622,7 +622,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const rowKey = modelDuplicationKey\(row\.model, row\.base_url\);[\s\S]{0,300}const rowSaved = endpointSavedKeys\.has\(rowKey\) \|\| inFlightModelCreates\.has\(rowKey\) \|\| pendingSavedKeys\.has\(rowKey\);/,
+  /const rowKey = modelDuplicationKey\(row\.model, row\.base_url\);[\s\S]{0,300}const rowSaved = endpointSavedKeys\.has\(rowKey\) \|\| inFlightModelCreates\.has\(rowKey\) \|\| pendingSavedKeys\.has\(rowKey\)\s*\|\| \(inFlightModelCreates\.listed && inFlightModelCreates\.listed\.has\(rowKey\)\);/,
   'local-detect row adds must reuse the picker dedup key over the same saved set, PLUS the module-level in-flight registry (review P2×2: a pending save from ANY entry — surviving a modal remount — must disable the row the same way a saved identity does)',
 );
 // 复审 P2×2(跨入口在途互斥):模块级注册表是唯一跨弹窗重开存活的在途
@@ -650,7 +650,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /if \(inFlightModelCreates\.has\(rowIdentity\) \|\| endpointSavedKeys\.has\(rowIdentity\) \|\| pendingSavedKeys\.has\(rowIdentity\)\) continue;/,
+  /if \(inFlightModelCreates\.has\(rowIdentity\) \|\| inFlightModelCreates\.listed\.has\(rowIdentity\)\s*\|\| endpointSavedKeys\.has\(rowIdentity\) \|\| pendingSavedKeys\.has\(rowIdentity\)\) continue;/,
   'the confirmed batch loop must skip rows whose identity another entry put in flight while the dialog was open',
 );
 // r3 复审补全(刷新失败分支 + 在飞禁关层 + PR 声明两钉):查册在落库落定时
