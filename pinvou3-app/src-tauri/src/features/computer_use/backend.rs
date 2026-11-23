@@ -377,7 +377,15 @@ fn worker_loop(
     factory: BackendFactory,
     rx: Receiver<BackendRequest>,
     startup: Sender<Result<(), ComputerUseError>>,
+    cleanup_pending: Arc<AtomicBool>,
 ) {
+    // The worker deliberately holds NO sender of `rx`: the Drop path drops
+    // the last external sender and relies on `rx.recv()` observing the
+    // disconnect so a worker wedged in an OS call exits on its own once the
+    // call unwinds (see `BackendInner::drop`). A sender clone kept for
+    // requeueing would silence that disconnect forever and leak the thread
+    // on every teardown — parked requests below are held in a local slot
+    // instead, never re-sent into the channel.
     install_worker_panic_redaction();
     let mut backend = match factory() {
         Ok(backend) => {
@@ -389,7 +397,31 @@ fn worker_loop(
             return;
         }
     };
-    while let Ok(request) = rx.recv() {
+    // (#897 review P2 round 3: the cleanup reservation) While an emergency
+    // cleanup is pending on this handle, an OpenApp must not execute ahead
+    // of it: the whole point of the synchronous enqueue is that the release
+    // precedes anything a re-granted session opens. A probe that fell back
+    // to Deferred (the state mutex busy) enqueues late, so the reservation —
+    // not the queue position — carries the ordering: the open parks in this
+    // local FIFO slot until the cleanup flag clears, which every dispatch
+    // arm sets right after its enqueue (or its decision not to enqueue). The
+    // cycle is bounded: the flag always clears, and the parked requests are
+    // resumed at the top of the very next iteration with no polling. Only
+    // OpenApp parks — it is the one request whose EXECUTION feeds the kill
+    // list the cleanup terminates; a parked type/drag has no ordering
+    // contract with the wind-down. Control requests (the cleanup's own) are
+    // exempt by the guard's control term.
+    fn reservation_parks(request: &BackendRequest, cleanup_pending: &AtomicBool) -> bool {
+        !request.control
+            && cleanup_pending.load(Ordering::SeqCst)
+            && matches!(request.kind, BackendRequestKind::OpenApp { .. })
+    }
+    // Outcome of one request's full pre-execution checks and dispatch.
+    enum Flow {
+        Continue,
+        Exit,
+    }
+    fn handle_request(backend: &mut Box<dyn ComputerUseBackend>, request: BackendRequest) -> Flow {
         // Check the cancel flag after dequeue and before execution: a request the caller
         // has abandoned (timeout) or that a control request / Drop has cancelled (see
         // `BackendInner::cancel_live_requests`) is not executed. Multi-event injection
@@ -408,7 +440,7 @@ fn worker_loop(
                 "request was cancelled before it executed (caller timeout, stop, or revoke); \
                  nothing was injected",
             )));
-            continue;
+            return Flow::Continue;
         }
         // Hand the cancel flag to the backend before dispatch: multi-event injection (type)
         // checks it between events so a request the caller has abandoned stops injecting.
@@ -433,8 +465,9 @@ fn worker_loop(
         match dispatched {
             Ok(Some(result)) => {
                 let _ = request.reply.send(result);
+                Flow::Continue
             }
-            Ok(None) => return,
+            Ok(None) => Flow::Exit,
             Err(panic) => {
                 // Deref first: `&panic` would unsize-coerce the Box itself to
                 // `&dyn Any` (a Box is also `Any`), and every payload downcast
@@ -447,7 +480,54 @@ fn worker_loop(
                     "the computer use backend panicked while handling the request; \
                      the action may have partially executed",
                 )));
+                Flow::Continue
             }
+        }
+    }
+    // OpenApps parked behind a pending cleanup, in arrival order.
+    let mut parked: Vec<BackendRequest> = Vec::new();
+    loop {
+        // Resume parked opens the moment the reservation clears (the
+        // cleanup's own control request just dispatched in the previous
+        // iteration). The guard is re-checked per request: a fresh cleanup
+        // starting mid-resume outranks the remaining parked opens again.
+        if !parked.is_empty() && !cleanup_pending.load(Ordering::SeqCst) {
+            for request in std::mem::take(&mut parked) {
+                if reservation_parks(&request, &cleanup_pending) {
+                    parked.push(request);
+                    continue;
+                }
+                if let Flow::Exit = handle_request(&mut backend, request) {
+                    return;
+                }
+            }
+        }
+        let Ok(request) = rx.recv() else {
+            // Disconnect: every sender dropped. Reached in production only
+            // by a worker wedged in an OS call whose teardown detached
+            // instead of joining — the same silence that wedged case
+            // already carries. Parked requests drop unreplied here; their
+            // flags were set by the teardown's cancel_live_requests, and
+            // callers time out against their own budget as they already do
+            // for a request stranded behind a wedged dispatch.
+            break;
+        };
+        if reservation_parks(&request, &cleanup_pending) {
+            parked.push(request);
+            continue;
+        }
+        if let Flow::Exit = handle_request(&mut backend, request) {
+            // Shutdown (sent by `BackendInner::drop` after cancelling every
+            // queued flag): parked siblings get the same cancelled reply as
+            // queued ones — dropping them unreplied would strand their
+            // callers on the full call budget with no answer.
+            for request in std::mem::take(&mut parked) {
+                let _ = request.reply.send(Err(ComputerUseError::unavailable(
+                    "request was cancelled before it executed (caller timeout, stop, or revoke); \
+                     nothing was injected",
+                )));
+            }
+            return;
         }
     }
 }
@@ -492,6 +572,15 @@ struct BackendInner {
     /// to 1, and excess calls fail immediately instead of queueing onto
     /// threads.
     in_flight: AtomicBool,
+    /// (#897 review P2 round 3) True from the moment a Stop/revoke schedules
+    /// an emergency cleanup until that cleanup's requests are enqueued (or
+    /// the cleanup decides there is nothing to enqueue). The worker parks a
+    /// queued OpenApp at the tail while this is set, so a cleanup that fell
+    /// back to Deferred (state mutex busy) still terminates the apps of the
+    /// grant being revoked before any app a re-granted session opens —
+    /// queue position alone cannot carry that ordering across a busy probe.
+    /// Shared across handle clones (Arc).
+    cleanup_pending: Arc<AtomicBool>,
     /// Cancel flags of every action request currently queued on or executing
     /// in the worker (registered in `request_inner`, pruned when consumed).
     /// Control requests (emergency stop / revoke / shutdown) set every flag
@@ -521,8 +610,10 @@ impl BackendInner {
                 // payload redaction for every worker panic.
                 let thread = match std::thread::Builder::new()
                     .name(WORKER_THREAD_NAME.to_string())
-                    .spawn(move || worker_loop(factory, rx, startup_tx))
-                {
+                    .spawn({
+                        let cleanup_pending = Arc::clone(&self.cleanup_pending);
+                        move || worker_loop(factory, rx, startup_tx, cleanup_pending)
+                    }) {
                     Ok(thread) => thread,
                     Err(error) => {
                         // Sticky failure, same as the factory-error branch below: the
@@ -850,9 +941,13 @@ impl BackendInner {
     ///   before anything a later re-grant of the session can enqueue, which
     ///   is what keeps the wind-down take() bound to the revoked grant;
     /// - guard busy / `StartFailed` / `Shutdown` → `Deferred`: the caller
-    ///   falls back to the detached blocking cleanup. A busy guard means a
-    ///   lazy start or teardown is in flight, so this backend cannot hold
-    ///   recorded open apps yet — the queue-position binding is not needed.
+    ///   falls back to the detached blocking cleanup. A busy guard can also
+    ///   be an ORDINARY request cloning its sender (the round-3 correction):
+    ///   a Running backend with recorded apps can therefore take this arm,
+    ///   which is exactly why the caller arms the `cleanup_pending`
+    ///   reservation before probing — the worker parks OpenApp requests
+    ///   until the fallback's release is enqueued, carrying the ordering
+    ///   the busy window loses.
     fn try_enqueue_emergency_cleanup(&self) -> EmergencyEnqueue {
         let live = self.cancel_live_requests();
         let state = match self.state.try_lock() {
@@ -1010,6 +1105,7 @@ impl BackendHandle {
             inner: Arc::new(BackendInner {
                 state: Mutex::new(WorkerState::Pending(Some(Box::new(factory)))),
                 in_flight: AtomicBool::new(false),
+                cleanup_pending: Arc::new(AtomicBool::new(false)),
                 live_cancels: Mutex::new(Vec::new()),
             }),
         }
@@ -1565,27 +1661,41 @@ fn spawn_emergency_cleanup(handle: BackendHandle) {
 /// immediately when there is nothing to enqueue.
 fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() + Send + 'static) {
     handle.cancel_all_registered_flags();
+    // (#897 review P2 round 3) Arm the reservation BEFORE the probe: the
+    // state mutex can be busy for ordinary requests too (ensure_sender
+    // clones the sender under it for every action), so a busy probe does
+    // NOT imply no recorded apps — the reservation, not the queue position,
+    // carries the ordering into the Deferred arm. Every arm below clears it
+    // exactly when its cleanup requests are enqueued (or it decides there
+    // is nothing to enqueue), bounding the worker's OpenApp parking loop.
+    handle.inner.cleanup_pending.store(true, Ordering::SeqCst);
     match handle.try_enqueue_emergency_cleanup() {
         EmergencyEnqueue::NeverStarted => {
+            handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
             done();
         }
         EmergencyEnqueue::Enqueued(steps) => {
+            // Both requests are already in the queue: release the
+            // reservation so parked opens resume BEHIND them.
+            handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
             std::thread::spawn(move || {
                 await_emergency_steps(steps);
                 done();
             });
         }
         EmergencyEnqueue::Deferred => {
-            // Startup or teardown holds the state mutex (or the state
-            // machine already left Running): the whole blocking cleanup —
-            // enqueue through the blocking `ensure_sender` and the reply
-            // waits — runs on a detached thread, exactly where the
-            // pre-binding shape absorbed these waits. A backend in this
-            // state cannot hold recorded open apps (a Running backend would
-            // have let the try-lock succeed), so the queue-position binding
-            // is not needed here.
+            // The state mutex is busy (an action or a startup holds it) or
+            // the state machine already left Running: the whole blocking
+            // cleanup — enqueue through the blocking `ensure_sender` and
+            // the reply waits — runs on a detached thread, exactly where
+            // the pre-binding shape absorbed these waits. Ordering across
+            // the busy window is carried by the reservation set above: the
+            // worker parks any OpenApp enqueued until this fallback's
+            // release is in the queue and the flag clears.
             std::thread::spawn(move || {
-                match handle.enqueue_emergency_cleanup() {
+                let enqueued = handle.enqueue_emergency_cleanup();
+                handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
+                match enqueued {
                     Ok(steps) => await_emergency_steps(steps),
                     Err(error) => {
                         eprintln!("[computer_use] emergency cleanup enqueue failed: {error}");
@@ -2087,7 +2197,14 @@ mod tests {
                 seen: seen_for_worker,
             }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(
+                factory,
+                req_rx,
+                startup_tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         for _ in 0..2 {
             let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -2123,7 +2240,14 @@ mod tests {
         let factory: BackendFactory = Box::new(|| {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(
+                factory,
+                req_rx,
+                startup_tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         req_tx
@@ -2159,7 +2283,14 @@ mod tests {
         let factory: BackendFactory = Box::new(|| {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(
+                factory,
+                req_rx,
+                startup_tx,
+                Arc::new(AtomicBool::new(false)),
+            )
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         req_tx
@@ -2338,7 +2469,14 @@ mod tests {
             // path and prove nothing.
             let worker = std::thread::Builder::new()
                 .name(WORKER_THREAD_NAME.to_string())
-                .spawn(move || worker_loop(factory, req_rx, startup_tx))
+                .spawn(move || {
+                    worker_loop(
+                        factory,
+                        req_rx,
+                        startup_tx,
+                        Arc::new(AtomicBool::new(false)),
+                    )
+                })
                 .expect("worker spawns");
             assert!(startup_rx.recv().expect("startup channel alive").is_ok());
             let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -2599,8 +2737,8 @@ mod tests {
     }
 
     /// Journals the worker's execution order ("up" per button release,
-    /// "release", "open") so a test can assert which request the serialized
-    /// worker executed first.
+    /// "release", "open <program>") so a test can assert which request the
+    /// serialized worker executed first.
     struct OrderProbeBackend {
         state: Arc<Mutex<Vec<String>>>,
     }
@@ -2690,8 +2828,8 @@ mod tests {
             Ok(None)
         }
 
-        fn open_app(&mut self, _program: &str, _args: &[String]) -> Result<u32, ComputerUseError> {
-            self.state.lock().push("open".to_string());
+        fn open_app(&mut self, program: &str, _args: &[String]) -> Result<u32, ComputerUseError> {
+            self.state.lock().push(format!("open {program}"));
             Ok(4242)
         }
 
@@ -3072,9 +3210,10 @@ mod tests {
         for _ in 0..500 {
             {
                 let state = journal.lock();
-                if state.contains(&"release".to_string()) && state.contains(&"open".to_string()) {
+                if state.contains(&"release".to_string()) && state.contains(&"open app".to_string())
+                {
                     let release = state.iter().position(|op| op == "release").unwrap();
-                    let open = state.iter().position(|op| op == "open").unwrap();
+                    let open = state.iter().position(|op| op == "open app").unwrap();
                     assert!(
                         release < open,
                         "the revoked grant's release must execute before the \
@@ -3138,7 +3277,7 @@ mod tests {
         );
         // Startup completes; the deferred cleanup must still reach the
         // backend (bounded wait, generous against slow CI boxes).
-        starter.join().expect("starter thread");
+        let _ = starter.join().expect("starter thread");
         for _ in 0..1000 {
             if journal.lock().iter().any(|op| op == "release") {
                 return;
@@ -3147,6 +3286,107 @@ mod tests {
         }
         panic!(
             "the deferred cleanup never reached the backend; journal: {:?}",
+            journal.lock()
+        );
+    }
+
+    /// Regression (#897 review P2 round 3): a busy state mutex on a RUNNING
+    /// backend with recorded apps must not drop the cleanup ordering. The
+    /// test parks the state lock itself, forcing the probe down the
+    /// Deferred arm for a backend that HAS opened an app — exactly the
+    /// contended case where queue position alone cannot bind the cleanup.
+    /// The reservation parks the post-revoke open at the worker tail until
+    /// the fallback's release is enqueued, so the release still executes
+    /// first (a blocking-probe or no-reservation shape orders open first).
+    #[test]
+    fn contended_running_deferred_cleanup_still_precedes_post_revoke_open() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        // A recorded app for the grant being revoked: the worker has
+        // executed one open, so the kill list is non-empty.
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Contend: hold the state mutex so the probe's try_lock fails and
+        // the dispatch falls to Deferred while the backend is Running.
+        let state_guard = handle.inner.state.lock();
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-contend", handle.clone());
+        let started = std::time::Instant::now();
+        registry.emergency_release("s-contend");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "Stop/revoke must stay non-blocking on a contended lock; took {:?}",
+            started.elapsed()
+        );
+        // Post-revoke work proceeds while the fallback waits for the lock.
+        drop(state_guard);
+        // The post-revoke open races the fallback's enqueue, and the result
+        // of that race is legitimately either outcome (same shape as
+        // `start_in_flight_capture`): if the cleanup enqueued first, its
+        // control cancel sweep cancels the open (an "unavailable" reply);
+        // if the open queued first, the reservation parks it behind the
+        // release. The invariant under test is ordering, not success: the
+        // release must never follow the post-revoke open's execution — and
+        // a successfully-replied open must eventually execute (the parked
+        // slot must drain, not strand the re-granted session). The open
+        // runs on a helper thread with a bounded wait: a stranded park
+        // (no reply ever) must surface as a fast failure, not burn the
+        // 700s call budget turning the red into a CI timeout.
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the post-revoke open was stranded without any reply \
+                     (the parked slot never drained)"
+                )
+            });
+
+        let mut polls_since_release = None;
+        for _ in 0..1000 {
+            {
+                let state = journal.lock();
+                if let Some(release) = state.iter().position(|op| op == "release") {
+                    let wait = polls_since_release.get_or_insert(0);
+                    // The reply and the execution are two separate events;
+                    // give the parked resume a bounded window to land.
+                    if *wait > 100 {
+                        if opened.is_ok() {
+                            let second = state.iter().position(|op| op == "open second");
+                            assert!(
+                                second.is_some(),
+                                "the re-granted session's open replied success but never \
+                                 executed; journal: {state:?}"
+                            );
+                            assert!(
+                                second.unwrap() > release,
+                                "the release must execute before the post-revoke open; \
+                                 journal: {state:?}"
+                            );
+                        }
+                        return;
+                    }
+                    *wait += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the worker never executed the deferred release; journal: {:?}",
             journal.lock()
         );
     }
