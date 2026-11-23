@@ -574,6 +574,21 @@ for (const language of ['zh', 'en', 'ja']) {
       ['session is fully closed', 'セッションを完全に閉じた', '会话完全关闭'],
     ],
     ['virtualNoteWindows', 'grantWindowsCaveat', ['Alt+Tab', 'Alt+Tab', 'Alt+Tab']],
+    // (#897 review P2) the Windows stack winds down the agent-opened apps
+    // at Stop/revoke (like Linux), so the user-facing pair must promise
+    // the same kill-and-unsaved-work truth the Linux pair anchors above —
+    // the old copy claimed Stop does not close the display's apps, which
+    // matched only the broker-escaped and teardown-backstop survivors.
+    [
+      'virtualNoteWindows',
+      'grantWindowsCaveat',
+      ['ends the apps the agent opened there immediately', '直ちに終了します', '会立即结束助手在其中打开的应用'],
+    ],
+    [
+      'virtualNoteWindows',
+      'grantWindowsCaveat',
+      ['unsaved work in them is lost', '保存されていない作業は失われ', '未保存的工作会丢失'],
+    ],
   ];
   for (const [noteKey, caveatKey, anchors] of disclosureAnchors) {
     for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
