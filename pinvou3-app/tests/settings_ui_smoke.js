@@ -387,8 +387,8 @@ assert.match(
 );
 assert.match(
   pickSource,
-  /finally \{\s*pickInFlightRef\.current = false;\s*setPickSavingModel\(false\);\s*\}/,
-  'the in-flight flags must clear on BOTH the success and failure paths so a retry is possible',
+  /finally \{[\s\S]{0,120}pickInFlightRef\.current = false;[\s\S]{0,120}setPickSavingModel\(false\);[\s\S]{0,120}\}/,
+  'the in-flight flags must clear on BOTH the success and failure paths so a retry is possible (the registry unregister may sit alongside them — review P2×2)',
 );
 assert.match(
   settingsViewSource,
@@ -622,8 +622,36 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const rowSaved = endpointSavedKeys\.has\(modelDuplicationKey\(row\.model, row\.base_url\)\);/,
-  'local-detect row adds must reuse the picker dedup key over the same saved set (no self-exclusion: a row add always mints a fresh id, the record being edited is already a collision)',
+  /const rowKey = modelDuplicationKey\(row\.model, row\.base_url\);[\s\S]{0,300}const rowSaved = endpointSavedKeys\.has\(rowKey\) \|\| inFlightModelCreates\.has\(rowKey\);/,
+  'local-detect row adds must reuse the picker dedup key over the same saved set, PLUS the module-level in-flight registry (review P2×2: a pending save from ANY entry — surviving a modal remount — must disable the row the same way a saved identity does)',
+);
+// 复审 P2×2(跨入口在途互斥):模块级注册表是唯一跨弹窗重开存活的在途
+// 身份簿——四个创建入口(doSave/本地行/端点单行/批量确认循环)都必须查册
+// +入册+出册;行为层的重开禁用由 ⑥.5b5/b6 的浏览器用例钉住。
+assert.match(
+  settingsViewSource,
+  /const inFlightModelCreates = new Set\(\);/,
+  'the module-level in-flight identity registry must exist (refs die with the modal instance — only a module store survives a settings reopen)',
+);
+assert.match(
+  settingsViewSource,
+  /const formIdentity = modelDuplicationKey\(model\.trim\(\), baseUrl\.trim\(\)\);\s*if \(inFlightModelCreates\.has\(formIdentity\)\) return;/,
+  'doSave must refuse an identity already in flight from another entry (endpoint pick/batch/local row) — the ref-only shape cannot see across entries or remounts',
+);
+assert.match(
+  settingsViewSource,
+  /const rowIdentity = modelDuplicationKey\(row\.model, row\.base_url\);\s*if \(inFlightModelCreates\.has\(rowIdentity\)\) return;/,
+  'the local row add must refuse an identity already in flight and register its own until the save settles',
+);
+assert.match(
+  settingsViewSource,
+  /const pickIdentity = modelDuplicationKey\(row\.id, baseUrl\.trim\(\)\);\s*if \(inFlightModelCreates\.has\(pickIdentity\)\) return;/,
+  'the endpoint pick must refuse an identity already in flight (the local-save-pending → endpoint re-add repro) and register its own — note rows key on row.id, the payload model field',
+);
+assert.match(
+  settingsViewSource,
+  /if \(inFlightModelCreates\.has\(rowIdentity\)\) continue;/,
+  'the confirmed batch loop must skip rows whose identity another entry put in flight while the dialog was open',
 );
 assert.match(
   settingsViewSource,
@@ -672,7 +700,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /\} finally \{\s*localAddInFlightRef\.current = false;\s*setLocalAddBusyKey\(null\);\s*\}/,
+  /\} finally \{[\s\S]{0,160}localAddInFlightRef\.current = false;[\s\S]{0,160}setLocalAddBusyKey\(null\);[\s\S]{0,160}\}/,
   'the local row-add latch and busy key must clear together in the finally — a success-path-only clear strands the latch on the first failure and silently blocks every later row add (review r2 P2: the loose /setLocalAddBusyKey\\(null\\)/ pin could not see this shape)',
 );
 for (const settingsI18nSource of settingsI18nSources) {
@@ -1383,6 +1411,17 @@ function injectSource() {
               status: 'ready',
               model: 'qwen3-next',
               models: ['qwen3-next'],
+              max_model_len: 262144,
+            }],
+            // ⑥.5b5/b6 跨入口闩锁的未保存身份:8200 行在所有既有用例之后才
+            // 使用,保证进入用例时它一定可添加。
+            8200: [{
+              provider: 'vllm',
+              label: 'vLLM',
+              base_url: 'http://127.0.0.1:8200/v1',
+              status: 'ready',
+              model: 'qwen3-next-2',
+              models: ['qwen3-next-2'],
               max_model_len: 262144,
             }],
           };
@@ -2462,6 +2501,81 @@ async function modalWidth(page, headingText) {
       && localAddFailState.errorVisible && localAddFailState.errorRoleAlert
       && localAddRetry.clicked && localAddRetryState.saved && localAddRetryState.errorGone,
     JSON.stringify({ fail: localAddFail, state: localAddFailState, retry: localAddRetry, retryState: localAddRetryState }));
+
+  // ⑥.5b5/b6 跨入口在途身份互斥(复审 P2×2,J+zhuowp 双审):本地行保存
+  // 待定(saveModelDelay 拉长)时,同一身份的创建从任何入口都必须拒发——
+  // 端点单行(切 tab 走 J 的复现链)与弹窗取消重开(zhuowp 的 ref 清零
+  // 场景;ref 随实例死亡,模块级注册表跨重开存活)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(1500));
+  await setPortDraft('8200');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const b5Arm = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(node =>
+      (node.parentElement.textContent || '').includes('qwen3-next-2'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(300);
+  const inFlightSaves = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+    && item.args && item.args.model && item.args.model.model === 'qwen3-next-2').length);
+  // (b5/b6) 跨入口在途互斥的行为钉:在飞时取消弹窗(实例销毁,ref 全零)
+  // → 重开 → 重新检测出同一行 → 行必须仍禁用(模块级注册表跨重开存活;
+  // ref-only 的旧实现此处行可点、第二笔 save_model 照发)→ 点击零落库;
+  // 延迟过后原保存唯一落库。doSave/端点单行/批量的查册分支由上方源码
+  // 守卫族钉住(行为层的导航脆点不作为断言面)。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(500);
+  const savesBeforeReopen = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+    && item.args && item.args.model && item.args.model.model === 'qwen3-next-2').length);
+  await clickExact(page, '添加模型');
+  await sleep(500);
+  await clickExact(page, '本地模型');
+  await sleep(600);
+  // 重开后探测结果是实例 state、已随取消清空:重新检测让行出现,再断言
+  // 注册表仍在(行禁用)。
+  await setPortDraft('8200');
+  await sleep(200);
+  // 重开后 localDetectResult 为 null,按钮文案是「检测」而非「重新检测」。
+  const reopenProbe = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      dialogOpen: !!dialog,
+      buttons: dialog ? [...dialog.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(t => t && t.length < 8).slice(0, 20) : [],
+      hasPort: document.body.innerText.includes('端口'),
+    };
+  });
+  console.log('DEBUG_REOPEN', JSON.stringify(reopenProbe));
+  await clickExact(page, '检测');
+  await sleep(700);
+  const reopenedRow = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(node =>
+      (node.parentElement.textContent || '').includes('qwen3-next-2'));
+    if (!button) return { found: false };
+    if (!button.disabled) button.click();
+    return { found: true, disabled: button.disabled, clicked: !button.disabled };
+  });
+  await sleep(300);
+  const afterReopenSaves = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+    && item.args && item.args.model && item.args.model.model === 'qwen3-next-2').length);
+  await sleep(1600);
+  const settled = await page.evaluate(() => ({
+    saved: window.__SETTINGS_TEST__.models().filter(item => item.model === 'qwen3-next-2'
+      && item.base_url === 'http://127.0.0.1:8200/v1').length,
+    totalSaves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'qwen3-next-2').length,
+  }));
+  rec('⑥.5b5/b6 跨入口在途互斥:本地待定时取消重开(实例销毁),探测行仍禁用且点击零第二落库,延迟后唯一落库',
+    b5Arm.clicked && inFlightSaves === 1
+      && reopenedRow.found && reopenedRow.disabled
+      && savesBeforeReopen === 1 && afterReopenSaves === 1
+      && settled.saved === 1 && settled.totalSaves === 1,
+    JSON.stringify({ b5Arm, inFlightSaves, savesBeforeReopen, reopenedRow, afterReopenSaves, settled }));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  await setPortDraft('');
 
   await clickExact(page, '添加模型');
   await sleep(300);

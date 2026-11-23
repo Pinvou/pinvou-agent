@@ -55,6 +55,16 @@ import {
   splitBatchAdd,
 } from './endpoint-model-picker-logic.js';
 
+// 在途的模型创建身份(modelDuplicationKey 字符串,模块级)。模块级是有意的:
+// 各入口的 ref/local state 都活在当前 ModelFormModal 实例上,关闭设置重开
+// (或弹窗重挂)会把它们清零——而保存 IPC 仍在飞,旧列表按未刷新的已保存集
+// 把同一身份显示成可添加,每个入口都能再落一次(复审 P2×2)。身份在派发
+// 保存前入册,落定(成功或失败)后出册;成功侧随 models 刷新自然移交
+// savedKeys 守卫。所有创建入口共用这一册:doSave(表单保存)、本地候选行
+// (handleLocalModelAdd)、端点单行(handleEndpointModelPick)、批量确认
+// (confirmAddAllEndpointModels);查册的入口彼此互斥,弹窗重开不丢。
+const inFlightModelCreates = new Set();
+
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
 }
@@ -893,8 +903,14 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // 批量确认弹窗挂着时同样禁入——挂起批次是「添加前」的旧快照,单行
         // 若在其窗口内落库,确认后的批量保存会把它当未保存行再落一次。
         if (pickInFlightRef.current || savingModel || addingAllModels || addAllModelsConfirm) return;
+        // 与本地行/表单保存互斥(复审 P2×2):本地保存待定时经正常界面操作
+        // 切到端点行,同一 (model, base_url) 不得再落一次;注册表跨弹窗重开
+        // 存活,重开后同样拒发。
+        const pickIdentity = modelDuplicationKey(row.id, baseUrl.trim());
+        if (inFlightModelCreates.has(pickIdentity)) return;
         pickInFlightRef.current = true;
         setPickSavingModel(true);
+        inFlightModelCreates.add(pickIdentity);
         try {
           await onSave(buildEndpointModelPayload(row));
           setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
@@ -903,6 +919,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
         finally {
+          inFlightModelCreates.delete(pickIdentity);
           pickInFlightRef.current = false;
           setPickSavingModel(false);
         }
@@ -916,7 +933,12 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // 同 tick、pickSavingModel/savingModel 盖保存 IPC+刷新窗口)禁入——
         // 此刻的去重快照会把正在保存的那一行当成未保存,确认后重复落库。
         if (addingAllModels || pickInFlightRef.current || pickSavingModel || savingModel || !endpointListing) return;
-        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
+        // 快照同样剔除在途身份(复审 P2×2):本地行/表单保存待定时打开批量
+        // 确认,挂起批次不得把在途行当成未保存——确认后循环会再查一次册,
+        // 这里先摘一行是一行。
+        const batchSavedKeys = new Set(endpointSavedKeys);
+        for (const key of inFlightModelCreates) batchSavedKeys.add(key);
+        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), batchSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
         // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
         // 以在批量保存循环进行中改 URL(URL 变更清扫只摘弹窗,已开跑的循环
@@ -935,10 +957,18 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
         setAddingAllModels(true);
         let added = 0;
+        // 循环内逐行查册+入册(复审 P2×2):确认弹窗挂着期间,另一入口(本地
+        // 行/表单保存)可能已把快照里的某行落库——命中在途或已保存身份的行
+        // 跳过,不重复落库;批量互查与单行入口共用同一册。
+        const batchIdentities = [];
         try {
           for (const row of addable) {
             // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
             // 本批行永远落在确认时刻的端点上。
+            const rowIdentity = modelDuplicationKey(row.id, confirmBaseUrl);
+            if (inFlightModelCreates.has(rowIdentity)) continue;
+            inFlightModelCreates.add(rowIdentity);
+            batchIdentities.push(rowIdentity);
             await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
             added += 1;
           }
@@ -953,7 +983,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           // (表单状态行在遮罩下方不可见,复审 M4)。
           setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
-        finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
+        finally {
+          for (const rowIdentity of batchIdentities) inFlightModelCreates.delete(rowIdentity);
+          setAddingAllModels(false); setAddAllModelsConfirm(null);
+        }
       }
       // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
       // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
@@ -1079,6 +1112,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // form navigation must not interleave with this save (two mints for
         // one identity — the contract this guard family enforces).
         if (!canSave || savingModel || duplicateSaved || localAddInFlightRef.current) return;
+        // 在途身份互斥(复审 P2×2):端点单行/批量或本地行添加在飞且身份相同
+        // 时,本入口直接拒发——弹窗重开后 ref 全部清零,只有模块级注册表还
+        // 记得这笔在途创建。
+        const formIdentity = modelDuplicationKey(model.trim(), baseUrl.trim());
+        if (inFlightModelCreates.has(formIdentity)) return;
         const id = initial.__new ? makeModelId() : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
@@ -1093,6 +1131,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
         setSavingModel(true);
         setSaveError('');
+        inFlightModelCreates.add(formIdentity);
         try {
           await onSave({
             id, name: saveName, preset,
@@ -1119,6 +1158,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
           setSaveError(String(e && e.message ? e.message : e));
         } finally {
+          inFlightModelCreates.delete(formIdentity);
           setSavingModel(false);
         }
       }
@@ -1220,7 +1260,12 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // same mutex so a row add can never interleave with a form save, an
         // endpoint row add, or the add-all batch.
         if (localAddInFlightRef.current || savingModel || pickInFlightRef.current || addingAllModels || addAllModelsConfirm) return;
+        // 同一身份的创建已在途(端点单行/批量/表单保存,或弹窗重开前的旧
+        // 入口)时拒发——模块级注册表跨重开存活(复审 P2×2)。
+        const rowIdentity = modelDuplicationKey(row.model, row.base_url);
+        if (inFlightModelCreates.has(rowIdentity)) return;
         localAddInFlightRef.current = true;
+        inFlightModelCreates.add(rowIdentity);
         setLocalAddBusyKey(row.key);
         setLocalAddError('');
         try {
@@ -1233,6 +1278,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           setLocalAddError(String(error && error.message ? error.message : error));
         } finally {
           localAddInFlightRef.current = false;
+          inFlightModelCreates.delete(rowIdentity);
           setLocalAddBusyKey(null);
         }
       }
@@ -1571,7 +1617,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
                   // deliberately not memoized (React Compiler early-return
                   // structure constraint; rebuilding the key set is
                   // sub-millisecond).
-                  const rowSaved = endpointSavedKeys.has(modelDuplicationKey(row.model, row.base_url));
+                  const rowKey = modelDuplicationKey(row.model, row.base_url);
+                  // 在途身份(任一入口,跨弹窗重开)与已保存同等禁行(复审 P2×2):
+                  // 保存待定时旧列表不得把同一身份显示成可添加。
+                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey);
                   return (
                     <LocalModelRow key={row.key} row={row} saved={rowSaved} busyAny={localAddBusyKey}
                       settingsCopy={settingsCopy} actionClass={actionClass} mutedText={mutedText}
@@ -2051,7 +2100,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             onPick={handleEndpointModelPick}
             onAddAll={handleAddAllEndpointModels}
             baseUrl={baseUrl.trim()}
-            savedKeys={endpointSavedKeys}
+            savedKeys={(() => { const keys = new Set(endpointSavedKeys); for (const k of inFlightModelCreates) keys.add(k); return keys; })()}
             addNotice={endpointAddResult}
             pickBusy={pickSavingModel || savingModel}
             t={t}
