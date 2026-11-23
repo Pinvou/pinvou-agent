@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -223,6 +223,10 @@ enum BackendRequestKind {
     /// Drain the backend's accumulated action warnings (see the trait method
     /// of the same name). Never fails.
     TakeWarnings,
+    /// Internal no-op that only wakes an idle worker (see
+    /// [`BackendInner::release_cleanup_reservation`]): touches no backend
+    /// method and carries no reply a caller reads.
+    Wake,
     Shutdown,
 }
 
@@ -339,6 +343,7 @@ fn dispatch(
             Err(error) => return Some(Err(error)),
         },
         BackendRequestKind::TakeWarnings => BackendReply::Warnings(backend.take_warnings()),
+        BackendRequestKind::Wake => BackendReply::Unit,
         BackendRequestKind::Shutdown => return None,
     };
     Some(Ok(result))
@@ -377,7 +382,7 @@ fn worker_loop(
     factory: BackendFactory,
     rx: Receiver<BackendRequest>,
     startup: Sender<Result<(), ComputerUseError>>,
-    cleanup_pending: Arc<AtomicBool>,
+    cleanup_pending: Arc<AtomicUsize>,
 ) {
     // The worker deliberately holds NO sender of `rx`: the Drop path drops
     // the last external sender and relies on `rx.recv()` observing the
@@ -403,17 +408,18 @@ fn worker_loop(
     // precedes anything a re-granted session opens. A probe that fell back
     // to Deferred (the state mutex busy) enqueues late, so the reservation —
     // not the queue position — carries the ordering: the open parks in this
-    // local FIFO slot until the cleanup flag clears, which every dispatch
-    // arm sets right after its enqueue (or its decision not to enqueue). The
-    // cycle is bounded: the flag always clears, and the parked requests are
-    // resumed at the top of the very next iteration with no polling. Only
-    // OpenApp parks — it is the one request whose EXECUTION feeds the kill
-    // list the cleanup terminates; a parked type/drag has no ordering
-    // contract with the wind-down. Control requests (the cleanup's own) are
-    // exempt by the guard's control term.
-    fn reservation_parks(request: &BackendRequest, cleanup_pending: &AtomicBool) -> bool {
+    // local FIFO slot until the reservation count reaches zero (each
+    // in-flight cleanup releases exactly its own count when its requests
+    // are enqueued, or it decides there is nothing to enqueue). The cycle
+    // is bounded: counts always drain, and the last release also wakes an
+    // idle worker so the parked slot drains at the very next loop-top with
+    // no polling. Only OpenApp parks — it is the one request whose
+    // EXECUTION feeds the kill list the cleanup terminates; a parked
+    // type/drag has no ordering contract with the wind-down. Control
+    // requests (the cleanup's own) are exempt by the guard's control term.
+    fn reservation_parks(request: &BackendRequest, cleanup_pending: &AtomicUsize) -> bool {
         !request.control
-            && cleanup_pending.load(Ordering::SeqCst)
+            && cleanup_pending.load(Ordering::SeqCst) > 0
             && matches!(request.kind, BackendRequestKind::OpenApp { .. })
     }
     // Outcome of one request's full pre-execution checks and dispatch.
@@ -487,11 +493,12 @@ fn worker_loop(
     // OpenApps parked behind a pending cleanup, in arrival order.
     let mut parked: Vec<BackendRequest> = Vec::new();
     loop {
-        // Resume parked opens the moment the reservation clears (the
-        // cleanup's own control request just dispatched in the previous
-        // iteration). The guard is re-checked per request: a fresh cleanup
-        // starting mid-resume outranks the remaining parked opens again.
-        if !parked.is_empty() && !cleanup_pending.load(Ordering::SeqCst) {
+        // Resume parked opens the moment the last reservation releases (the
+        // releasing side also sends a `Wake` so an idle worker gets this
+        // loop-top even with no other traffic). The guard is re-checked per
+        // request: a fresh cleanup starting mid-resume outranks the
+        // remaining parked opens again.
+        if !parked.is_empty() && cleanup_pending.load(Ordering::SeqCst) == 0 {
             for request in std::mem::take(&mut parked) {
                 if reservation_parks(&request, &cleanup_pending) {
                     parked.push(request);
@@ -575,12 +582,15 @@ struct BackendInner {
     /// (#897 review P2 round 3) True from the moment a Stop/revoke schedules
     /// an emergency cleanup until that cleanup's requests are enqueued (or
     /// the cleanup decides there is nothing to enqueue). The worker parks a
-    /// queued OpenApp at the tail while this is set, so a cleanup that fell
-    /// back to Deferred (state mutex busy) still terminates the apps of the
-    /// grant being revoked before any app a re-granted session opens —
+    /// dequeued OpenApp behind this while it is non-zero, so a cleanup that
+    /// fell back to Deferred (state mutex busy) still terminates the apps of
+    /// the grant being revoked before any app a re-granted session opens —
     /// queue position alone cannot carry that ordering across a busy probe.
-    /// Shared across handle clones (Arc).
-    cleanup_pending: Arc<AtomicBool>,
+    /// A COUNT, not a bool: each in-flight cleanup owns one reservation and
+    /// releases exactly its own, so an overlapping cleanup that enqueues
+    /// first cannot open the gate while another cleanup's release is still
+    /// outside the queue. Shared across handle clones (Arc).
+    cleanup_pending: Arc<AtomicUsize>,
     /// Cancel flags of every action request currently queued on or executing
     /// in the worker (registered in `request_inner`, pruned when consumed).
     /// Control requests (emergency stop / revoke / shutdown) set every flag
@@ -724,6 +734,40 @@ impl BackendInner {
             flag.store(true, Ordering::SeqCst);
         }
         live
+    }
+
+    /// Arms one cleanup's cleanup-pending reservation (see the field docs):
+    /// overlapping cleanups each own one count, so cleanup B releasing its
+    /// own cannot open the gate while cleanup A's release is still outside
+    /// the queue.
+    fn acquire_cleanup_reservation(&self) {
+        self.cleanup_pending.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Releases one cleanup's reservation. When the LAST one drops, parked
+    /// opens may resume — but the worker may already be idle in `recv()`
+    /// (it dispatched the enqueued release and looped back while this
+    /// thread was still inside `enqueue_emergency_cleanup`), and the
+    /// loop-top resume only runs between requests. A no-op `Wake` control
+    /// request gives it one more dequeue, so the parked slot drains
+    /// promptly instead of stranding the re-granted session until the next
+    /// unrelated request arrives. Best-effort by design: a NeverStarted
+    /// backend has no worker (and nothing could have parked), and a
+    /// Shutdown/StartFailed backend refuses `ensure_sender`.
+    fn release_cleanup_reservation(&self) {
+        let never_started = matches!(&*self.state.lock(), WorkerState::Pending(_));
+        if self.cleanup_pending.fetch_sub(1, Ordering::SeqCst) == 1 && !never_started {
+            if let Ok(tx) = self.ensure_sender() {
+                let _ = tx.send(BackendRequest {
+                    kind: BackendRequestKind::Wake,
+                    // Same reply-orphan shape as Drop's Shutdown send: the
+                    // worker's reply goes to an already-dropped receiver.
+                    reply: channel::<BackendResult>().0,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    control: true,
+                });
+            }
+        }
     }
 
     /// Drops the registration of a request whose reply the caller received:
@@ -1105,7 +1149,7 @@ impl BackendHandle {
             inner: Arc::new(BackendInner {
                 state: Mutex::new(WorkerState::Pending(Some(Box::new(factory)))),
                 in_flight: AtomicBool::new(false),
-                cleanup_pending: Arc::new(AtomicBool::new(false)),
+                cleanup_pending: Arc::new(AtomicUsize::new(0)),
                 live_cancels: Mutex::new(Vec::new()),
             }),
         }
@@ -1665,19 +1709,21 @@ fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() 
     // state mutex can be busy for ordinary requests too (ensure_sender
     // clones the sender under it for every action), so a busy probe does
     // NOT imply no recorded apps — the reservation, not the queue position,
-    // carries the ordering into the Deferred arm. Every arm below clears it
-    // exactly when its cleanup requests are enqueued (or it decides there
-    // is nothing to enqueue), bounding the worker's OpenApp parking loop.
-    handle.inner.cleanup_pending.store(true, Ordering::SeqCst);
+    // carries the ordering into the Deferred arm. Every arm below releases
+    // exactly its own count when its cleanup requests are enqueued (or it
+    // decides there is nothing to enqueue), bounding the worker's OpenApp
+    // parking loop; the release that reaches zero also wakes an idle
+    // worker so parked opens drain without waiting for other traffic.
+    handle.inner.acquire_cleanup_reservation();
     match handle.try_enqueue_emergency_cleanup() {
         EmergencyEnqueue::NeverStarted => {
-            handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
+            handle.inner.release_cleanup_reservation();
             done();
         }
         EmergencyEnqueue::Enqueued(steps) => {
             // Both requests are already in the queue: release the
             // reservation so parked opens resume BEHIND them.
-            handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
+            handle.inner.release_cleanup_reservation();
             std::thread::spawn(move || {
                 await_emergency_steps(steps);
                 done();
@@ -1694,7 +1740,7 @@ fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() 
             // release is in the queue and the flag clears.
             std::thread::spawn(move || {
                 let enqueued = handle.enqueue_emergency_cleanup();
-                handle.inner.cleanup_pending.store(false, Ordering::SeqCst);
+                handle.inner.release_cleanup_reservation();
                 match enqueued {
                     Ok(steps) => await_emergency_steps(steps),
                     Err(error) => {
@@ -2198,12 +2244,7 @@ mod tests {
             }) as Box<dyn ComputerUseBackend>)
         });
         let worker = std::thread::spawn(move || {
-            worker_loop(
-                factory,
-                req_rx,
-                startup_tx,
-                Arc::new(AtomicBool::new(false)),
-            )
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
         });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         for _ in 0..2 {
@@ -2241,12 +2282,7 @@ mod tests {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
         let worker = std::thread::spawn(move || {
-            worker_loop(
-                factory,
-                req_rx,
-                startup_tx,
-                Arc::new(AtomicBool::new(false)),
-            )
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
         });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -2284,12 +2320,7 @@ mod tests {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
         let worker = std::thread::spawn(move || {
-            worker_loop(
-                factory,
-                req_rx,
-                startup_tx,
-                Arc::new(AtomicBool::new(false)),
-            )
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
         });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -2470,12 +2501,7 @@ mod tests {
             let worker = std::thread::Builder::new()
                 .name(WORKER_THREAD_NAME.to_string())
                 .spawn(move || {
-                    worker_loop(
-                        factory,
-                        req_rx,
-                        startup_tx,
-                        Arc::new(AtomicBool::new(false)),
-                    )
+                    worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
                 })
                 .expect("worker spawns");
             assert!(startup_rx.recv().expect("startup channel alive").is_ok());
@@ -3389,6 +3415,115 @@ mod tests {
             "the worker never executed the deferred release; journal: {:?}",
             journal.lock()
         );
+    }
+
+    /// Round-5 review P2: the fallback releases its reservation AFTER its
+    /// enqueue returns — by then the worker may already have dispatched the
+    /// release and looped back to an idle `recv()`, and the loop-top resume
+    /// only runs between requests. The last release must therefore WAKE the
+    /// worker explicitly (a no-op control request), or a parked open
+    /// strands until the next unrelated request arrives — possibly never.
+    #[test]
+    fn releasing_the_last_reservation_wakes_an_idle_worker_so_parked_opens_drain() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Simulate an in-flight cleanup's reservation and park an open
+        // behind it (the open's reply only arrives when the park drains).
+        handle.inner.acquire_cleanup_reservation();
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "the open must still be parked behind the reservation"
+        );
+        // Release the LAST reservation with the worker otherwise idle (no
+        // channel traffic at all): the wake must drain the parked slot.
+        handle.inner.release_cleanup_reservation();
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the parked open must drain once the last reservation releases");
+        assert!(opened.is_ok(), "the drained open must succeed: {opened:?}");
+        let state = journal.lock();
+        let first = state.iter().position(|op| op == "open first").unwrap();
+        let second = state.iter().position(|op| op == "open second").unwrap();
+        assert!(first < second, "journal: {state:?}");
+    }
+
+    /// Round-5 review P2: reservations are owned per cleanup. With a shared
+    /// bool, cleanup B's release opens the gate while cleanup A's release
+    /// is still outside the queue — the parked open runs ahead of A's
+    /// wind-down. The count must hold until EVERY reservation releases.
+    #[test]
+    fn overlapping_cleanups_hold_the_gate_until_all_reservations_release() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Two overlapping cleanups arm the gate; the post-revoke open parks.
+        handle.inner.acquire_cleanup_reservation();
+        handle.inner.acquire_cleanup_reservation();
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "the open must still be parked behind both reservations"
+        );
+        // Cleanup B finishes (its requests are in the queue): one release
+        // must NOT open the gate for A's still-pending release. A raw wake
+        // gives the worker a dequeue without touching the in-flight gate
+        // (the parked open holds it), so a bool-shaped release would resume
+        // the parked open here and fail the assert.
+        handle.inner.release_cleanup_reservation();
+        {
+            let tx = handle.inner.ensure_sender().expect("worker alive");
+            let _ = tx.send(BackendRequest {
+                kind: BackendRequestKind::Wake,
+                reply: channel::<BackendResult>().0,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                control: true,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "one release must not open the gate while another reservation is held"
+        );
+        // A's release lands; the LAST release drains the parked slot.
+        handle.inner.release_cleanup_reservation();
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the parked open must drain once all reservations release");
+        assert!(opened.is_ok(), "the drained open must succeed: {opened:?}");
+        let state = journal.lock();
+        let first = state.iter().position(|op| op == "open first").unwrap();
+        let second = state.iter().position(|op| op == "open second").unwrap();
+        assert!(first < second, "journal: {state:?}");
     }
 
     /// Regression (round-13 review): a control request (emergency stop /
