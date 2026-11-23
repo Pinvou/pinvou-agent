@@ -1,10 +1,9 @@
 // Scheduled-task result card, lazy chunk: the card renders only when a
 // done app-automations tool item exists on the timeline, so it and its
-// parser live outside the startup entry (the main-entry budget policy in
-// vite.config.mjs — new entry work is split or lazy-loaded). Nothing in
-// the startup graph imports this module: the entry reaches it only through
-// the dynamic import() routed in tool-renderers.jsx, whose source pin and
-// the main-entry budget are what hold the split in place.
+// parser stay outside the startup entry. Nothing in the startup graph
+// imports this module: the entry reaches it only through the dynamic
+// import() routed in tool-renderers.jsx, whose source pin holds the
+// split in place.
 import { parseScheduledTaskToolOutput, scheduledTaskPromptExcerpt } from './scheduled-task-card-logic.js';
 import { unwrapMcpTextEnvelope } from './tool-common.jsx';
 

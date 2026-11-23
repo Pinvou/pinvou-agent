@@ -497,4 +497,6 @@ is synchronous session directory scanning, a full uncapped ACP index parse,
 preferences I/O, and a capped full kinds-registry read on the single worker.
 History projection still performs result/metadata lookups per row. No performance
 optimization, exact-once receipt, origin envelope or native Windows/macOS manual
-acceptance is claimed. The approved entry budget remains 506,000 B on both builds.
+acceptance is claimed. The then-current entry byte ceiling was kept on both
+builds at acceptance time; those build-time ceilings were later removed from
+the frontend build.

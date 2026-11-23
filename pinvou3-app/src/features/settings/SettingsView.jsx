@@ -1232,8 +1232,7 @@ function hasStoredCredential(record) {
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
-      // 「获取模型列表」与「测试连接」共用同一颗蓝色胶囊按钮(样式去重,主入口
-      // chunk 有启动预算红线)。
+      // 「获取模型列表」与「测试连接」共用同一颗蓝色胶囊按钮(样式去重)。
       const actionPillClass = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]';
       // Custom-entry description for the provider model picker and the catalog
       // picker: both key off the same group fields (key/providerKind/preset).
