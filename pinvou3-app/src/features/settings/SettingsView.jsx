@@ -550,6 +550,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // 「全部添加」挂起批次(应用内 ConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
       const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
+      // 确认弹窗 OK 的同步闩(r4 复审 MINOR):addingAllModels 是 state,同 tick
+      // 的第二次派发读不到;两个交错循环虽被注册表挡住重复落库,added 计数
+      // 仍会拆分、收尾提示互相覆盖。与 pickInFlightRef/localAddInFlightRef
+      // 同款:同步置位挡住同一 tick 的第二次点击。
+      const addAllInFlightRef = useRef(false);
       // 最新表单字段镜像(复审 M6):「测试连接」是异步探测,resolve 时空字段
       // 判定必须看当时的输入值,而不是点击瞬间捕获的旧值——否则探测期间用户
       // 手输的 context/max_output 会被过期的「空」判定清掉。每次渲染同步。
@@ -819,7 +824,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // settings_ui_smoke 源码守卫钉住);凭据阶梯与 handleTest 一致——表单新填
       // key 优先。列表只写入 state 打开 picker,不落库。
       async function handleFetchModels() {
-        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
+        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels || savingModel) return;
         const probedBaseUrl = baseUrl.trim();
         if (!probedBaseUrl) return;
         const probedAuth = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
@@ -967,7 +972,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // 关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。老桌面/web 桥
       // 没有 reloadSavedModels 时回退旧行为(逐行全量刷新,不加 options)。
       async function confirmAddAllEndpointModels() {
-        if (!addAllModelsConfirm || addingAllModels) return;
+        if (!addAllModelsConfirm || addingAllModels || addAllInFlightRef.current) return;
+        addAllInFlightRef.current = true;
         const { addable, baseUrl: confirmBaseUrl, preset: confirmPreset } = addAllModelsConfirm;
         const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
         setAddingAllModels(true);
@@ -1007,6 +1013,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         }
         finally {
           for (const rowIdentity of batchIdentities) inFlightModelCreates.delete(rowIdentity);
+          addAllInFlightRef.current = false;
           setAddingAllModels(false); setAddAllModelsConfirm(null);
         }
       }
@@ -1729,6 +1736,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
       const formIdentityKey = modelDuplicationKey(model.trim(), baseUrl.trim());
       const duplicateSaved = formSavedKeys.has(formIdentityKey) || pendingSavedKeys.has(formIdentityKey);
+      // 按钮态与 doSave 的守卫同口径(r4 复审 MINOR):同身份在途(注册表,
+      // 跨弹窗重开存活)或本地行添加挂起时守卫会静默吞掉点击——按钮不得在
+      // 这些窗口里看起来可点。
+      const saveBlockedInFlight = inFlightModelCreates.has(formIdentityKey) || !!localAddBusyKey;
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
@@ -2087,7 +2098,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
                       {/* 获取模型列表:仅显式点击触发探测(规格 §2.6);bridge 方法未
                           就绪(老桌面/白名单未放行)时探活禁用并以 title 提示。 */}
                       <button type="button" data-testid="settings-model-fetch-lists" onClick={handleFetchModels}
-                        disabled={fetchingModels || !baseUrl.trim() || !probeEndpointModelsAvailable}
+                        disabled={fetchingModels || savingModel || !baseUrl.trim() || !probeEndpointModelsAvailable}
                         title={probeEndpointModelsAvailable ? undefined : settingsCopy.fetchUnavailable}
                         className={actionPillClass}>
                         {fetchingModels ? settingsCopy.fetchingModelList : settingsCopy.fetchModelList}
@@ -2130,7 +2141,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
-              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel || duplicateSaved}
+              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel || duplicateSaved || saveBlockedInFlight}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
                 {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>
