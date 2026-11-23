@@ -37,9 +37,10 @@ test('normalizes browser and backend attachment limit failures', () => {
 });
 
 test('renders every hard limit in all supported languages', () => {
-  // The cap itself is still 20 MB — if MAX_FILE_BYTES moves, this fails until
-  // the localized fileTooLarge copy and this pin are consciously re-checked.
-  assert.equal(MAX_FILE_MB, 20, 'MAX_FILE_BYTES moved — re-check the localized fileTooLarge copy and this pin');
+  // The cap moved 20 MB → 50 MB with main's #894 single-constant raise (the
+  // localized fileTooLarge copy derives its figure from the same constant, so
+  // only this pin needed the conscious re-check).
+  assert.equal(MAX_FILE_MB, 50, 'MAX_FILE_BYTES moved — re-check the localized fileTooLarge copy and this pin');
   for (const dictionary of [dictZh, dictEn, dictJa]) {
     // fileTooLarge must be an mb-function in every locale (r17): a static
     // "20 MB" string would silently lie once the shared MAX_FILE_BYTES cap

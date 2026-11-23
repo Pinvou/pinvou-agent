@@ -42,13 +42,13 @@ assert.match(
   /setDocsPaging\(\{ gen: generation, collId, offset: docsPaging\.offset \+ page\.length, hasMore: page\.length >= KB_DOCS_PAGE_SIZE, loading: false \}\);/,
   'the landed continuation page must re-stamp the collection id',
 );
-assert.doesNotMatch(
-  source,
-  /if \(activeColl\) loadDocs\(activeColl\.id\)/,
-  'the completion poll must not reload docs through the effect closure (stale collection)',
-);
+// The completion poll's stale-collection hazard is closed on the rebased
+// base by the shared useIntervalWhen skeleton (#817 B3, KnowledgeView index
+// is one of its four consumers): its callback ref re-syncs after every
+// commit, so the poll always sees the live focused collection — the manual
+// activeCollRef this PR originally pinned is superseded by that contract.
 assert.match(
   source,
-  /if \(activeCollRef\.current\) loadDocs\(activeCollRef\.current\.id\)/,
-  'the completion poll must reload docs through the live collection ref',
+  /useIntervalWhen\(async \(\) => \{[\s\S]{0,200}if \(!s\.running\) \{ loadColls\(\); if \(activeColl\) loadDocs\(activeColl\.id\); \}/,
+  'the completion poll must run through the shared useIntervalWhen skeleton, whose latest-ref dispatch keeps the collection live',
 );
