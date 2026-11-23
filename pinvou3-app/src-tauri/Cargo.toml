@@ -60,9 +60,6 @@ cc = "1"
 # paused clock (#[tokio::test(start_paused = true)]) instead of sleeping the
 # real 2s REBIND_EVICT_GATE_TIMEOUT.
 tokio = { version = "1.49", features = ["test-util"] }
-# computer_use retention test ages a crash-orphaned atomic-write temp past
-# the sweep threshold; pinned to the version already in the lock graph (tar).
-filetime = "0.2.29"
 
 [dependencies]
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
