@@ -23,19 +23,21 @@ pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &Path) ->
 /// addition can never silently reopen the CLI surface — the drift the copy's
 /// own doc warned about.
 ///
-/// 引擎清单单源（CodeWhale #87 `sensitive_paths` 模块）：本清单是引擎清单
-/// 中 Pinvou 摄入门所需子集的登记，下方 `const` 断言把每项锚定在引擎
-/// **组件面** `SENSITIVE_COMPONENT_NAMES` 上（全部 12 项都在该面上；它才是
-/// 与「任意单个路径组件相等」语义对应的面）——引擎侧改名/删除、乃至把
-/// 采纳项迁出组件面（收窄到目录/文件面），都会在编译期失败并强制同步，
-/// 不再靠注释对齐。刻意的引擎残差（不登记）：
-/// 多段目录名（`.config/gcloud` 等——本闸按「任意单个路径组件相等」比较，
-/// 多段字面量永不命中；对应敏感面由引擎 ruleset 按 `~/` 相对拼写承担）、
-/// `.azure`/`.dws`/`.tmeet` 目录、以及仅 home 根敏感的裸文件名
-/// （`credentials`/`secrets`/`.pgp`/`.gpg`/`.netrc`/`.git-credentials`——
-/// 组件面登记会误拦同名工作目录）。注意这些残差在**本摄入闸不设防**：
-/// 引擎对它们的覆盖只在命令 token 面（如 `cat ~/.netrc` 被拒），文件摄入
-/// 路径不在引擎 ruleset 的语义内。`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`
+/// 引擎清单单源（CodeWhale #87 `sensitive_paths` 模块）：本清单分两层登记，
+/// 由下方 `const` 断言逐项强制。**引擎采纳层**（前 12 项）逐项锚定在引擎
+/// **组件面** `SENSITIVE_COMPONENT_NAMES` 上（它才是与「任意单个路径组件
+/// 相等」语义对应的面）——引擎侧改名/删除、乃至把采纳项迁出组件面（收窄
+/// 到目录/文件面），都会在编译期失败并强制同步，不再靠注释对齐。
+/// **App 侧加严层**（`REGISTERED_COMPONENT_EXTRAS`，手机远控审计 #802 补入
+/// 的 36 项）是引擎组件面之外的有意加严：各默认凭据存储的 distinctive
+/// 命名按组件相等拦截，对同名工作目录的误伤按「宁可过宽」标准有意收下
+/// （`.env.example` 被拦同理）；逐项编译期登记并与引擎组件面互斥断言，
+/// 引擎若将来把其中某项补上组件面，登记必须退位改走引擎锚定（编译失败
+/// 强制有意识同步）。引擎侧仍未被本清单采纳的残差（多段目录名、`.dws`/
+/// `.tmeet`、仅 home 根裸文件名 `credentials`/`secrets`/`.pgp`/`.gpg`——
+/// 组件面登记会误拦同名工作目录）由 forkguard 覆盖测试按注释登记；
+/// 它们在引擎侧的覆盖只在命令 token 面，文件摄入路径不在引擎 ruleset
+/// 语义内。`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`
 /// 已迁移为引擎组件面派生（`ID_COMPONENT_KEYS`：#87 评审轮给引擎补上裸
 /// `id_*` 组件面后，按常量上的预登记迁移点改为从
 /// `SENSITIVE_COMPONENT_NAMES` 编译期锚定；Wave 3 动机即 `~/keys/id_rsa`）。
@@ -205,10 +207,12 @@ pub const BLOCKED_COMPONENT_SUFFIXES: &[&str] = &[".env"];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
 ///
-/// 引擎清单单源：本清单 ⊆ 引擎 `SENSITIVE_ABSOLUTE_PREFIXES`（const 断言
-/// 锚定）。引擎残差（`/etc/shadow-`、`/etc/shadow.bak`、`/etc/gshadow-`、
-/// `/etc/sudoers-`、`/etc/sudoers.bak`、`/etc/sudoers.d/`、`/var/log/auth.log`）
-/// 是编辑器/老化备份、碎片目录与轮变体的精确词面——引擎 ruleset 的 token 面
+/// 引擎清单单源：本清单同样分两层，由下方 `const` 断言逐项强制——前 10 项
+/// ⊆ 引擎 `SENSITIVE_ABSOLUTE_PREFIXES`（const 断言锚定），其后是
+/// `REGISTERED_PREFIX_EXTRAS` 登记的 app 侧加严词面（#802 补入）。引擎残差
+/// （`/etc/shadow-`、`/etc/shadow.bak`、`/etc/gshadow-`、`/etc/sudoers-`、
+/// `/etc/sudoers.bak`、`/etc/sudoers.d/`、`/var/log/auth.log`）是编辑器/
+/// 老化备份、碎片目录与轮变体的精确词面——引擎 ruleset 的 token 面
 /// 需要逐一枚举，本闸 `starts_with` 语义下已被 `/etc/shadow`、`/etc/gshadow`、
 /// `/etc/sudoers`、`/var/log/auth` 前缀覆盖，不重复登记。
 pub const BLOCKED_PREFIXES: &[&str] = &[
@@ -329,15 +333,6 @@ pub(crate) const fn inventory_has_joined(inventory: &[&str], prefix: &str, suffi
 /// Wave 3 动机不变：`~/keys/id_rsa` 这类任意目录下的密钥文件。
 const ID_COMPONENT_KEYS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
 
-/// 采纳项逐项锚定在引擎**组件面**上——不是三面 union：本闸按「任意单个
-/// 路径组件相等」阻塞，承重的是引擎组件面（任意 token 语义）。union 断言
-/// 只能保证「仍在某一面上」，引擎把采纳项迁出组件面（例如收窄回目录/文件
-/// 面）会让 app 的组件阻塞比引擎更宽而静默——迁移与改名/删除一样必须
-/// 编译失败、强制有意识同步。
-const fn all_components_in_engine_component_face(entries: &[&str]) -> bool {
-    all_entries_in(entries, sensitive_paths::SENSITIVE_COMPONENT_NAMES)
-}
-
 const fn all_entries_in(entries: &[&str], inventory: &[&str]) -> bool {
     let mut i = 0;
     while i < entries.len() {
@@ -349,10 +344,95 @@ const fn all_entries_in(entries: &[&str], inventory: &[&str]) -> bool {
     true
 }
 
-const fn all_in_engine_prefixes(entries: &[&str]) -> bool {
+/// App 侧组件加严登记：`BLOCKED_COMPONENTS` 在引擎组件面 12 项之外、由手机
+/// 远控审计（#802）补入的 36 项 distinctive 默认凭据存储名。引擎
+/// `sensitive_paths` 不含这些组件面词面（多数以 `~/` 相对文件拼写登记在
+/// 文件/目录面，或按「组件面登记会误拦同名工作目录」的保守原则不收）；
+/// 本应用的摄取闸按宁可过宽标准有意收下这部分误伤。登记纪律：本表恰好
+/// 是 `BLOCKED_COMPONENTS` 对引擎组件面的差集——编译期双向断言，主清单
+/// 新增未登记成员、或引擎把登记项补上组件面（应退位改走引擎锚定），都在
+/// 编译期失败并强制有意识同步。
+const REGISTERED_COMPONENT_EXTRAS: &[&str] = &[
+    ".envrc",
+    ".git-credentials",
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    ".vault-token",
+    ".gitcookies",
+    "credentials.toml",
+    ".git",
+    "application_default_credentials.json",
+    "credentials.db",
+    "msal_token_cache.json",
+    "accessTokens.json",
+    ".azure",
+    "gcloud",
+    ".s3cfg",
+    ".my.cnf",
+    ".msmtprc",
+    "rclone.conf",
+    "credentials.tfrc.json",
+    "id_ed25519_sk",
+    "id_ecdsa_sk",
+    ".gitconfig",
+    ".yarnrc.yml",
+    ".yarnrc",
+    ".authinfo",
+    ".authinfo.gpg",
+    ".wgetrc",
+    ".curlrc",
+    "_curlrc",
+    "_netrc",
+    ".hgrc",
+    ".boto",
+    ".minikube",
+    "adbkey",
+];
+
+/// App 侧前缀加严登记：轮转/备份家族的显式词面（`*` 通配与 `~` 精确枚举，
+/// 引擎按 `.bak`/`-` 精确拼写登记同类备份，本闸 `starts_with` 下已被基础
+/// 前缀覆盖，显式成员是主清单轮转家族纪律的延续）、macOS `/var/root/`
+/// 对位与 pam `/etc/security/opasswd*`——引擎清单未登记，#802 补入。
+/// 登记纪律与组件面同：恰好是 `BLOCKED_PREFIXES` 对引擎前缀清单的差集，
+/// 双向编译期断言。
+const REGISTERED_PREFIX_EXTRAS: &[&str] = &[
+    "/var/log/auth.log*",
+    "/etc/shadow.*",
+    "/etc/shadow~",
+    "/etc/gshadow.*",
+    "/etc/gshadow~",
+    "/etc/sudoers.*",
+    "/etc/sudoers~",
+    "/var/root/",
+    "/etc/security/opasswd*",
+];
+
+/// 采纳层 + 加严层的联合锚定：每项都落在引擎清单或已登记加严层之一。
+/// 三条断言合取后，引擎采纳层逐项被钉死——引擎侧改名/删除让该项既不在
+/// face 也不在 extras，`all_anchored` 红；引擎把 extras 某项补上面，
+/// `all_entries_outside` 红（登记必须退位）；主清单新增未登记成员同样
+/// `all_anchored` 红。迁移与改名/删除一样必须编译失败、强制有意识同步。
+const fn all_anchored(entries: &[&str], face: &[&str], extras: &[&str]) -> bool {
     let mut i = 0;
     while i < entries.len() {
-        if !inventory_contains(sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES, entries[i]) {
+        if !inventory_contains(face, entries[i]) && !inventory_contains(extras, entries[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// 登记层的每项都确实不在引擎清单里（引擎补登记项后，登记必须退位）。
+/// 注意不能写成 `!all_entries_in`：全称量词的否定不等于存在量词——引擎
+/// 只补进登记项中的一两项时 `all_entries_in` 本就为假，取反后恒真，
+/// 退位引信永远不响（突变探针实证过这一坑）。
+const fn all_entries_outside(entries: &[&str], inventory: &[&str]) -> bool {
+    let mut i = 0;
+    while i < entries.len() {
+        if inventory_contains(inventory, entries[i]) {
             return false;
         }
         i += 1;
@@ -362,8 +442,23 @@ const fn all_in_engine_prefixes(entries: &[&str]) -> bool {
 
 // 子集锚定：引擎清单任何一侧的改名/删除让本 crate 编译失败，强制有意识同步。
 const _: () = assert!(
-    all_components_in_engine_component_face(BLOCKED_COMPONENTS),
-    "BLOCKED_COMPONENTS 必须逐项保留在引擎 SENSITIVE_COMPONENT_NAMES 组件面上（改名/删除/迁出组件面都需同步本子集）"
+    all_anchored(
+        BLOCKED_COMPONENTS,
+        sensitive_paths::SENSITIVE_COMPONENT_NAMES,
+        REGISTERED_COMPONENT_EXTRAS
+    ),
+    "BLOCKED_COMPONENTS 必须逐项锚定：引擎组件面或已登记的 app 侧加严层（新增未登记项须同步 REGISTERED_COMPONENT_EXTRAS）"
+);
+const _: () = assert!(
+    all_entries_in(REGISTERED_COMPONENT_EXTRAS, BLOCKED_COMPONENTS),
+    "加严登记必须恰好是 BLOCKED_COMPONENTS 的子集（登记与清单漂移）"
+);
+const _: () = assert!(
+    all_entries_outside(
+        REGISTERED_COMPONENT_EXTRAS,
+        sensitive_paths::SENSITIVE_COMPONENT_NAMES
+    ),
+    "引擎组件面已覆盖某登记加严项——该项应从 REGISTERED_COMPONENT_EXTRAS 退位、改走引擎锚定"
 );
 const _: () = assert!(
     all_entries_in(
@@ -373,8 +468,23 @@ const _: () = assert!(
     "裸 id_* 必须从引擎 SENSITIVE_COMPONENT_NAMES 派生且保留在 BLOCKED_COMPONENTS"
 );
 const _: () = assert!(
-    all_in_engine_prefixes(BLOCKED_PREFIXES),
-    "BLOCKED_PREFIXES 必须逐项存在于引擎 SENSITIVE_ABSOLUTE_PREFIXES"
+    all_anchored(
+        BLOCKED_PREFIXES,
+        sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES,
+        REGISTERED_PREFIX_EXTRAS
+    ),
+    "BLOCKED_PREFIXES 必须逐项锚定：引擎前缀清单或已登记的 app 侧加严层（新增未登记项须同步 REGISTERED_PREFIX_EXTRAS）"
+);
+const _: () = assert!(
+    all_entries_in(REGISTERED_PREFIX_EXTRAS, BLOCKED_PREFIXES),
+    "前缀加严登记必须恰好是 BLOCKED_PREFIXES 的子集（登记与清单漂移）"
+);
+const _: () = assert!(
+    all_entries_outside(
+        REGISTERED_PREFIX_EXTRAS,
+        sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES
+    ),
+    "引擎前缀清单已覆盖某登记加严项——该项应从 REGISTERED_PREFIX_EXTRAS 退位、改走引擎锚定"
 );
 
 /// macOS 把 `/etc`、`/var`、`/tmp` 符号链接到 `/private/...` 下的真实目录;
@@ -1147,11 +1257,13 @@ mod tests {
         assert_eq!(ok, canonical_existing);
     }
 
-    /// 引擎清单单源锚定（const 断言的运行期镜像 + 残差登记）：本闸两份黑名单
-    /// 是引擎 `sensitive_paths` 三份清单的 Pinvou 子集，引擎侧任何改名/删除
-    /// 同时被编译期断言与本用例拦截；残差（引擎有、Pinvou 不登记）按注释
-    /// 登记的集合逐项钉死，改成任何一侧都要有意识。引擎四个面各有覆盖方向
-    /// 循环：引擎新增条目必须被采纳或登记为残差，不再能静默漏过。
+    /// 引擎清单单源锚定（const 断言的运行期镜像 + 残差登记）：本闸两份
+    /// 黑名单分两层——引擎采纳层逐项锚定在引擎对应面上，app 侧加严层
+    /// （`REGISTERED_*_EXTRAS`）逐项登记且与引擎面互斥；引擎侧任何改名/
+    /// 删除同时被编译期断言与本用例拦截；残差（引擎有、Pinvou 不登记）
+    /// 按注释登记的集合逐项钉死，改成任何一侧都要有意识。引擎四个面各有
+    /// 覆盖方向循环：引擎新增条目必须被采纳、登记为残差或（反向）触发
+    /// 加严层退位，不再能静默漏过。
     #[test]
     fn forkguard_blocked_lists_are_the_anchored_subset_of_engine_inventory() {
         use sensitive_paths::{
@@ -1165,18 +1277,44 @@ mod tests {
                 || SENSITIVE_COMPONENT_NAMES.contains(&entry)
         };
 
-        // 子集方向（编译期断言的镜像）：每项都在引擎组件面内——迁移出
-        // 组件面（收窄到目录/文件面）同样要在这里红，强制有意识同步。
+        // 子集方向（编译期断言的镜像）：每项都在引擎组件面或 app 侧加严
+        // 登记内——迁移出组件面（收窄到目录/文件面）同样要在这里红，强制
+        // 有意识同步。
         for entry in BLOCKED_COMPONENTS {
             assert!(
-                SENSITIVE_COMPONENT_NAMES.contains(&entry),
-                "{entry} 应保留在引擎组件面（迁出组件面须有意识同步本清单）"
+                SENSITIVE_COMPONENT_NAMES.contains(&entry)
+                    || REGISTERED_COMPONENT_EXTRAS.contains(&entry),
+                "{entry} 应保留在引擎组件面或 REGISTERED_COMPONENT_EXTRAS（迁出组件面须有意识同步本清单）"
             );
         }
         for entry in BLOCKED_PREFIXES {
             assert!(
-                SENSITIVE_ABSOLUTE_PREFIXES.contains(&entry),
-                "{entry} 应在引擎前缀清单"
+                SENSITIVE_ABSOLUTE_PREFIXES.contains(&entry)
+                    || REGISTERED_PREFIX_EXTRAS.contains(&entry),
+                "{entry} 应在引擎前缀清单或 REGISTERED_PREFIX_EXTRAS"
+            );
+        }
+
+        // 加严登记镜像（编译期双向断言的运行期腿）：登记恰为主清单对引擎
+        // 面的差集——每项都在主清单内且不在引擎面上（引擎补面即触发退位）。
+        for extra in REGISTERED_COMPONENT_EXTRAS {
+            assert!(
+                BLOCKED_COMPONENTS.contains(extra),
+                "{extra} 登记必须在主清单内"
+            );
+            assert!(
+                !SENSITIVE_COMPONENT_NAMES.contains(extra),
+                "{extra} 已进引擎组件面——应从 REGISTERED_COMPONENT_EXTRAS 退位改走引擎锚定"
+            );
+        }
+        for extra in REGISTERED_PREFIX_EXTRAS {
+            assert!(
+                BLOCKED_PREFIXES.contains(extra),
+                "{extra} 登记必须在主清单内"
+            );
+            assert!(
+                !SENSITIVE_ABSOLUTE_PREFIXES.contains(extra),
+                "{extra} 已进引擎前缀清单——应从 REGISTERED_PREFIX_EXTRAS 退位改走引擎锚定"
             );
         }
 
@@ -1191,11 +1329,11 @@ mod tests {
         }
 
         // 刻意的引擎残差：目录面（多段/未采纳目录名——多段字面量在组件相等
-        // 比较下永不命中）。
+        // 比较下永不命中）。`.azure` 已由 #802 采纳进组件黑名单（app 侧
+        // 加严层），不再是残差。
         let dir_residual = [
             ".gnupg/private-keys-v1.d",
             ".config/gcloud",
-            ".azure",
             ".config/google-chrome",
             ".mozilla/firefox",
             ".dws",
@@ -1203,9 +1341,10 @@ mod tests {
         ];
         // 文件面残差：`.ssh/*` 密钥/信任文件以路径拼写登记（`id_*` 组件已改
         // 由引擎组件面经 `ID_COMPONENT_KEYS` 派生，目录类由目录面覆盖）；
-        // 仅 home 根敏感的裸文件名登记会误拦同名工作
-        // 目录；`credentials.json`/`.env` 是引擎注释认可的任意组件敏感面，
-        // Pinvou 已登记。
+        // 仅 home 根敏感的裸文件名登记会误拦同名工作目录（`.netrc`/
+        // `.git-credentials` 已由 #802 采纳进组件黑名单的 app 侧加严层，
+        // 不再是残差）；`credentials.json`/`.env` 是引擎注释认可的任意组件
+        // 敏感面，Pinvou 已登记。
         let file_residual = [
             ".ssh/id_rsa",
             ".ssh/id_ed25519",
@@ -1229,8 +1368,6 @@ mod tests {
             "secrets",
             ".pgp",
             ".gpg",
-            ".netrc",
-            ".git-credentials",
         ];
         for residual in dir_residual.iter().chain(file_residual.iter()) {
             assert!(
@@ -1259,13 +1396,13 @@ mod tests {
             );
         }
 
-        // 前缀面残差：备份/`-` 变体、sudoers.d 与轮变体已被 starts_with 语义
+        // 前缀面残差：`.bak`/`-` 变体、sudoers.d 与轮变体已被 starts_with 语义
         // 覆盖（`/var/log/auth.log` 为 #87 评审轮新增，被采纳的
-        // `/var/log/auth` 前缀覆盖）。
+        // `/var/log/auth` 前缀覆盖）。`/etc/shadow-`/`/etc/gshadow-` 已由
+        // #802 采纳进主前缀清单（且本就在引擎前缀面，走引擎锚定），不再是
+        // 残差。
         for residual in [
-            "/etc/shadow-",
             "/etc/shadow.bak",
-            "/etc/gshadow-",
             "/etc/sudoers-",
             "/etc/sudoers.bak",
             "/etc/sudoers.d/",
