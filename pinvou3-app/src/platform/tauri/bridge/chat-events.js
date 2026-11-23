@@ -298,6 +298,14 @@ function pinvouSharedtauriChatEvents() {
     }
     const content = String(payload.content || "");
     const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
+    // 准入事件只带送模全文：场景路由载荷须还原成用户原文上屏（与历史重放同一
+    // 解析，见 features/chat/scene-payload.js 发布的 window 全局），否则别的设备
+    // 发来的场景消息在这里带着整段路由提示词。事件没有场景 sidecar 记录，只走
+    // 逐字节精确那一级。content 本身仍用于快照比对，不受影响。
+    const scenePayload = window.__PINVOU_SCENE_PAYLOAD__;
+    const splitScenePayload = scenePayload && scenePayload.splitScenePayload;
+    const sceneSplit = !hideInternalRuntimeMessage && splitScenePayload
+      ? splitScenePayload(content, "") : null;
     const operation = String(payload.operation || "append");
     const action = String(payload.action || "");
     const actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -363,12 +371,15 @@ function pinvouSharedtauriChatEvents() {
           flushPendingStreamRender();
           resetPendingAssistant();
         }
-        addChatItem({
+        const userItem = {
           type: "user",
-          text: content,
+          text: sceneSplit ? sceneSplit.text : content,
           time: timeStr(),
           runtimeContextUpdatesBefore: userBuffer.runtimeContextUpdatesPending || 0,
-        });
+        };
+        // 仅展示层，不进 messages/LLM（与本地发送的 uitem.pinvouScene 同一约定）。
+        if (sceneSplit) userItem.pinvouScene = sceneSplit.scene;
+        addChatItem(userItem);
         userBuffer.runtimeContextUpdatesPending = 0;
       }
       state.busy = true;

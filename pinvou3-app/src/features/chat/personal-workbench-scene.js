@@ -74,10 +74,14 @@ function isPersonalWorkbenchTemplateDraftForTemplate(userText, template) {
   return false;
 }
 
+// 默认载荷是「提示词 + 用户需求」的前缀式包装；与解析侧（scene-payload.js）
+// 共用同一分隔标记，构造与互逆不会漂移。
+const PERSONAL_WORKBENCH_REQUEST_MARK = '\n\n用户需求：\n';
+
 function buildDefaultPersonalWorkbenchPayloadText(userText) {
   const text = String(userText || '').trim();
   if (!text) return '';
-  return `${DEFAULT_PERSONAL_WORKBENCH_PROMPT}\n\n用户需求：\n${text}`;
+  return `${DEFAULT_PERSONAL_WORKBENCH_PROMPT}${PERSONAL_WORKBENCH_REQUEST_MARK}${text}`;
 }
 
 function createPersonalWorkbenchMessageMeta(userText = '', templateRef = null) {
@@ -99,6 +103,8 @@ function shouldUsePersonalWorkbenchScene(subtab) {
 }
 
 export {
+  DEFAULT_PERSONAL_WORKBENCH_PROMPT,
+  PERSONAL_WORKBENCH_REQUEST_MARK,
   PERSONAL_WORKBENCH_TEMPLATES,
   createPersonalWorkbenchMessageMeta,
   findPersonalWorkbenchTemplateDraft,

@@ -39,6 +39,8 @@ try {
     removeLocalUserMessage,
   } = await import(`${pathToFileURL(path.join(temp, 'features', 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
   const {
+    isCompactionCheckpointBlocks,
+    isGeneratedCompactionCheckpointBlocks,
     isInternalRuntimeUserMessage,
     isInternalUserMessage,
   } = await import(`${pathToFileURL(path.join(temp, 'shared', 'internal-message.mjs')).href}?t=${Date.now()}`);
@@ -74,6 +76,52 @@ try {
     'ordinary user text must remain displayable at message level');
   assert.equal(classicMessages.isInternalUserMessage([{ type: 'text', text: ordinaryLiteralTagMention }]), false,
     'classic message-level classifier must agree that ordinary text is visible');
+
+  // CodeWhale compaction checkpoint: the summary is committed into history as
+  // role=user with an engine-written provenance block. Both classifiers must
+  // agree on the structural reading (CodeWhale history_recognition.rs): only
+  // the stamped form is engine-written beyond doubt, so only it is internal.
+  const checkpointSummaryText = [
+    'Another language model started to solve this problem and produced a summary of its thinking process.',
+    '',
+    '## Task',
+    'Keep the compaction fixture short.',
+  ].join('\n');
+  const checkpointProvenanceText = '<!-- codewhale.compaction-checkpoint.v1 -->';
+  const stampedCheckpointBlocks = [
+    { type: 'text', text: checkpointSummaryText },
+    { type: 'text', text: checkpointProvenanceText },
+  ];
+  const checkpointParity = [
+    ['stamped carrier reads as the generated checkpoint', stampedCheckpointBlocks,
+      { loose: true, generated: true, internal: true }],
+    ['bare header (pasted handoff or pre-stamp carrier) stays user content', [{ type: 'text', text: checkpointSummaryText }],
+      { loose: true, generated: false, internal: false }],
+    ['pre-v0.9.6 legacy summary marker is a loose checkpoint', [{ type: 'text', text: 'Conversation Summary (Auto-Generated)\nolder carrier' }],
+      { loose: true, generated: false, internal: false }],
+    ['forged provenance block is not a checkpoint', [
+      { type: 'text', text: checkpointSummaryText },
+      { type: 'text', text: `${checkpointProvenanceText} (pasted)` },
+    ], { loose: false, generated: false, internal: false }],
+    ['extra block after the provenance is not a checkpoint', [...stampedCheckpointBlocks, { type: 'text', text: 'one more block' }],
+      { loose: false, generated: false, internal: false }],
+    ['non-text leading block is not a checkpoint', [{ type: 'image', source: { type: 'base64', data: 'x' } }, ...stampedCheckpointBlocks],
+      { loose: false, generated: false, internal: false }],
+    ['cache-control-stamped text block is not a checkpoint (the foundation requires cache_control: None)', [
+      { type: 'text', text: checkpointSummaryText, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: checkpointProvenanceText },
+    ], { loose: false, generated: false, internal: false }],
+    ['header quoted mid-text is not a checkpoint', [{ type: 'text', text: `Please explain the phrase: ${checkpointSummaryText}` }],
+      { loose: false, generated: false, internal: false }],
+  ];
+  for (const [label, blocks, expected] of checkpointParity) {
+    assert.equal(isCompactionCheckpointBlocks(blocks), expected.loose, `ESM loose predicate: ${label}`);
+    assert.equal(isGeneratedCompactionCheckpointBlocks(blocks), expected.generated, `ESM generated predicate: ${label}`);
+    assert.equal(isInternalUserMessage(blocks), expected.internal, `ESM message classifier: ${label}`);
+    assert.equal(classicMessages.isCompactionCheckpointBlocks(blocks), expected.loose, `classic loose predicate: ${label}`);
+    assert.equal(classicMessages.isGeneratedCompactionCheckpointBlocks(blocks), expected.generated, `classic generated predicate: ${label}`);
+    assert.equal(classicMessages.isInternalUserMessage(blocks), expected.internal, `classic message classifier: ${label}`);
+  }
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
@@ -501,6 +549,39 @@ try {
     '真实任务正文仍渲染');
   assert.ok(!JSON.stringify(laneProvenanceOnly.items).includes('shell_completion'),
     '仅-provenance 内部消息不得进入 lane 展示');
+
+  // ── hydration：CodeWhale 压缩检查点不是用户输入 ───────────────────
+  // 底座把摘要以 role=user 提交进历史（带出处戳的载体）。重放不得把它渲染成
+  // 用户气泡，而是在原位还原一条系统项（文案由渲染层按 compactPhase 取三语）；
+  // 用户粘贴的摘要头（无戳、与旧版裸载体无法区分）仍是用户消息。
+  const laneCheckpoint = createNativeLane();
+  const bareHeaderHandoff = `${checkpointSummaryText}\n\nPlease continue from this pasted handoff.`;
+  hydrateNativeLane(laneCheckpoint, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '修复登录页样式' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '第一步完成' }] },
+      { role: 'user', content: stampedCheckpointBlocks },
+      { role: 'assistant', content: [{ type: 'text', text: '压缩后继续' }] },
+      { role: 'user', content: [{ type: 'text', text: bareHeaderHandoff }] },
+      { role: 'assistant', content: [{ type: 'text', text: '接着做' }] },
+    ],
+  }, []);
+  assert.deepEqual(
+    laneCheckpoint.items.filter(item => item.type === 'user').map(item => item.text),
+    ['修复登录页样式', bareHeaderHandoff],
+    'stamped 载体不得成为用户气泡；粘贴的摘要头照旧是用户消息',
+  );
+  const checkpointNotices = laneCheckpoint.items.filter(item => item.type === 'system' && item.compactPhase === 'checkpoint');
+  assert.equal(checkpointNotices.length, 1, '检查点原位还原恰好一条系统项');
+  assert.equal(laneCheckpoint.items.indexOf(checkpointNotices[0]), 2, '系统项落在检查点在历史中的位置');
+  assert.equal(checkpointNotices[0].text, '', '历史标记没有引擎统计文案可附');
+  assert.equal(checkpointNotices[0].compactId, undefined, '历史标记不是实时压缩请求，不得被实时 start/cancel 对账逻辑认领');
+  const checkpointProjection = projectNativeLane(laneCheckpoint, 's-checkpoint');
+  assert.deepEqual(checkpointProjection.turns.map(turn => turn.userText),
+    ['修复登录页样式', bareHeaderHandoff], '检查点不切出假轮次，投影后仍是两个用户 turn');
+  assert.ok(checkpointProjection.turns[0].items.some(item => item.type === 'system_notice'
+    && item.legacyItem && item.legacyItem.compactPhase === 'checkpoint'),
+  '系统项进入前一轮的条目流，由 CodexAcpView 按 compactPhase 渲染');
 
   // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
   // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时

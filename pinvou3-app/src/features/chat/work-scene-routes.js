@@ -65,10 +65,24 @@ function shouldUsePptDesignScene(subtab) {
   return subtab === PPT_DESIGN_SCENE_KEY;
 }
 
+// 路由包装的构造（下方 buildScenePayloadText）与发布给桥的包装形状
+// （scene-payload.js）共用同一份常量：文案只在这里改，构造与还原不会漂移。
+const SCENE_PAYLOAD_SEPARATOR = '\n\n---\n';
+const SUFFIX_SCENE_ROUTES = [
+  { key: DOCUMENT_WRITING_SCENE_KEY, context: DOCUMENT_WRITING_CONTEXT, audit: DOCUMENT_WRITING_AUDIT },
+  { key: DATA_VISUALIZATION_SCENE_KEY, context: DATA_VISUALIZATION_CONTEXT, audit: DATA_VISUALIZATION_AUDIT },
+  { key: PPT_DESIGN_SCENE_KEY, context: PPT_DESIGN_CONTEXT, audit: PPT_DESIGN_AUDIT },
+];
+
+// 包在用户原文后面的尾巴：落盘的载荷与桥还原时比对的字节都由它拼出。
+export function scenePayloadSuffix(context, audit) {
+  return `${SCENE_PAYLOAD_SEPARATOR}${context}\n\n${audit}`;
+}
+
 export function buildScenePayloadText(text, context, audit) {
   const raw = String(text || '').trim();
   if (!raw) return raw;
-  return `${raw}\n\n---\n${context}\n\n${audit}`;
+  return raw + scenePayloadSuffix(context, audit);
 }
 
 function createDocumentWritingMessageMeta(text) {
@@ -93,6 +107,8 @@ function createPptDesignMessageMeta(text) {
 }
 
 export {
+  SCENE_PAYLOAD_SEPARATOR,
+  SUFFIX_SCENE_ROUTES,
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
   createPptDesignMessageMeta,

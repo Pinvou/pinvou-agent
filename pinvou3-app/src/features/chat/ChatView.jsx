@@ -198,6 +198,12 @@ import {
   isPersonalWorkbenchTemplateDraftForTemplate,
   shouldUsePersonalWorkbenchScene,
 } from './personal-workbench-scene.js';
+// Publishes the scene-payload inverse (window.__PINVOU_SCENE_PAYLOAD__) for the
+// bridges' history replay and remote admissions. ChatView is the static entry
+// of every window that replays a conversation, so loading it guarantees the
+// publisher is up before the first session opens; the bridges read the global
+// lazily.
+import './scene-payload.js';
 import {
   DATA_VISUALIZATION_SCENE_KEY,
   DOCUMENT_WRITING_SCENE_KEY,
