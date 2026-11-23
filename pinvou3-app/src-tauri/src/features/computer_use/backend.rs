@@ -836,6 +836,86 @@ impl BackendInner {
         Ok((reply_rx, cancelled))
     }
 
+    /// Synchronous, NON-BLOCKING enqueue probe for the emergency cleanup
+    /// (#897 review P2 round 2): the Stop/revoke command thread must never
+    /// wait on the startup state lock, so this takes the live-cancels guard
+    /// first (the same live→state order `Drop` uses — try_lock cannot wait,
+    /// so no path holds state and waits for live) and then TRIES the state
+    /// mutex:
+    /// - `Pending` → never started; nothing was injected, skip the cleanup
+    ///   without ever running the factory;
+    /// - `Running` → clone the sender under the guard, sweep the live
+    ///   cancels, and enqueue the button releases plus the OS-grant release
+    ///   BEFORE releasing the guard — the serialized worker executes them
+    ///   before anything a later re-grant of the session can enqueue, which
+    ///   is what keeps the wind-down take() bound to the revoked grant;
+    /// - guard busy / `StartFailed` / `Shutdown` → `Deferred`: the caller
+    ///   falls back to the detached blocking cleanup. A busy guard means a
+    ///   lazy start or teardown is in flight, so this backend cannot hold
+    ///   recorded open apps yet — the queue-position binding is not needed.
+    fn try_enqueue_emergency_cleanup(&self) -> EmergencyEnqueue {
+        let live = self.cancel_live_requests();
+        let state = match self.state.try_lock() {
+            Some(state) => state,
+            None => return EmergencyEnqueue::Deferred,
+        };
+        let tx = match &*state {
+            WorkerState::Pending(_) => return EmergencyEnqueue::NeverStarted,
+            WorkerState::Running { tx, .. } => tx.clone(),
+            // StartFailed / Shutdown: the fallback's blocking enqueue answers
+            // with the honest sticky error; nothing to reserve here.
+            WorkerState::StartFailed(_) | WorkerState::Shutdown => {
+                return EmergencyEnqueue::Deferred;
+            }
+        };
+        let mut steps = Vec::new();
+        let mut dead = false;
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let sent = tx.send(BackendRequest {
+                kind: BackendRequestKind::MouseUp { button },
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control: true,
+            });
+            match sent {
+                Ok(()) => steps.push((EmergencyCleanupStep::MouseUp, reply_rx, cancelled)),
+                Err(_) => {
+                    dead = true;
+                    break;
+                }
+            }
+        }
+        if !dead {
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let sent = tx.send(BackendRequest {
+                kind: BackendRequestKind::ReleaseOsGrant,
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control: true,
+            });
+            match sent {
+                Ok(()) => steps.push((EmergencyCleanupStep::ReleaseOsGrant, reply_rx, cancelled)),
+                Err(_) => dead = true,
+            }
+        }
+        // Release both guards BEFORE mark_thread_dead: it takes the state
+        // lock, and this frame still holds it.
+        let outcome = if dead {
+            EmergencyEnqueue::Deferred
+        } else {
+            EmergencyEnqueue::Enqueued(steps)
+        };
+        drop(live);
+        drop(state);
+        if dead {
+            self.mark_thread_dead();
+        }
+        outcome
+    }
+
     /// Control lane: identical to [`Self::request`] but it deliberately
     /// bypasses the in-flight gate (no compare_exchange, `in_flight` is
     /// never touched). revoke/stop/emergency cleanup must not be rejected
@@ -1106,6 +1186,14 @@ impl BackendHandle {
             Some(error) => Err(error),
             None => Ok(steps),
         }
+    }
+
+    /// Non-blocking probe variant of [`Self::enqueue_emergency_cleanup`]:
+    /// never waits on the startup state lock (see
+    /// [`BackendInner::try_enqueue_emergency_cleanup`] for the three
+    /// outcomes and why Stop/revoke must take this path).
+    fn try_enqueue_emergency_cleanup(&self) -> EmergencyEnqueue {
+        self.inner.try_enqueue_emergency_cleanup()
     }
 
     /// Launch an application inside the backend's display target. Only
@@ -1400,6 +1488,20 @@ type PendingEmergencyStep = (
     Arc<AtomicBool>,
 );
 
+/// Outcome of the synchronous enqueue probe (see
+/// [`BackendInner::try_enqueue_emergency_cleanup`]).
+enum EmergencyEnqueue {
+    /// The backend was never started; there is nothing to clean up.
+    NeverStarted,
+    /// The state mutex is busy (a lazy start or teardown is in flight) or
+    /// the state machine is not Running: run the blocking cleanup on a
+    /// detached thread instead of the caller.
+    Deferred,
+    /// Both control requests are enqueued on the caller's thread; only the
+    /// reply waits remain.
+    Enqueued(Vec<PendingEmergencyStep>),
+}
+
 /// The two control requests of one emergency cleanup, in execution order.
 enum EmergencyCleanupStep {
     MouseUp,
@@ -1420,19 +1522,31 @@ impl EmergencyCleanupStep {
 /// close the persistent OS-level grant. Errors are only logged with the
 /// existing `eprintln!` convention.
 ///
-/// (#897 review P2: a late cleanup could terminate apps opened under a
-/// NEW grant) The worker-free sweep, the never-started fast path and the
-/// two control-request ENQUEUES all run synchronously on the caller's
-/// thread; only the reply waits stay on a detached thread. Queue position
-/// is what binds the cleanup to the grant being revoked: the serialized
-/// worker executes the enqueued release before anything a later re-grant
-/// of the same session can enqueue, so `release_os_grant`'s wind-down
-/// take() still sees only the revoked grant's apps. The old bare-spawn
-/// shape enqueued from the detached thread, so a scheduler delay could
-/// line its requests up behind a re-granted session's open — and the late
-/// release would take (and terminate) apps the NEW grant had opened.
-/// Detaching only the reply wait keeps the revoke/stop command
-/// non-blocking on a wedged worker, same as before.
+/// Two ordering contracts meet here, one per review round:
+///
+/// (#897 review P2: a late cleanup could terminate apps opened under a NEW
+/// grant) When the backend is RUNNING, the sweep and both control-request
+/// enqueues happen synchronously on the caller's thread and only the reply
+/// waits stay detached. Queue position binds the cleanup to the grant
+/// being revoked: the serialized worker executes the enqueued release
+/// before anything a later re-grant of the same session can enqueue, so
+/// `release_os_grant`'s wind-down take() still sees only the revoked
+/// grant's apps. The original bare-spawn shape enqueued from the detached
+/// thread, so a scheduler delay could line its requests up behind a
+/// re-granted session's open — and the late release would take (and
+/// terminate) apps the NEW grant had opened.
+///
+/// (#897 review P2 round 2: the prelude must not wait on the startup lock)
+/// The synchronous prelude is strictly non-blocking: the state mutex is
+/// only ever taken with `try_lock` (`ensure_sender` holds it across the
+/// whole factory startup, up to BACKEND_CALL_TIMEOUT, so a blocking lock
+/// here would stall Stop/revoke — previously the detached thread absorbed
+/// that wait). When the probe cannot classify the backend (guard busy, or
+/// `StartFailed`/`Shutdown`), the whole blocking cleanup falls back to a
+/// detached thread — a busy guard means a start or teardown is in flight,
+/// so that backend cannot hold recorded open apps and the queue-position
+/// binding is not needed; a Pending backend is skipped without ever
+/// running the factory.
 ///
 /// The flag sweep comes first and is worker-free (it only flips the
 /// registered `AtomicBool`s, never touching the backend): a request whose
@@ -1442,65 +1556,70 @@ impl EmergencyCleanupStep {
 /// finding: with the sweep only reachable through the control request, a
 /// stop landing inside the first request's startup window escaped both
 /// cancel mechanisms and the injection landed after the stop returned.
-///
-/// Pending-state fast path: a handle whose backend was never started skips
-/// the mouse-up/grant-close part entirely. Nothing was ever injected (no
-/// button can be held) and no OS grant exists, so running the cleanup would
-/// only make `ensure_sender` lazily construct the full platform backend
-/// (xcap/enigo/portal, possibly OS permission work) just to issue three
-/// no-op mouse-ups — each holding the state mutex for up to
-/// BACKEND_CALL_TIMEOUT while the construction runs. The check lives at
-/// this shared funnel point (every spawn site — per-session revoke, tool
-/// Drop, global stop — routes through here), so all of them get the fast
-/// path. Both directions of the inherent race are safe: if a request starts
-/// the backend concurrently, the handle is no longer Pending by the time
-/// this reads it and the cleanup runs; if the cleanup wins the read, the
-/// request is still queued with its flag latched by the sweep above and is
-/// rejected at dequeue (and the tool layer's pre-backend re-check rejects
-/// any later action outright).
 fn spawn_emergency_cleanup(handle: BackendHandle) {
     spawn_emergency_cleanup_with_done(handle, || {});
 }
 
 /// [`spawn_emergency_cleanup`] with a completion callback (the app-exit
-/// harvest's done signal). `done` runs on the detached thread after both
-/// replies resolved (or immediately when there is nothing to enqueue).
+/// harvest's done signal). `done` runs once the replies resolved — or
+/// immediately when there is nothing to enqueue.
 fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() + Send + 'static) {
     handle.cancel_all_registered_flags();
-    if handle.is_never_started() {
-        done();
-        return;
-    }
-    let steps = match handle.enqueue_emergency_cleanup() {
-        Ok(steps) => steps,
-        Err(error) => {
-            eprintln!("[computer_use] emergency cleanup enqueue failed: {error}");
+    match handle.try_enqueue_emergency_cleanup() {
+        EmergencyEnqueue::NeverStarted => {
             done();
-            return;
         }
-    };
-    std::thread::spawn(move || {
-        for (step, reply, cancelled) in steps {
-            let name = step.as_str();
-            match reply.recv_timeout(BACKEND_CALL_TIMEOUT) {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("[computer_use] emergency {name} failed: {error}"),
-                Err(RecvTimeoutError::Timeout) => {
-                    cancelled.store(true, Ordering::SeqCst);
-                    eprintln!(
-                        "[computer_use] emergency {name} timed out; it may still execute or has partially executed"
-                    );
+        EmergencyEnqueue::Enqueued(steps) => {
+            std::thread::spawn(move || {
+                await_emergency_steps(steps);
+                done();
+            });
+        }
+        EmergencyEnqueue::Deferred => {
+            // Startup or teardown holds the state mutex (or the state
+            // machine already left Running): the whole blocking cleanup —
+            // enqueue through the blocking `ensure_sender` and the reply
+            // waits — runs on a detached thread, exactly where the
+            // pre-binding shape absorbed these waits. A backend in this
+            // state cannot hold recorded open apps (a Running backend would
+            // have let the try-lock succeed), so the queue-position binding
+            // is not needed here.
+            std::thread::spawn(move || {
+                match handle.enqueue_emergency_cleanup() {
+                    Ok(steps) => await_emergency_steps(steps),
+                    Err(error) => {
+                        eprintln!("[computer_use] emergency cleanup enqueue failed: {error}");
+                    }
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    cancelled.store(true, Ordering::SeqCst);
-                    eprintln!(
-                        "[computer_use] emergency {name} lost: the backend thread is not running"
-                    );
-                }
+                done();
+            });
+        }
+    }
+}
+
+/// Await the pending emergency steps on whichever thread called this
+/// (detached in both dispatch arms), with `request_inner`'s timeout and
+/// disconnect semantics and the same logging convention.
+fn await_emergency_steps(steps: Vec<PendingEmergencyStep>) {
+    for (step, reply, cancelled) in steps {
+        let name = step.as_str();
+        match reply.recv_timeout(BACKEND_CALL_TIMEOUT) {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => eprintln!("[computer_use] emergency {name} failed: {error}"),
+            Err(RecvTimeoutError::Timeout) => {
+                cancelled.store(true, Ordering::SeqCst);
+                eprintln!(
+                    "[computer_use] emergency {name} timed out; it may still execute or has partially executed"
+                );
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                cancelled.store(true, Ordering::SeqCst);
+                eprintln!(
+                    "[computer_use] emergency {name} lost: the backend thread is not running"
+                );
             }
         }
-        done();
-    });
+    }
 }
 
 #[cfg(test)]
@@ -2968,6 +3087,66 @@ mod tests {
         }
         panic!(
             "the worker never executed both the release and the open; journal: {:?}",
+            journal.lock()
+        );
+    }
+
+    /// Regression (#897 review P2 round 2): Stop/revoke must not wait on
+    /// the startup state lock. A lazy factory held mid-startup holds the
+    /// state mutex for the whole startup window (`ensure_sender` parks on
+    /// `startup_rx` while holding it); the cleanup's synchronous probe must
+    /// classify the backend as busy and fall back to the detached blocking
+    /// cleanup, so the Stop command returns promptly while the release
+    /// still reaches the backend once startup completes. The healthy-
+    /// backend order test above covers the Enqueued arm; this covers the
+    /// Deferred arm.
+    #[test]
+    fn stop_while_a_factory_is_stalled_returns_promptly_and_still_releases() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            // Simulate a stalled OS/permission initialization.
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Trigger the lazy start on a helper thread: it takes the state
+        // mutex and parks on the startup signal while the factory sleeps.
+        let starter = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.capabilities())
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while handle.inner.state.try_lock().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lazy start never took the state lock; the helper thread likely died"
+            );
+            std::thread::yield_now();
+        }
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-stall", handle.clone());
+        let started = std::time::Instant::now();
+        registry.emergency_release("s-stall");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Stop/revoke must not wait on the startup lock; took {elapsed:?}"
+        );
+        // Startup completes; the deferred cleanup must still reach the
+        // backend (bounded wait, generous against slow CI boxes).
+        starter.join().expect("starter thread");
+        for _ in 0..1000 {
+            if journal.lock().iter().any(|op| op == "release") {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the deferred cleanup never reached the backend; journal: {:?}",
             journal.lock()
         );
     }
