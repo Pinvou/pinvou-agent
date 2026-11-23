@@ -116,6 +116,8 @@ function imageCapabilityForCatalogModel(model) {
 // Stable default: avoid creating a fresh array literal on every render (react/no-unstable-default-props).
 /** @type {SettingsModelEntry[]} */
 const EMPTY_MODELS = [];
+/** @type {Set<string>} */
+const EMPTY_JUST_SAVED_KEYS = new Set();
 
 /**
  * @param {MemoryItem} item - Memory item with timestamps.
@@ -443,7 +445,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
 
     // 添加/编辑模型模态弹窗。
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, justSavedKeys = EMPTY_JUST_SAVED_KEYS, onSaveCommitted }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -913,6 +915,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         inFlightModelCreates.add(pickIdentity);
         try {
           await onSave(buildEndpointModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)。
+          onSaveCommitted(pickIdentity);
           setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
         } catch (e) {
           // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
@@ -938,6 +942,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // 这里先摘一行是一行。
         const batchSavedKeys = new Set(endpointSavedKeys);
         for (const key of inFlightModelCreates) batchSavedKeys.add(key);
+        // 已落库但列表未确认的身份(刷新失败分支,r3 lane G)同样不入批。
+        for (const key of pendingSavedKeys) batchSavedKeys.add(key);
         const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), batchSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
         // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
@@ -966,10 +972,12 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
             // 本批行永远落在确认时刻的端点上。
             const rowIdentity = modelDuplicationKey(row.id, confirmBaseUrl);
-            if (inFlightModelCreates.has(rowIdentity)) continue;
+            if (inFlightModelCreates.has(rowIdentity) || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
             inFlightModelCreates.add(rowIdentity);
             batchIdentities.push(rowIdentity);
             await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            // 已落库:进父层「已提交未确认」簿——若收尾的统一刷新失败,身份仍被拦。
+            onSaveCommitted(rowIdentity);
             added += 1;
           }
           if (batchReloadAvailable) await bridge.models.reloadSavedModels();
@@ -1000,7 +1008,15 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         const onPickerKeyDown = e => {
           if (e.key !== 'Escape' || isImeComposing(e)) return;
           if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
-          else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
+          // r3 复审(写入在飞禁关层):批量执行中/单行保存中/本地行添加挂起时
+          // Escape 也不再关层——查册已把去重闸补齐,但关层仍会让在飞写入失去
+          // 可见性(批量继续在后台隐身落库)。批量态在 React 18 离散事件里同步
+          // 提交(下一个按键任务之前必然可见);pick/local 用同步 ref 直读,
+          // 无需进依赖数组。
+          else if (endpointPickerOpen && !addingAllModels
+            && !pickInFlightRef.current && !localAddInFlightRef.current) {
+            setEndpointPickerOpen(false); setEndpointAddResult(null);
+          }
         };
         window.addEventListener('keydown', onPickerKeyDown);
         return () => window.removeEventListener('keydown', onPickerKeyDown);
@@ -1153,6 +1169,9 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
           });
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)——桥内刷新链
+          // 若吞掉 list_models 失败,身份仍被拦,直到列表真正确认它。
+          onSaveCommitted(formIdentity);
           onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
@@ -1270,6 +1289,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         setLocalAddError('');
         try {
           await onSave(buildLocalModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)。
+          onSaveCommitted(rowIdentity);
         } catch (error) {
           // Same shape as doSave (keep the modal open, drop nothing), but the
           // message goes to THIS picker view: saveError renders only in the
@@ -1620,7 +1641,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
                   const rowKey = modelDuplicationKey(row.model, row.base_url);
                   // 在途身份(任一入口,跨弹窗重开)与已保存同等禁行(复审 P2×2):
                   // 保存待定时旧列表不得把同一身份显示成可添加。
-                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey);
+                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey) || pendingSavedKeys.has(rowKey);
                   return (
                     <LocalModelRow key={row.key} row={row} saved={rowSaved} busyAny={localAddBusyKey}
                       settingsCopy={settingsCopy} actionClass={actionClass} mutedText={mutedText}
@@ -1666,6 +1687,13 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
       // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
       const endpointSavedKeys = savedModelKeys(models);
+      // Committed-but-unlisted identities (parent-owned, r3 review): folds
+      // into every saved-key check below so the dedup contract survives the
+      // refresh-failure branch — the in-flight registry (module-level) holds
+      // identities until settle; this holds them until the list confirms.
+      // Not memoized, same as endpointSavedKeys (React Compiler constraint;
+      // sub-millisecond rebuild).
+      const pendingSavedKeys = new Set([...justSavedKeys].filter(key => !endpointSavedKeys.has(key)));
       // The save button joins the same identity contract (spec §2.6: model id
       // + base_url). The endpoint list's per-row and add-all adds already
       // dedupe by it; the form save was the one path that never checked —
@@ -1680,7 +1708,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // Not memoized, same as endpointSavedKeys (React Compiler constraint;
       // rebuilding the key set is sub-millisecond).
       const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
-      const duplicateSaved = formSavedKeys.has(modelDuplicationKey(model.trim(), baseUrl.trim()));
+      const formIdentityKey = modelDuplicationKey(model.trim(), baseUrl.trim());
+      const duplicateSaved = formSavedKeys.has(formIdentityKey) || pendingSavedKeys.has(formIdentityKey);
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
@@ -2100,9 +2129,15 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             onPick={handleEndpointModelPick}
             onAddAll={handleAddAllEndpointModels}
             baseUrl={baseUrl.trim()}
-            savedKeys={(() => { const keys = new Set(endpointSavedKeys); for (const k of inFlightModelCreates) keys.add(k); return keys; })()}
+            savedKeys={(() => {
+              const keys = new Set(endpointSavedKeys);
+              for (const k of inFlightModelCreates) keys.add(k);
+              // 已提交未确认(刷新失败分支,r3 复审)同样按已保存展示。
+              for (const k of pendingSavedKeys) keys.add(k);
+              return keys;
+            })()}
             addNotice={endpointAddResult}
-            pickBusy={pickSavingModel || savingModel}
+            pickBusy={pickSavingModel || savingModel || !!localAddBusyKey}
             t={t}
           />
           {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与
@@ -3192,6 +3227,22 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       };
       // filter already returns a fresh array; no extra spread needed.
       const userModels = (savedModels || []).filter(model => model && model.id);
+      // (model id + base_url) identity keys of saves that COMMITTED but are
+      // not yet confirmed by the models list. Complements the module-level
+      // in-flight registry: the registry holds identities until the save
+      // settles, and on success the bridge's refresh chain normally hands
+      // the identity over to the saved-keys guard — but loadModels swallows
+      // a list_models failure by clearing the list, and then the settled
+      // identity would be re-addable again (refresh-failure branch, review
+      // r3 lane G). Keys clear derivatively once the models list actually
+      // contains the identity; nothing is registered on failure, so retries
+      // stay possible.
+      const [justSavedKeys, setJustSavedKeys] = useState(() => new Set());
+      const markSaveCommitted = key => setJustSavedKeys(prev => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
         { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
@@ -3943,7 +3994,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
-              onSave={onSaveModel} />
+              onSave={onSaveModel}
+              justSavedKeys={justSavedKeys} onSaveCommitted={markSaveCommitted} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}

@@ -397,7 +397,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /pickBusy=\{pickSavingModel \|\| savingModel\}/,
+  /pickBusy=\{pickSavingModel \|\| savingModel \|\| !!localAddBusyKey\}/,
   'the chat-line picker must receive the pick-busy prop',
 );
 assert.match(
@@ -612,7 +612,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const duplicateSaved = formSavedKeys\.has\(modelDuplicationKey\(model\.trim\(\), baseUrl\.trim\(\)\)\);/,
+  /const duplicateSaved = formSavedKeys\.has\(formIdentityKey\) \|\| pendingSavedKeys\.has\(formIdentityKey\);/,
   'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd)',
 );
 assert.match(
@@ -622,7 +622,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const rowKey = modelDuplicationKey\(row\.model, row\.base_url\);[\s\S]{0,300}const rowSaved = endpointSavedKeys\.has\(rowKey\) \|\| inFlightModelCreates\.has\(rowKey\);/,
+  /const rowKey = modelDuplicationKey\(row\.model, row\.base_url\);[\s\S]{0,300}const rowSaved = endpointSavedKeys\.has\(rowKey\) \|\| inFlightModelCreates\.has\(rowKey\) \|\| pendingSavedKeys\.has\(rowKey\);/,
   'local-detect row adds must reuse the picker dedup key over the same saved set, PLUS the module-level in-flight registry (review P2×2: a pending save from ANY entry — surviving a modal remount — must disable the row the same way a saved identity does)',
 );
 // 复审 P2×2(跨入口在途互斥):模块级注册表是唯一跨弹窗重开存活的在途
@@ -650,8 +650,76 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /if \(inFlightModelCreates\.has\(rowIdentity\)\) continue;/,
+  /if \(inFlightModelCreates\.has\(rowIdentity\) \|\| endpointSavedKeys\.has\(rowIdentity\) \|\| pendingSavedKeys\.has\(rowIdentity\)\) continue;/,
   'the confirmed batch loop must skip rows whose identity another entry put in flight while the dialog was open',
+);
+// r3 复审补全(刷新失败分支 + 在飞禁关层 + PR 声明两钉):查册在落库落定时
+// 出册,而 loadModels 会吞 list_models 失败并清空列表——已提交未确认的身份
+// 由父层 justSavedKeys 继续拦截,列表确认后派生解除;Escape/X 在飞禁关层。
+assert.match(
+  settingsViewSource,
+  /const \[justSavedKeys, setJustSavedKeys\] = useState\(\(\) => new Set\(\)\);/,
+  'the parent-owned just-committed identity book must exist — the registry releases on settle, and a swallowed list_models refresh would otherwise re-expose the settled identity over an empty list (r3 lane G: live-proven green success banner + full re-add invitation)',
+);
+assert.match(
+  settingsViewSource,
+  /const pendingSavedKeys = new Set\(\[\.\.\.justSavedKeys\]\.filter\(key => !endpointSavedKeys\.has\(key\)\)\);/,
+  'just-committed identities must fold derivatively — a key clears itself once the models list actually contains the identity, so no manual success-path bookkeeping is needed',
+);
+assert.match(
+  settingsViewSource,
+  /justSavedKeys=\{justSavedKeys\} onSaveCommitted=\{markSaveCommitted\}/,
+  'the parent must hand the modal the committed book and the commit mark — each write path registers its identity only after the save resolves (failure paths stay retryable)',
+);
+assert.match(
+  settingsViewSource,
+  /onSaveCommitted\(formIdentity\);/,
+  'doSave must register its identity as committed-unlisted on success — the bridge refresh can silently fail and the empty list must not invite a re-add',
+);
+assert.match(
+  settingsViewSource,
+  /onSaveCommitted\(rowIdentity\);/,
+  'the local row add must register its identity as committed-unlisted on success',
+);
+assert.match(
+  settingsViewSource,
+  /onSaveCommitted\(pickIdentity\);/,
+  'the endpoint pick must register its identity as committed-unlisted on success',
+);
+assert.match(
+  settingsViewSource,
+  /onSaveCommitted\(rowIdentity\);\s*added \+= 1;/,
+  'the batch loop must register each landed row as committed-unlisted — the final deferred reload can fail and landed prefix rows must stay blocked until listed',
+);
+assert.match(
+  settingsViewSource,
+  /for \(const key of pendingSavedKeys\) batchSavedKeys\.add\(key\);/,
+  'the add-all snapshot must exclude committed-but-unlisted identities — after a swallowed list_models refresh the batch must not re-book the just-committed identity (r3 review: the empty list invited re-adding everything)',
+);
+assert.match(
+  settingsViewSource,
+  /for \(const k of pendingSavedKeys\) keys\.add\(k\);[\s\S]{0,120}return keys;/,
+  'the endpoint picker saved-tag set must fold committed-but-unlisted identities — the endpoint row of a settled-but-unlisted identity must not look addable',
+);
+assert.match(
+  settingsViewSource,
+  /data-testid="model-form-duplicate-hint" role="status"/,
+  'the duplicate hint must render as a passive status live region (the PR body claims this pin; none existed before r3)',
+);
+assert.match(
+  settingsViewSource,
+  /\{duplicateSaved && !savingModel && \(/,
+  'the duplicate hint must hide while a save is in flight — the mid-save models refresh flips duplicateSaved and would flash a misleading “already exists” (r3 lane F: the M9 mutant survived the previous suite, the gate was behaviorally and statically unpinned)',
+);
+assert.match(
+  settingsViewSource,
+  /else if \(endpointPickerOpen && !addingAllModels\s+&& !pickInFlightRef\.current && !localAddInFlightRef\.current\) \{\s*setEndpointPickerOpen\(false\); setEndpointAddResult\(null\);/,
+  'Escape must not dismiss the endpoint picker while a write is in flight (single-row pick / pending local row add / batch loop) — closing hides the in-flight write and exposes the pre-filled form Save (r3 review lane B: the old gate only covered the confirm-dialog layer)',
+);
+assert.match(
+  endpointPickerSource,
+  /data-testid="endpoint-model-picker-close" onClick=\{onClose\}\s*\n\s*aria-label=\{settingsCopy\.modelListClose\}\s*\n\s*disabled=\{pickBusy\}/,
+  'the picker X must not dismiss the listing while a row-add save is in flight — dismissing hides the in-flight write (r3 review: the X had no guard)',
 );
 assert.match(
   settingsViewSource,
@@ -1268,6 +1336,7 @@ function injectSource() {
     // save_model 在飞窗口注入(round-4 M4 运行时钉):>0 时 save_model 延迟
     // resolve/reject,拉长单行保存在飞窗口,供「全部添加」禁用断言驱动时序。
     var saveModelDelay = 0;
+    var listModelsFailure = false;
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
@@ -1350,7 +1419,14 @@ function injectSource() {
           settings = Object.assign({}, settings, { search: args.search });
           return Promise.resolve(null);
         case 'get_effective_model_config': return Promise.resolve({ model: 'qwen36_35b_256k', base_url: 'http://127.0.0.1:8000/v1', preset: 'local_vllm', api_key_set: false });
-        case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
+        case 'list_models':
+          // ⑦.4 one-shot refresh-failure injection: the app-side loadModels
+          // swallows this rejection and clears the saved list — the exact
+          // branch the parent-owned just-committed book must survive (the
+          // in-flight registry releases on settle; without the book the
+          // settled identity is re-addable over an empty list).
+          if (listModelsFailure) { listModelsFailure = false; return Promise.reject(new Error('⑦.4 list_models 注入失败')); }
+          return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
           // 延迟窗口内同样按 saveModelError 决定 resolve/reject:错误注入与
@@ -1423,6 +1499,16 @@ function injectSource() {
               model: 'qwen3-next-2',
               models: ['qwen3-next-2'],
               max_model_len: 262144,
+            }],
+            // ⑦.4 刷新失败分支的未保存身份:仅在 ⑦.4 使用,不与既有场景互染。
+            8225: [{
+              provider: 'vllm',
+              label: 'vLLM',
+              base_url: 'http://127.0.0.1:8225/v1',
+              status: 'ready',
+              model: 'refresh-twin-7c',
+              models: ['refresh-twin-7c'],
+              max_model_len: 8192,
             }],
           };
           const customPort = args && args.request && args.request.customPort;
@@ -1513,6 +1599,7 @@ function injectSource() {
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setSaveModelError: function (message) { saveModelError = message || null; },
       setSaveModelDelay: function (ms) { saveModelDelay = Number(ms) || 0; },
+      armListModelsFailure: function () { listModelsFailure = true; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
       },
@@ -2539,15 +2626,6 @@ async function modalWidth(page, headingText) {
   await setPortDraft('8200');
   await sleep(200);
   // 重开后 localDetectResult 为 null,按钮文案是「检测」而非「重新检测」。
-  const reopenProbe = await page.evaluate(() => {
-    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
-    return {
-      dialogOpen: !!dialog,
-      buttons: dialog ? [...dialog.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(t => t && t.length < 8).slice(0, 20) : [],
-      hasPort: document.body.innerText.includes('端口'),
-    };
-  });
-  console.log('DEBUG_REOPEN', JSON.stringify(reopenProbe));
   await clickExact(page, '检测');
   await sleep(700);
   const reopenedRow = await page.evaluate(() => {
@@ -3534,6 +3612,310 @@ async function modalWidth(page, headingText) {
     twinGoneSave.clicked && !twinGoneState.root && twinGoneState.hintGone
       && twinGoneState.savedId === 'local-qwen',
     JSON.stringify(twinGoneState));
+
+  // ===== r3 复审补全活体场景(在作者注册表之上的三个剩余缺口):
+  // ⑦.4 刷新失败分支身份不复活(查册落定即出册,loadModels 吞 list_models
+  // 失败清空列表——lane G 实证空列表反而邀请全量重加)、⑦.5a/⑦.5b 在飞禁关
+  // 层(Escape/X;查册已补齐去重,残余危害是在飞写入失去可见性)、⑦.6 Save
+  // 同任务双击仅一笔(注册表按身份键控的活体证据)、⑦.7 保存中提示闸(M9
+  // 判别器:上一套件该突变体存活)。全部走真实 UI 点击 + saveModelDelay。=====
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8225');
+  await clickExact(page, '检测');
+  await sleep(600);
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.armListModelsFailure();
+    window.__SETTINGS_TEST__.setSaveModelDelay(500);
+  });
+  const refreshSavesBefore = await callCount(page, 'save_model');
+  const refreshRowClick = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('refresh-twin-7c'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(1300);
+  const refreshLanded = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().some(item => item.model === 'refresh-twin-7c' && item.base_url === 'http://127.0.0.1:8225/v1'));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8225');
+  await clickExact(page, '检测');
+  await sleep(600);
+  const refreshReopenState = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('refresh-twin-7c'));
+    return {
+      found: !!button,
+      disabled: !!button && button.disabled,
+      savedLabel: !!button && (button.textContent || '').includes('已保存'),
+    };
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('refresh-twin-7c'));
+    button.click();
+  });
+  await sleep(300);
+  const refreshSavesAfter = await callCount(page, 'save_model');
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  rec('⑦.4 刷新失败后身份不复活:落库成功但列表清空时,重开弹窗该行仍禁用+已保存且点击零落库',
+    refreshRowClick.clicked && refreshLanded && refreshReopenState.found
+      && refreshReopenState.disabled && refreshReopenState.savedLabel
+      && refreshSavesAfter === refreshSavesBefore + 1,
+    JSON.stringify({ click: refreshRowClick, landed: refreshLanded, reopen: refreshReopenState, savesBefore: refreshSavesBefore, savesAfter: refreshSavesAfter }));
+  // ⑦.4b 同一分支的表单侧:duplicateSaved 的 just-committed 折叠活体——刷新
+  // 失败后手填同一身份,保存禁用+提示可见(否则空列表表单同样邀请重加)。
+  await clickExact(page, '手动添加本地模型');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'http://127.0.0.1:8225/v1');
+  });
+  await sleep(150);
+  // 本地手填表单的模型输入 placeholder 为空(⑥.5):按「本地模型 ID」label
+  // 的相邻 input 定位(renderInlineField 的 label+input sibling 结构)。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const modelInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === '本地模型 ID').nextElementSibling;
+    typeInto(modelInput, 'refresh-twin-7c');
+  });
+  await sleep(250);
+  const refreshFormState = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root && root.querySelector('[data-testid="model-form-save"]');
+    const hint = root && root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  rec('⑦.4b 刷新失败分支的表单侧:手填已提交未确认身份 → 保存禁用+提示可见(duplicateSaved 折叠)',
+    refreshFormState.saveDisabled && refreshFormState.hintShown,
+    JSON.stringify(refreshFormState));
+  // 恢复已存列表(knob 已一次性自清;setActiveModel 触发桥内重载,⑦.2 同款)。
+  // ⑦.4b 收尾已关弹窗,可选关。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => window.TauriBridge.models.setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
+  await sleep(500);
+  const listRecovered = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return text.includes('deepseek-v4-pro') && text.includes('qwen36_35b_256k');
+  });
+  if (!listRecovered) throw new Error('⑦.4 后已存列表未恢复,后续场景会误红');
+  // ⑦.5a 在飞禁关层:单行保存在飞时 Escape 不再收走端点面板、X 按钮禁用。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://example.com/v1');
+  });
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed',
+    models: [{ id: 'probe-gate-5f', context_window_tokens: 4096, max_output_tokens: 512 }],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(2000));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('probe-gate-5f'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(300);
+  await page.keyboard.press('Escape');
+  await sleep(250);
+  const midPickGate = await page.evaluate(() => ({
+    pickerStillOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    closeDisabled: document.querySelector('[data-testid="endpoint-model-picker-close"]')?.disabled === true,
+  }));
+  await sleep(2100);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  rec('⑦.5a 单行保存在飞:Escape 不关层且 X 禁用(写入在飞禁关层)',
+    midPickGate.pickerStillOpen && midPickGate.closeDisabled,
+    JSON.stringify(midPickGate));
+  // ⑦.5b 批量执行中 Escape 不关层:重设 listing 只含未保存行 → 全部添加 →
+  // 确认 → 批量循环进行中按 Escape → 面板与确认弹窗都仍在(旧实现把面板收走,
+  // 批量继续在后台隐身写库)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed',
+    models: [{ id: 'batch-gate-5g', context_window_tokens: 2048, max_output_tokens: 256 }],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(1200));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="add-all-models-confirm"]');
+    const confirm = [...dialog.querySelectorAll('button')].find(button => (button.textContent || '').trim() === '全部添加');
+    confirm.click();
+  });
+  await sleep(300);
+  await page.keyboard.press('Escape');
+  await sleep(250);
+  const midBatchGate = await page.evaluate(() => ({
+    pickerStillOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    confirmStillShown: !!document.querySelector('[data-testid="add-all-models-confirm"]'),
+  }));
+  await sleep(1400);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  rec('⑦.5b 批量执行中:Escape 不关面板、确认弹窗保持可见(批量不在后台隐身写库)',
+    midBatchGate.pickerStillOpen && midBatchGate.confirmStillShown,
+    JSON.stringify(midBatchGate));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    if (!dialog) return;
+    const close = dialog.querySelector('[data-testid="endpoint-model-picker-close"]');
+    if (close && !close.disabled) close.click();
+  });
+  await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(250);
+  // ⑦.6 Save 同任务双击仅一笔(注册表按身份键控的活体证据:第二次点击同
+  // 一身份查册即拒;state-only 旧实现下差为 2 即红)。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'http://127.0.0.1:8321/v1');
+  });
+  await sleep(150);
+  // 云端表单在提供凭据前禁用保存(⑥.6):走免鉴权声明解开(⑥.5k3 同款)。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await page.type('input[placeholder="输入模型 ID"]', 'dblsave-twin-7d', { delay: 5 });
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(2200));
+  const dblSaveSavesBefore = await callCount(page, 'save_model');
+  await page.evaluate(() => {
+    const save = document.querySelector('[data-testid="model-form-save"]');
+    save.click();
+    save.click();
+  });
+  await sleep(300);
+  const dblSaveMidFlight = await callCount(page, 'save_model');
+  await sleep(2400);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  const dblSaveSettled = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().filter(item => item.model === 'dblsave-twin-7d').length);
+  rec('⑦.6 Save 同任务双击只放行一次落库(注册表身份键控;state-only 守卫时差为 2 即红)',
+    dblSaveMidFlight === dblSaveSavesBefore + 1 && dblSaveSettled === 1,
+    JSON.stringify({ savesBefore: dblSaveSavesBefore, savesMidFlight: dblSaveMidFlight, settled: dblSaveSettled }));
+  // ⑦.7 保存中提示闸(M9 判别器):保存在飞时把表单模型改成本已保存的身份,
+  // duplicateSaved 即刻翻真——提示必须仍隐藏(savingModel 闸)。特异性对照在
+  // 全新的空闲表单上做:同一重复身份在非保存态必须显示提示。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'http://127.0.0.1:8000/v1');
+  });
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await page.type('input[placeholder="输入模型 ID"]', 'hint-gate-7e', { delay: 5 });
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(2500));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(400);
+  await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'qwen36_35b_256k');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(250);
+  const midSaveHintGate = await page.evaluate(() => ({
+    hintHiddenWhileSaving: !document.querySelector('[data-testid="model-form-duplicate-hint"]'),
+    saveDisabledWhileSaving: document.querySelector('[data-testid="model-form-save"]')?.disabled === true,
+  }));
+  await sleep(2600);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'http://127.0.0.1:8000/v1');
+  });
+  await sleep(150);
+  await page.type('input[placeholder="输入模型 ID"]', 'qwen36_35b_256k', { delay: 5 });
+  await sleep(250);
+  const idleHintControl = await page.evaluate(() => ({
+    hintVisibleIdle: !!document.querySelector('[data-testid="model-form-duplicate-hint"]'),
+  }));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  rec('⑦.7 保存中输入重复身份:提示保持隐藏(savingModel 闸,M9 判别器);空闲同身份显示提示(特异性对照)',
+    midSaveHintGate.hintHiddenWhileSaving && midSaveHintGate.saveDisabledWhileSaving
+      && idleHintControl.hintVisibleIdle,
+    JSON.stringify({ mid: midSaveHintGate, idle: idleHintControl }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');
