@@ -803,6 +803,39 @@ impl BackendInner {
         }
     }
 
+    /// Control lane, ENQUEUE-only: performs exactly the control arm of
+    /// [`Self::request_inner`] minus the reply wait — the sweep-plus-send
+    /// runs under the same registry guard (a request registering in that
+    /// window would otherwise queue ahead of the control request with a
+    /// clear flag), the mpsc send cannot block, and the caller gets the
+    /// reply receiver to await elsewhere. This is what keeps an emergency
+    /// cleanup's queue position bound to the moment the cleanup was
+    /// requested (see [`BackendRegistry::emergency_release`]): the
+    /// serialized worker executes it before anything enqueued later.
+    /// Returns the receiver plus the request's cancel flag so the awaiting
+    /// thread can reproduce the timeout arm of `request_inner`.
+    fn enqueue_control(
+        &self,
+        kind: BackendRequestKind,
+    ) -> Result<(Receiver<BackendResult>, Arc<AtomicBool>), ComputerUseError> {
+        let (reply_tx, reply_rx) = channel::<BackendResult>();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let tx = self.ensure_sender()?;
+        let live = self.cancel_live_requests();
+        let sent = tx.send(BackendRequest {
+            kind,
+            reply: reply_tx,
+            cancelled: Arc::clone(&cancelled),
+            control: true,
+        });
+        drop(live);
+        sent.map_err(|_| {
+            self.mark_thread_dead();
+            ComputerUseError::unavailable("computer use backend thread died")
+        })?;
+        Ok((reply_rx, cancelled))
+    }
+
     /// Control lane: identical to [`Self::request`] but it deliberately
     /// bypasses the in-flight gate (no compare_exchange, `in_flight` is
     /// never touched). revoke/stop/emergency cleanup must not be rejected
@@ -1031,6 +1064,50 @@ impl BackendHandle {
         self.unit_control(BackendRequestKind::ReleaseOsGrant)
     }
 
+    /// ENQUEUE the emergency cleanup's control requests (release the three
+    /// mouse buttons one by one — the same sequence
+    /// [`Self::emergency_mouse_up`] sends — then close the persistent
+    /// OS-level grant) on the CALLER's thread and return their pending
+    /// replies; the caller detaches the reply waits. See
+    /// [`spawn_emergency_cleanup`] for why the enqueue must happen at
+    /// revoke/stop time instead of on the detached thread (#897 review P2).
+    fn enqueue_emergency_cleanup(&self) -> Result<Vec<PendingEmergencyStep>, ComputerUseError> {
+        let mut steps = Vec::new();
+        let mut first_err = None;
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            match self
+                .inner
+                .enqueue_control(BackendRequestKind::MouseUp { button })
+            {
+                Ok((reply, cancelled)) => {
+                    steps.push((EmergencyCleanupStep::MouseUp, reply, cancelled));
+                }
+                Err(error) => {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
+            }
+        }
+        match self
+            .inner
+            .enqueue_control(BackendRequestKind::ReleaseOsGrant)
+        {
+            Ok((reply, cancelled)) => {
+                steps.push((EmergencyCleanupStep::ReleaseOsGrant, reply, cancelled));
+            }
+            Err(error) => {
+                if first_err.is_none() {
+                    first_err = Some(error);
+                }
+            }
+        }
+        match first_err {
+            Some(error) => Err(error),
+            None => Ok(steps),
+        }
+    }
+
     /// Launch an application inside the backend's display target. Only
     /// virtual backends implement it (the trait default answers
     /// explicit-unsupported for physical backends — opening apps on the
@@ -1129,14 +1206,14 @@ impl BackendHandle {
     /// and no request was ever sent — nothing was injected (no button can
     /// be held) and no persistent OS grant was ever obtained. Cheap: one
     /// state-mutex lock, no backend construction. Used by
-    /// [`emergency_cleanup`]'s fast path.
+    /// [`spawn_emergency_cleanup`]'s fast path.
     fn is_never_started(&self) -> bool {
         matches!(&*self.inner.state.lock(), WorkerState::Pending(_))
     }
 
     /// Sets the cancel flag of every registered action request without any
     /// backend contact (worker-free: it never sends a control request, so it
-    /// can never trigger a lazy start). Used by [`emergency_cleanup`] so a
+    /// can never trigger a lazy start). Used by [`spawn_emergency_cleanup`] so a
     /// request queued behind a still-running lazy start is latched *before*
     /// the Pending fast-path check skips the control-request sweep.
     fn cancel_all_registered_flags(&self) {
@@ -1160,19 +1237,22 @@ impl BackendRegistry {
         self.handles.lock().insert(session_id.to_string(), handle);
     }
 
-    // Both release paths funnel into [`emergency_cleanup`] (physical button
+    // Both release paths funnel into [`spawn_emergency_cleanup`] (physical button
     // up, then OS-grant close). A bare remove with no cleanup was removed on
     // purpose: an unregister-only path would let a dying session skip the
     // button/grant cleanup while still looking successful.
 
-    /// Emergency cleanup for one session (per-session revoke): on a detached
-    /// thread, first unpress the physical left button (a model that pressed
-    /// and died must not leave the machine in button-held drag state), then
-    /// close the persistent OS-level grant. Both go through the control
-    /// lane, so they are NOT rejected while an action is in flight — they
-    /// queue behind it on the serialized worker channel and run once it
-    /// resolves. Errors are only logged: the worst case (a leaked grant or
-    /// a held button) must never panic or block the caller.
+    /// Emergency cleanup for one session (per-session revoke): unpress the
+    /// physical left button (a model that pressed and died must not leave
+    /// the machine in button-held drag state), then close the persistent
+    /// OS-level grant. Both ride the control lane, so they are NOT rejected
+    /// while an action is in flight — they queue behind it on the
+    /// serialized worker channel and run once it resolves; the requests
+    /// are ENQUEUED here, before this call returns, and only the reply
+    /// waits run detached (see [`spawn_emergency_cleanup`] — the queue
+    /// position binds the cleanup to the grant being revoked). Errors are
+    /// only logged: the worst case (a leaked grant or a held button) must
+    /// never panic or block the caller.
     ///
     /// Known trade-off (acknowledged rather than gated): the
     /// synthetic mouse-up is machine-global and the control lane does not
@@ -1196,7 +1276,7 @@ impl BackendRegistry {
         let Some(handle) = self.handles.lock().get(session_id).cloned() else {
             return;
         };
-        std::thread::spawn(move || emergency_cleanup(handle));
+        spawn_emergency_cleanup(handle);
     }
 
     /// [`Self::emergency_release`]'s cleanup plus synchronous
@@ -1233,7 +1313,7 @@ impl BackendRegistry {
             }
         };
         if let Some(target) = cleanup {
-            std::thread::spawn(move || emergency_cleanup(target));
+            spawn_emergency_cleanup(target);
         }
     }
 
@@ -1244,7 +1324,7 @@ impl BackendRegistry {
     pub fn emergency_release_all(&self) {
         let handles: Vec<BackendHandle> = self.handles.lock().values().cloned().collect();
         for handle in handles {
-            std::thread::spawn(move || emergency_cleanup(handle));
+            spawn_emergency_cleanup(handle);
         }
     }
 
@@ -1265,8 +1345,7 @@ impl BackendRegistry {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         for handle in handles {
             let tx = done_tx.clone();
-            std::thread::spawn(move || {
-                emergency_cleanup(handle);
+            spawn_emergency_cleanup_with_done(handle, move || {
                 let _ = tx.send(());
             });
         }
@@ -1311,11 +1390,49 @@ impl BackendRegistry {
     }
 }
 
+/// One enqueued emergency-cleanup control request, kept for the detached
+/// reply waiter: which step it is (for honest failure logs), its reply
+/// channel, and its cancel flag (set on timeout so a recovered worker
+/// skips it — the same contract `request_inner`'s timeout arm implements).
+type PendingEmergencyStep = (
+    EmergencyCleanupStep,
+    std::sync::mpsc::Receiver<BackendResult>,
+    Arc<AtomicBool>,
+);
+
+/// The two control requests of one emergency cleanup, in execution order.
+enum EmergencyCleanupStep {
+    MouseUp,
+    ReleaseOsGrant,
+}
+
+impl EmergencyCleanupStep {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::MouseUp => "mouse_up",
+            Self::ReleaseOsGrant => "release_os_grant",
+        }
+    }
+}
+
 /// Emergency cleanup for one handle, in the fixed order: cancel every
 /// registered action request, then unpress the physical left button, then
-/// close the persistent OS-level grant. Runs on detached threads (see
-/// [`BackendRegistry::emergency_release`]); errors are only logged with the
+/// close the persistent OS-level grant. Errors are only logged with the
 /// existing `eprintln!` convention.
+///
+/// (#897 review P2: a late cleanup could terminate apps opened under a
+/// NEW grant) The worker-free sweep, the never-started fast path and the
+/// two control-request ENQUEUES all run synchronously on the caller's
+/// thread; only the reply waits stay on a detached thread. Queue position
+/// is what binds the cleanup to the grant being revoked: the serialized
+/// worker executes the enqueued release before anything a later re-grant
+/// of the same session can enqueue, so `release_os_grant`'s wind-down
+/// take() still sees only the revoked grant's apps. The old bare-spawn
+/// shape enqueued from the detached thread, so a scheduler delay could
+/// line its requests up behind a re-granted session's open — and the late
+/// release would take (and terminate) apps the NEW grant had opened.
+/// Detaching only the reply wait keeps the revoke/stop command
+/// non-blocking on a wedged worker, same as before.
 ///
 /// The flag sweep comes first and is worker-free (it only flips the
 /// registered `AtomicBool`s, never touching the backend): a request whose
@@ -1341,32 +1458,49 @@ impl BackendRegistry {
 /// request is still queued with its flag latched by the sweep above and is
 /// rejected at dequeue (and the tool layer's pre-backend re-check rejects
 /// any later action outright).
-fn emergency_cleanup(handle: BackendHandle) {
+fn spawn_emergency_cleanup(handle: BackendHandle) {
+    spawn_emergency_cleanup_with_done(handle, || {});
+}
+
+/// [`spawn_emergency_cleanup`] with a completion callback (the app-exit
+/// harvest's done signal). `done` runs on the detached thread after both
+/// replies resolved (or immediately when there is nothing to enqueue).
+fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() + Send + 'static) {
     handle.cancel_all_registered_flags();
     if handle.is_never_started() {
+        done();
         return;
     }
-    // A panic on this bare detached thread must not silently strand a held
-    // button / portal grant, so the body runs inside catch_unwind and the
-    // caught payload is logged with the same input-safe summary the worker
-    // uses. (The redacting process hook covers only the worker thread name;
-    // on this thread the default hook runs first — the summary below keeps
-    // our own log line payload-free regardless.)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Err(error) = handle.emergency_mouse_up() {
-            eprintln!("[computer_use] emergency_mouse_up failed: {error}");
+    let steps = match handle.enqueue_emergency_cleanup() {
+        Ok(steps) => steps,
+        Err(error) => {
+            eprintln!("[computer_use] emergency cleanup enqueue failed: {error}");
+            done();
+            return;
         }
-        if let Err(error) = handle.release_os_grant() {
-            eprintln!("[computer_use] release_os_grant failed: {error}");
+    };
+    std::thread::spawn(move || {
+        for (step, reply, cancelled) in steps {
+            let name = step.as_str();
+            match reply.recv_timeout(BACKEND_CALL_TIMEOUT) {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("[computer_use] emergency {name} failed: {error}"),
+                Err(RecvTimeoutError::Timeout) => {
+                    cancelled.store(true, Ordering::SeqCst);
+                    eprintln!(
+                        "[computer_use] emergency {name} timed out; it may still execute or has partially executed"
+                    );
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    cancelled.store(true, Ordering::SeqCst);
+                    eprintln!(
+                        "[computer_use] emergency {name} lost: the backend thread is not running"
+                    );
+                }
+            }
         }
-    }));
-    if let Err(panic) = result {
-        eprintln!(
-            "[computer_use] emergency cleanup panicked: {}",
-            // Deref first — see the worker dispatch arm above.
-            panic_payload_summary(&*panic)
-        );
-    }
+        done();
+    });
 }
 
 #[cfg(test)]
@@ -2345,6 +2479,109 @@ mod tests {
         }
     }
 
+    /// Journals the worker's execution order ("up" per button release,
+    /// "release", "open") so a test can assert which request the serialized
+    /// worker executed first.
+    struct OrderProbeBackend {
+        state: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ComputerUseBackend for OrderProbeBackend {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                screenshot: true,
+                input: true,
+                ui_tree: false,
+                notes: "order-probe".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
+            }
+        }
+
+        fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+            Ok(Capture {
+                rgba: vec![0u8; 4 * 4 * 4],
+                width: 4,
+                height: 4,
+                origin_x: 0,
+                origin_y: 0,
+                input_scale_x: 1.0,
+                input_scale_y: 1.0,
+                input_aligned: true,
+            })
+        }
+
+        fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+            Ok((0, 0))
+        }
+
+        fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn click(&mut self, _button: MouseButton, _count: u8) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_down(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+            self.state.lock().push(format!("up-{}", button.as_str()));
+            Ok(())
+        }
+
+        fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn scroll(
+            &mut self,
+            _direction: ScrollDirection,
+            _clicks: u32,
+        ) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn type_text(&mut self, _text: &str) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn key_chord(&mut self, _keys: &[Key]) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn hold_key(&mut self, _keys: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+            Err(ComputerUseError::unsupported(
+                "ui_tree",
+                "probe has no tree",
+            ))
+        }
+
+        fn element_at_point(
+            &mut self,
+            _x: i32,
+            _y: i32,
+        ) -> Result<Option<ElementInfo>, ComputerUseError> {
+            Ok(None)
+        }
+
+        fn open_app(&mut self, _program: &str, _args: &[String]) -> Result<u32, ComputerUseError> {
+            self.state.lock().push("open".to_string());
+            Ok(4242)
+        }
+
+        fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+            self.state.lock().push("release".to_string());
+            Ok(())
+        }
+    }
+
     /// Spins a slow capture on a helper thread and returns once it provably
     /// holds the in-flight flag. The capture's RESULT is returned by the
     /// thread: a control request racing the registration→dequeue window
@@ -2649,10 +2886,10 @@ mod tests {
     /// was ever injected, so there is nothing to release, and running it
     /// would only lazily construct the platform backend. The factory probe
     /// proves the factory never ran; a subsequent real request must still
-    /// start the backend normally. Called through the `emergency_cleanup`
-    /// funnel synchronously (every registry spawn site routes through it),
-    /// so the skip is observed deterministically — no detached thread, no
-    /// polling.
+    /// start the backend normally. Called through the
+    /// `spawn_emergency_cleanup` funnel synchronously (every registry
+    /// spawn site routes through it), so the skip is observed
+    /// deterministically — no detached reply wait, no polling.
     #[test]
     fn emergency_cleanup_skips_a_never_started_backend() {
         let constructed = Arc::new(AtomicUsize::new(0));
@@ -2661,7 +2898,7 @@ mod tests {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        emergency_cleanup(handle.clone());
+        spawn_emergency_cleanup(handle.clone());
         assert_eq!(
             constructed.load(Ordering::SeqCst),
             0,
@@ -2677,6 +2914,61 @@ mod tests {
             constructed.load(Ordering::SeqCst),
             1,
             "the real request must start the backend exactly once"
+        );
+    }
+
+    /// Regression (#897 review P2: a late cleanup could terminate apps
+    /// opened under a NEW grant): the cleanup's control requests must be
+    /// ENQUEUED by the time `emergency_release` returns, so a release
+    /// requested for the revoked grant executes before anything a
+    /// re-granted session enqueues after it. The journaling mock records
+    /// the worker's execution order: the release enqueued at revoke time
+    /// must precede the post-revoke open. Under the old bare-spawn shape
+    /// the enqueue happened on the detached thread, so the open issued
+    /// immediately after `emergency_release` returned routinely won the
+    /// race and executed first.
+    #[test]
+    fn emergency_release_enqueues_the_release_before_a_post_revoke_open() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let state_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: state_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Start the backend so the never-started fast path does not skip
+        // the cleanup.
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-order", handle.clone());
+        registry.emergency_release("s-order");
+        // The revoke returned; the cleanup requests are already enqueued.
+        // A re-granted session now issues its open — it must EXECUTE after
+        // the release.
+        let opened = handle.open_app("app", &[]);
+        assert!(opened.is_ok(), "the post-revoke open must succeed");
+        // Wait for the worker to execute both, then assert the order.
+        for _ in 0..500 {
+            {
+                let state = journal.lock();
+                if state.contains(&"release".to_string()) && state.contains(&"open".to_string()) {
+                    let release = state.iter().position(|op| op == "release").unwrap();
+                    let open = state.iter().position(|op| op == "open").unwrap();
+                    assert!(
+                        release < open,
+                        "the revoked grant's release must execute before the \
+                         post-revoke open; journal: {state:?}"
+                    );
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the worker never executed both the release and the open; journal: {:?}",
+            journal.lock()
         );
     }
 
