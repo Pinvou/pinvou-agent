@@ -607,7 +607,10 @@ struct BackendInner {
     /// across the whole factory startup (up to BACKEND_CALL_TIMEOUT), so a
     /// state-lock acquisition or an `ensure_sender` call on a release path
     /// would block Stop/revoke for as long as a concurrent first request's
-    /// lazy start takes.
+    /// lazy start takes. The two startup-failure arms clear this entry
+    /// alongside the local sender drop: a cached sender that outlives the
+    /// teardown would hold the channel open past the disconnect contract
+    /// (see the arms' comments).
     wake_tx: Mutex<Option<Sender<BackendRequest>>>,
 }
 
@@ -671,6 +674,14 @@ impl BackendInner {
                     Ok(Err(error)) => {
                         let message = error.to_string();
                         *state = WorkerState::StartFailed(message.clone());
+                        // The cached wake sender must die with the local one:
+                        // keeping it would hold a channel sender past the
+                        // teardown drops below, silencing the disconnect the
+                        // surviving worker (timeout arm) relies on to exit
+                        // once it unwinds from the factory — the same
+                        // thread-leak class the worker's no-sender rule
+                        // exists for.
+                        *self.wake_tx.lock() = None;
                         cleanup = Some((tx, thread));
                         Err(error)
                     }
@@ -685,6 +696,12 @@ impl BackendInner {
                              return within the startup budget, or the thread died)"
                                 .to_string(),
                         );
+                        // Same reason as the factory-error arm: the cached
+                        // wake sender must not outlive the teardown drops,
+                        // or a worker still wedged inside the factory
+                        // loses its disconnect exit when it finally
+                        // unwinds into recv().
+                        *self.wake_tx.lock() = None;
                         cleanup = Some((tx, thread));
                         Err(ComputerUseError::unavailable(
                             "computer use backend startup was abandoned (the factory did not \
@@ -3606,6 +3623,101 @@ mod tests {
         assert!(
             handle.open_app("after", &[]).is_ok(),
             "the backend must serve requests after the racing release"
+        );
+    }
+
+    /// Regression (review P2 round 7): the cached wake sender is stashed
+    /// BEFORE the startup wait, so it must die with the local sender in the
+    /// startup-failure arms — keeping it would hold a channel sender past
+    /// the teardown drops and silence the disconnect a worker wedged in the
+    /// factory relies on to exit once it unwinds (the round-4 thread-leak
+    /// class again). The test drives the same `Err(_)` failure arm the
+    /// 700s-abandonment timeout shares by making the factory panic on the
+    /// worker thread (startup_tx dropped before any reply), then asserts
+    /// the cached entry is gone and the handle fails sticky.
+    #[test]
+    fn startup_failure_clears_the_cached_wake_sender() {
+        struct PanickingFactoryBackend;
+        impl ComputerUseBackend for PanickingFactoryBackend {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    screenshot: false,
+                    input: false,
+                    ui_tree: false,
+                    notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
+                }
+            }
+            fn set_cancel_flag(&mut self, _flag: Option<Arc<AtomicBool>>) {}
+            fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+                Err(ComputerUseError::unsupported("capture", "test"))
+            }
+            fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+                Ok((0, 0))
+            }
+            fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("move_to", "test"))
+            }
+            fn click(&mut self, _b: MouseButton, _c: u8) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("click", "test"))
+            }
+            fn mouse_down(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_down", "test"))
+            }
+            fn mouse_up(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_up", "test"))
+            }
+            fn drag(&mut self, _f: (i32, i32), _t: (i32, i32)) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("drag", "test"))
+            }
+            fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("scroll", "test"))
+            }
+            fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("type_text", "test"))
+            }
+            fn key_chord(&mut self, _k: &[Key]) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("key_chord", "test"))
+            }
+            fn hold_key(&mut self, _k: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("hold_key", "test"))
+            }
+            fn ui_tree(&mut self, _o: &UiTreeOptions) -> Result<String, ComputerUseError> {
+                Err(ComputerUseError::unsupported("ui_tree", "test"))
+            }
+            fn element_at_point(
+                &mut self,
+                _x: i32,
+                _y: i32,
+            ) -> Result<Option<ElementInfo>, ComputerUseError> {
+                Err(ComputerUseError::unsupported("element_at_point", "test"))
+            }
+        }
+        let handle = BackendHandle::lazy(|| {
+            // Reach the worker thread, then die before any startup reply:
+            // startup_rx observes the disconnect and runs the same
+            // abandoned-startup arm as the budget timeout.
+            std::thread::sleep(Duration::from_millis(200));
+            panic!("factory exploded mid-initialization");
+        });
+        let error = handle
+            .capabilities()
+            .err()
+            .expect("the abandoned startup must fail the first request");
+        assert!(
+            error.to_string().contains("abandoned"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            handle.inner.wake_tx.lock().is_none(),
+            "the cached wake sender must be cleared when startup fails"
+        );
+        // The stale handle answers with the sticky failure (no lazy retry).
+        let again = handle.capabilities().err().expect("sticky failure");
+        assert!(
+            again.to_string().contains("not available"),
+            "unexpected error: {again}"
         );
     }
 
