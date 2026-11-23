@@ -618,7 +618,7 @@ assert.match(
 assert.match(
   settingsViewSource,
   /if \(!canSave \|\| savingModel \|\| duplicateSaved\) return;/,
-  'doSave must early-return on a duplicated (model id + base_url) identity even if a stale render left the button enabled',
+  'doSave must early-return on a duplicated (model id + base_url) identity — belt-and-braces behind the disabled button so no invocation path can double-book',
 );
 assert.match(
   settingsViewSource,
@@ -627,14 +627,61 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /data-testid="model-form-duplicate-hint"/,
-  'the duplicated identity must surface an inline hint (a silently dead save button reads as a broken form)',
+  /data-testid="model-form-duplicate-hint" role="status"/,
+  'the duplicated identity must surface an inline hint announced to assistive tech (a silently dead save button reads as a broken form)',
+);
+assert.match(
+  settingsViewSource,
+  /\{duplicateSaved && !savingModel && \(/,
+  'the duplicate hint must hide while a save is in flight (the mid-save models refresh would otherwise flash a misleading already-exists hint)',
+);
+assert.match(
+  settingsViewSource,
+  /initial\.__new \? settingsCopy\.modelDuplicateExists : settingsCopy\.modelDuplicateExistsEdit/,
+  'the duplicate hint must be mode-aware: add mode says no need to save again, edit mode means a twin is already on disk and must be resolved first',
+);
+// 本地探测行添加与表单保存同守同一身份契约(复审 MAJOR:检测→再添加/双击
+// 会以两个新 id 落库同一身份)。行内去重 + 在飞禁用 + 早退三件套缺一即红。
+assert.match(
+  settingsViewSource,
+  /const rowSaved = endpointSavedKeys\.has\(modelDuplicationKey\(row\.model, row\.base_url\)\);/,
+  'local-detect row adds must reuse the picker dedup key over the same saved set (no self-exclusion: a row add always mints a fresh id, the record being edited is already a collision)',
+);
+assert.match(
+  settingsViewSource,
+  /disabled=\{localAddBusyKey === row\.key \|\| rowSaved\}/,
+  'the local-detect row add button must disable while its save is in flight (double-click must not land two records) and when the identity is already saved',
+);
+assert.match(
+  settingsViewSource,
+  /\{rowSaved \? settingsCopy\.modelAlreadySaved : settingsCopy\.add\}/,
+  'an already-saved local candidate row must read 已保存 instead of a dead 添加 button',
+);
+assert.match(
+  settingsViewSource,
+  /if \(localAddBusyKey \|\| endpointSavedKeys\.has\(modelDuplicationKey\(row\.model, row\.base_url\)\)\) return;/,
+  'handleLocalModelAdd must early-return on a duplicated identity or an in-flight add (defense behind the disabled button)',
+);
+assert.match(
+  settingsViewSource,
+  /const \[localAddBusyKey, setLocalAddBusyKey\] = useState\(null\);/,
+  'the local row-add in-flight key must exist (double-click protection state)',
+);
+assert.match(
+  settingsViewSource,
+  /setLocalAddBusyKey\(null\)/,
+  'the in-flight local add busy key must clear back to null on settle — a stuck key silently blocks every later row add (the exact bug shape ⑥.5a/⑥.5b2 caught live in this fixwave)',
 );
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
     settingsI18nSource,
     /modelDuplicateExists:/,
     'the duplicate-save hint copy must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelDuplicateExistsEdit:/,
+    'the edit-mode duplicate hint copy (twin already on disk) must be provided in every UI language',
   );
 }
 // 添加/编辑模型弹窗的滚动必须收敛在内层 data-testid="model-form-scroll" 容器
@@ -1322,6 +1369,17 @@ function injectSource() {
               status: 'ready',
               model: 'qwen36_35b_256k',
               models: ['qwen36_35b_256k'],
+              max_model_len: 262144,
+            }],
+            // ⑦.5b2 持久化臂的未保存身份:8000 行与种子 local-qwen 同身份,
+            // 已被行内去重禁用,故 vLLM 的 max_model_len 持久化断言改走 8100。
+            8100: [{
+              provider: 'vllm',
+              label: 'vLLM',
+              base_url: 'http://127.0.0.1:8100/v1',
+              status: 'ready',
+              model: 'qwen3-next',
+              models: ['qwen3-next'],
               max_model_len: 262144,
             }],
           };
@@ -2279,30 +2337,61 @@ async function modalWidth(page, headingText) {
   await setPortDraft('8000');
   await clickExact(page, '重新检测');
   await sleep(500);
-  const vllmAddClicked = await page.evaluate(() => {
-    const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === 'qwen36_35b_256k');
-    let row = title;
-    while (row && ![...row.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '添加')) {
-      row = row.parentElement;
-    }
-    const button = row && [...row.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '添加');
-    if (!button) return false;
+  // ⑥.5b 本地候选行加入同一 (model id + base_url) 身份契约:8000 行与种子
+  // local-qwen(qwen36_35b_256k @ http://127.0.0.1:8000/v1)同身份——旧行为
+  // 直接落库第二个新 id(正是复审抓到的同弹窗重复路径)。守卫后该行禁用并
+  // 显示「已保存」,点击零落库;未保存的 Ollama 行保持可添加(不误伤)。
+  const localRowGuard = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { dialogFound: false };
+    const rows = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].map(button => ({
+      rowText: (button.parentElement.textContent || '').slice(0, 80),
+      disabled: button.disabled,
+      label: (button.textContent || '').trim(),
+    }));
+    const savesBefore = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length;
+    const vllmButton = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('qwen36_35b_256k'));
+    if (vllmButton) vllmButton.click();
+    return {
+      dialogFound: true,
+      rows,
+      vllmButtonFound: !!vllmButton,
+      savesBefore,
+      savesAfter: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    };
+  });
+  rec('⑥.5b 本地探测行同守身份契约:已保存身份(种子 local-qwen)禁用+「已保存」+点击零落库,未保存行不误伤(⑥.4/⑥.5b2 的未保存行照常添加)',
+    localRowGuard.dialogFound && localRowGuard.vllmButtonFound
+      && localRowGuard.rows.every(row => row.rowText.includes('qwen36_35b_256k') === (row.label === '已保存' && row.disabled))
+      && localRowGuard.savesAfter === localRowGuard.savesBefore,
+    JSON.stringify(localRowGuard));
+  // ⑥.5b2 vLLM 部署 max_model_len 持久化臂移到未保存身份(8100):守卫不得
+  // 误伤正常的候选行添加,持久化语义与旧行为一致。
+  await setPortDraft('8100');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const unsavedRowAdd = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('qwen3-next'));
+    if (!button || button.disabled) return { clicked: false };
     button.click();
-    return true;
+    return { clicked: true };
   });
   await sleep(500);
-  const savedVllmModel = await page.evaluate(() => {
+  const savedUnsavedRow = await page.evaluate(() => {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑥.5b vLLM candidate keeps persisting its deployment max_model_len',
-    vllmAddClicked
-      && savedVllmModel
-      && savedVllmModel.preset === 'local_vllm'
-      && savedVllmModel.base_url === 'http://127.0.0.1:8000/v1'
-      && savedVllmModel.model === 'qwen36_35b_256k'
-      && savedVllmModel.context_window_tokens === 262144,
-    JSON.stringify(savedVllmModel));
+  rec('⑥.5b2 未保存身份的候选行仍可添加且 vLLM 持久化部署 max_model_len',
+    unsavedRowAdd.clicked
+      && savedUnsavedRow
+      && savedUnsavedRow.preset === 'local_vllm'
+      && savedUnsavedRow.base_url === 'http://127.0.0.1:8100/v1'
+      && savedUnsavedRow.model === 'qwen3-next'
+      && savedUnsavedRow.context_window_tokens === 262144,
+    JSON.stringify(savedUnsavedRow));
   await setPortDraft('');
 
   await clickExact(page, '添加模型');
@@ -2874,7 +2963,7 @@ async function modalWidth(page, headingText) {
     unchanged: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length === saves,
   }), dupGuardState.saves);
   await page.evaluate(() => {
-    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const input = document.querySelector('[data-testid="model-form-dialog"] input[placeholder="输入模型 ID"]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(input, 'glm-9-unsaved');
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2888,7 +2977,7 @@ async function modalWidth(page, headingText) {
     };
   });
   await page.evaluate(() => {
-    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const input = document.querySelector('[data-testid="model-form-dialog"] input[placeholder="输入模型 ID"]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(input, 'glm-5.3-flash');
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3182,6 +3271,82 @@ async function modalWidth(page, headingText) {
   rec('⑦.1 保存别名后模型列表立即以别名为标题并保留服务商与模型 ID',
     Object.values(savedAliasInventory).every(Boolean),
     JSON.stringify(savedAliasInventory));
+
+  // ⑦.2 编辑态重复条目(旧版本落库的同身份双记录,1.0.2 用户实测):编辑任意
+  // 一条时保存禁用并给「先去重」的编辑态文案;经列表删除其一后,同一条记录
+  // 恢复可保存且以原 id 落库——duplicateSaved 只由其余条目驱动(编辑态自身
+  // 排除的活体证据,守住删除过滤的正向用例)。
+  await page.evaluate(async () => {
+    await window.__TAURI__.core.invoke('save_model', { model: {
+      id: 'dup-twin-local-qwen', name: '重复副本', preset: 'local_vllm',
+      model: 'qwen36_35b_256k', base_url: 'http://127.0.0.1:8000/v1',
+      context_window_tokens: null, max_output_tokens: null,
+      api_key: '', credential_action: 'keep_existing',
+    } });
+  });
+  await page.evaluate(() => window.TauriBridge.models.setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
+  await sleep(400);
+  // 行标题 = alias || model || name,本地记录别名被强制为空 → 标题即模型 ID,
+  // 副本名不渲染:两条同身份记录在列表里视觉完全同形(正是用户删错权威行的
+  // 根源)。首个匹配行是种子 local-qwen(副本按 applySaveModel 追加在末位)。
+  await clickRowAction(page, 'qwen36_35b_256k', '编辑');
+  await sleep(300);
+  const twinEditState = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root.querySelector('[data-testid="model-form-save"]');
+    const hint = root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint,
+      hintText: hint ? (hint.textContent || '').trim() : '',
+    };
+  });
+  rec('⑦.2 编辑态命中盘上重复条目:保存禁用且提示先去重(编辑态专用文案,非新建态措辞)',
+    twinEditState.saveDisabled && twinEditState.hintShown
+      && twinEditState.hintText.includes('删除重复项或修改本条目')
+      && !twinEditState.hintText.includes('无需重复保存'),
+    JSON.stringify(twinEditState));
+  await clickExact(page, '取消');
+  await sleep(200);
+  // 删除副本行:同形行取 DOM 末位(applySaveModel 追加序),不能按名找(名不渲染)。
+  const twinDeleteClicked = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('button')]
+      .filter(button => (button.textContent || '').trim() === '删除')
+      .map(button => button.closest('[class*="grid-cols-["]'))
+      .filter(row => row && (row.textContent || '').includes('qwen36_35b_256k'));
+    const twinRow = rows[rows.length - 1];
+    const button = twinRow && [...twinRow.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '删除');
+    if (!button) return false;
+    button.scrollIntoView({ block: 'center' });
+    button.click();
+    return true;
+  });
+  if (!twinDeleteClicked) throw new Error('找不到重复副本行');
+  await sleep(200);
+  await clickExact(page, '删除模型');
+  await sleep(500);
+  await clickRowAction(page, 'qwen36_35b_256k', '编辑');
+  await sleep(300);
+  const twinGoneSave = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root.querySelector('[data-testid="model-form-save"]');
+    if (save.disabled) return { clicked: false, id: null };
+    save.click();
+    return { clicked: true, id: null };
+  });
+  await sleep(500);
+  const twinGoneState = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      root: !!document.querySelector('[data-testid="model-form-dialog"]'),
+      hintGone: !document.querySelector('[data-testid="model-form-duplicate-hint"]'),
+      savedId: call && call.args && call.args.model && call.args.model.id,
+    };
+  });
+  rec('⑦.2b 去重后同一条记录恢复可保存且以原 id 落库(自身排除的活体证据)',
+    twinGoneSave.clicked && !twinGoneState.root && twinGoneState.hintGone
+      && twinGoneState.savedId === 'local-qwen',
+    JSON.stringify(twinGoneState));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

@@ -1310,6 +1310,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   filledFromEndpoint:'エンドポイントの検出結果から入力しました',
   modelAlreadySaved:'保存済み',
   modelDuplicateExists:'同じモデル ID とサービスアドレスのモデルが既に存在します。再度保存する必要はありません',
+  modelDuplicateExistsEdit:'同じモデル ID とサービスアドレスの別のエントリが既に存在します。重複を削除するか、このエントリを変更してから保存してください',
   fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
   modelListFilterEmpty:'フィルターに一致するモデルはありません',
   modelListTruncated:'エンドポイントの応答またはコンテキスト取得が途中で打ち切られたため、結果は不完全な場合があります',

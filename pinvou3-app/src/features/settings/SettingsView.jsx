@@ -457,6 +457,8 @@ function hasStoredCredential(record) {
       const [testResult, setTestResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // 本地候选行添加的在飞行 key(行 key):双击/连点的第二次落库被禁用挡住。
+      const [localAddBusyKey, setLocalAddBusyKey] = useState(null);
       // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
       const [localPortDraft, setLocalPortDraft] = useState('');
       // Inline validation message for the custom port. Kept separate from
@@ -1159,6 +1161,22 @@ function hasStoredCredential(record) {
           credential_action: 'keep_existing',
         };
       }
+      // 本地候选行添加与表单保存同守 (model id + base_url) 身份契约(规格 §2.6):
+      // 行添加总是新建 id,已保存(含正在编辑的记录本身——本 picker 仅在新建态
+      // 渲染,自身记录也已在列)即禁用并显示「已保存」,否则检测→再添加/双击会
+      // 以两个新 id 落库同一身份(与端点逐行添加同一去重口径)。
+      async function handleLocalModelAdd(row) {
+        if (localAddBusyKey || endpointSavedKeys.has(modelDuplicationKey(row.model, row.base_url))) return;
+        setLocalAddBusyKey(row.key);
+        try {
+          await onSave(buildLocalModelPayload(row));
+        } catch (error) {
+          // 与 doSave 同款:保存失败保持弹窗并给行内提示,不丢弃候选列表。
+          setSaveError(String(error && error.message ? error.message : error));
+        } finally {
+          setLocalAddBusyKey(null);
+        }
+      }
       // 本机模型检测（本地选择页「检测」按钮）：只列出候选行，绝不自动填充表单——
       // Ollama/LM Studio 的列表接口返回全部已下载模型，JIT 机制下加载未运行模型可能
       // 静默载入几十 GB；候选是否添加由用户显式点击决定（安全不变量，由
@@ -1485,7 +1503,13 @@ function hasStoredCredential(record) {
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
                   <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
-                {rows.map(row => (
+                {rows.map(row => {
+                  // 与表单保存同一 (model id + base_url) 身份契约(规格 §2.6):
+                  // 已保存(含正在编辑的记录)的候选行禁用并显示「已保存」,防止
+                  // 检测→再添加/双击以两个新 id 落库同一身份;endpointSavedKeys
+                  // 同款不 memo 化(React Compiler 早退结构约束)。
+                  const rowSaved = endpointSavedKeys.has(modelDuplicationKey(row.model, row.base_url));
+                  return (
                   <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
                     <ProviderIcon preset="local_vllm" compact />
                     <span className="min-w-0 flex-1">
@@ -1499,10 +1523,13 @@ function hasStoredCredential(record) {
                         {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
                       </span>
                     </span>
-                    <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
-                      className={actionClass}>{settingsCopy.add}</button>
+                    <button type="button" data-testid="local-model-row-add"
+                      onClick={() => handleLocalModelAdd(row)}
+                      disabled={localAddBusyKey === row.key || rowSaved}
+                      className={actionClass}>{rowSaved ? settingsCopy.modelAlreadySaved : settingsCopy.add}</button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
             <section>
@@ -1540,7 +1567,10 @@ function hasStoredCredential(record) {
       // 保存按钮加入同一身份契约(规格 §2.6:model id + base_url):「获取模型
       // 列表」的逐行/批量添加都按它去重,唯独表单保存此前不查——先探测把
       // 端点行(带真实长度事实,更权威)落库,再点「保存」,同一条身份会以两
-      // 个新 id 落库两次。命中已保存身份时禁用保存并提示;编辑态排除自身。
+      // 个新 id 落库两次。命中已保存身份时禁用保存并提示;编辑态排除自身,
+      // 但其余条目命中意味着盘上已有重复条目(旧版本落库的双记录),提示
+      // 文案换编辑态专用措辞(先去重再改)。本地探测行添加走同一契约
+      // (handleLocalModelAdd)。
       // 与 endpointSavedKeys 同样不 memo 化(同款 React Compiler 约束)。
       const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
       const duplicateSaved = formSavedKeys.has(modelDuplicationKey(model.trim(), baseUrl.trim()));
@@ -1932,10 +1962,12 @@ function hasStoredCredential(record) {
               </div>
             )}
             {/* (model id + base_url) 已保存:禁用保存并提示(规格 §2.6 身份契约;
-                端点探测落库的行带真实长度事实,重复的目录行不再二次落库)。 */}
-            {duplicateSaved && (
-              <div data-testid="model-form-duplicate-hint" className={`px-5 pt-3 border-t ${formDivider}`}>
-                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelDuplicateExists}</div>
+                端点探测落库的行带真实长度事实,重复的目录行不再二次落库)。
+                编辑态换专用文案(盘上已有双条目,先去重);savingModel 期间不渲染,
+                避免保存链路中 models 先行刷新导致的瞬时「已存在」闪现。 */}
+            {duplicateSaved && !savingModel && (
+              <div data-testid="model-form-duplicate-hint" role="status" className={`px-5 pt-3 border-t ${formDivider}`}>
+                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{initial.__new ? settingsCopy.modelDuplicateExists : settingsCopy.modelDuplicateExistsEdit}</div>
               </div>
             )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>

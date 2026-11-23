@@ -1303,6 +1303,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   filledFromEndpoint:'Filled from the endpoint probe',
   modelAlreadySaved:'Saved',
   modelDuplicateExists:'A model with the same model ID and service URL already exists — no need to save again',
+  modelDuplicateExistsEdit:'Another entry with the same model ID and service URL already exists — remove the duplicate or change this entry to save',
   fetchUnavailable:'This build cannot fetch model lists yet',
   modelListFilterEmpty:'No models match this filter',
   modelListTruncated:'Endpoint response or context lookups stopped early; results may be incomplete',
