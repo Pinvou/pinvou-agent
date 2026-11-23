@@ -729,8 +729,9 @@ fn localize_wheel_download_failure(
             wheel.name
         ),
         F::TooLarge => format!(
-            "Python dependency {} exceeds the 2 GiB safety limit",
-            wheel.name
+            "Python dependency {} exceeds the {} GiB safety limit",
+            wheel.name,
+            MAX_WHEEL_BYTES / (1024 * 1024 * 1024)
         ),
         F::CreatePart(e) => format!("failed to create the wheel staging file: {e}"),
         F::WritePart(e) => format!("failed to save the wheel: {e}"),
