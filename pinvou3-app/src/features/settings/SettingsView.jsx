@@ -122,8 +122,6 @@ function imageCapabilityForCatalogModel(model) {
 // Stable default: avoid creating a fresh array literal on every render (react/no-unstable-default-props).
 /** @type {SettingsModelEntry[]} */
 const EMPTY_MODELS = [];
-/** @type {Set<string>} */
-const EMPTY_JUST_SAVED_KEYS = new Set();
 
 /**
  * @param {MemoryItem} item - Memory item with timestamps.
@@ -451,7 +449,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
 
     // 添加/编辑模型模态弹窗。
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, justSavedKeys = EMPTY_JUST_SAVED_KEYS, onSaveCommitted }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, onSaveCommitted }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -3279,7 +3277,9 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // r3 lane G). Keys clear derivatively once the models list actually
       // contains the identity; nothing is registered on failure, so retries
       // stay possible.
-      const [justSavedKeys, setJustSavedKeys] = useState(() => new Set());
+      // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
+      // 把落库后的禁用态刷进同一次提交。
+      const [, setJustSavedKeys] = useState(() => new Set());
       const markSaveCommitted = key => {
         // 模块簿是唯一活源(r5 复审补线,commit-only 版):批量循环逐行直读
         // committed——刷新失败(loadModels 吞错清列表)时实时镜像与冻结快照
@@ -4045,7 +4045,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
               onCancel={() => setEditingModel(null)}
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={onSaveModel}
-              justSavedKeys={justSavedKeys} onSaveCommitted={markSaveCommitted} />
+              onSaveCommitted={markSaveCommitted} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}

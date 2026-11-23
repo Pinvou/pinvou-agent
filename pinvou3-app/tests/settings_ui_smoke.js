@@ -659,11 +659,12 @@ assert.match(
 );
 // r3 复审补全(刷新失败分支 + 在飞禁关层 + PR 声明两钉):查册在落库落定时
 // 出册,而 loadModels 会吞 list_models 失败并清空列表——已提交未确认的身份
-// 由父层 justSavedKeys 继续拦截,列表确认后派生解除;Escape/X 在飞禁关层。
+// 由模块 committed 簿继续拦截,列表确认后 effect 出册(r5 前由父层 state
+// 派生解除);Escape/X 在飞禁关层。
 assert.match(
   settingsViewSource,
-  /const \[justSavedKeys, setJustSavedKeys\] = useState\(\(\) => new Set\(\)\);/,
-  'the parent commit-mark state must exist as the render driver — the authority is the module-level committed book; the setState flushes blocked visuals in the same commit as the save',
+  /const \[, setJustSavedKeys\] = useState\(\(\) => new Set\(\)\);/,
+  'the parent commit-mark state must exist as the render driver only (value elided) — the authority is the module-level committed book; the setState flushes blocked visuals in the same commit as the save',
 );
 assert.match(
   settingsViewSource,
@@ -687,8 +688,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /justSavedKeys=\{justSavedKeys\} onSaveCommitted=\{markSaveCommitted\}/,
-  'the parent must hand the modal the committed book and the commit mark — each write path registers its identity only after the save resolves (failure paths stay retryable)',
+  /onSaveCommitted=\{markSaveCommitted\} \/>/,
+  'the parent must hand the modal the commit mark — each write path registers its identity only after the save resolves (failure paths stay retryable); the book itself travels through the module, not props',
 );
 assert.match(
   settingsViewSource,
