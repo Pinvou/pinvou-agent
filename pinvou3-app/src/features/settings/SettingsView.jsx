@@ -49,6 +49,7 @@ import { StatusChip } from './StatusChip.jsx';
 import EndpointModelPicker from './endpoint-model-picker.jsx';
 import {
   ADD_ALL_BATCH_LIMIT,
+  modelDuplicationKey,
   normalizeDiscoveredRows,
   savedModelKeys,
   splitBatchAdd,
@@ -1031,7 +1032,7 @@ function hasStoredCredential(record) {
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
-        if (!canSave || savingModel) return;
+        if (!canSave || savingModel || duplicateSaved) return;
         const id = initial.__new ? makeModelId() : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
@@ -1536,6 +1537,13 @@ function hasStoredCredential(record) {
       // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
       // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
       const endpointSavedKeys = savedModelKeys(models);
+      // 保存按钮加入同一身份契约(规格 §2.6:model id + base_url):「获取模型
+      // 列表」的逐行/批量添加都按它去重,唯独表单保存此前不查——先探测把
+      // 端点行(带真实长度事实,更权威)落库,再点「保存」,同一条身份会以两
+      // 个新 id 落库两次。命中已保存身份时禁用保存并提示;编辑态排除自身。
+      // 与 endpointSavedKeys 同样不 memo 化(同款 React Compiler 约束)。
+      const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
+      const duplicateSaved = formSavedKeys.has(modelDuplicationKey(model.trim(), baseUrl.trim()));
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
@@ -1923,9 +1931,16 @@ function hasStoredCredential(record) {
                 </div>
               </div>
             )}
+            {/* (model id + base_url) 已保存:禁用保存并提示(规格 §2.6 身份契约;
+                端点探测落库的行带真实长度事实,重复的目录行不再二次落库)。 */}
+            {duplicateSaved && (
+              <div data-testid="model-form-duplicate-hint" className={`px-5 pt-3 border-t ${formDivider}`}>
+                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelDuplicateExists}</div>
+              </div>
+            )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
-              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
+              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel || duplicateSaved}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
                 {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>

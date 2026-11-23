@@ -601,6 +601,42 @@ assert.match(addAllDialogSource, /addAllConfirm\(/, 'the dialog title must carry
 assert.match(addAllDialogSource, /addAllTruncated\(/, 'oversized listings must surface the truncation notice in the confirm');
 assert.match(addAllDialogSource, /onConfirm=\{confirmAddAllEndpointModels\}/, 'the dialog OK button must route into the confirmed batch handler');
 assert.match(addAllDialogSource, /onCancel=\{\(\) => setAddAllModelsConfirm\(null\)\}/, 'cancel must discard the pending batch without saving');
+// 表单保存加入同一 (model id + base_url) 身份契约:逐行/批量添加都按它去重,
+// 唯独 doSave 此前不查——探测「全部添加」把端点行(带真实长度事实)落库后
+// 再点「保存」,同一条身份会以两个新 id 落库两次(用户实测 deepseek-flash
+// 双条目)。守卫禁用保存 + 行内提示 + doSave 早退;编辑态必须排除自身 id。
+assert.match(
+  settingsViewSource,
+  /const formSavedKeys = savedModelKeys\(\(models \|\| \[\]\)\.filter\(saved => saved && saved\.id !== initial\.id\)\);/,
+  'the form-save duplicate guard must fold the saved list minus the record being edited (self-exclusion keeps the edit flow saveable) — removing the id filter must go red',
+);
+assert.match(
+  settingsViewSource,
+  /const duplicateSaved = formSavedKeys\.has\(modelDuplicationKey\(model\.trim\(\), baseUrl\.trim\(\)\)\);/,
+  'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(!canSave \|\| savingModel \|\| duplicateSaved\) return;/,
+  'doSave must early-return on a duplicated (model id + base_url) identity even if a stale render left the button enabled',
+);
+assert.match(
+  settingsViewSource,
+  /disabled=\{!canSave \|\| savingModel \|\| duplicateSaved\}/,
+  'the save button must disable on a duplicated (model id + base_url) identity (probed add-all then save must not double-book)',
+);
+assert.match(
+  settingsViewSource,
+  /data-testid="model-form-duplicate-hint"/,
+  'the duplicated identity must surface an inline hint (a silently dead save button reads as a broken form)',
+);
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /modelDuplicateExists:/,
+    'the duplicate-save hint copy must be provided in every UI language',
+  );
+}
 // 添加/编辑模型弹窗的滚动必须收敛在内层 data-testid="model-form-scroll" 容器
 // （min-h-0 + flex-1 + overflow-y-auto），弹窗本体（圆角 + max-h 元素）不再自带
 // overflow-y-auto：fixed + backdrop-filter 祖先链下，个别 WebKit 内核不会为
@@ -2808,6 +2844,77 @@ async function modalWidth(page, headingText) {
       && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2
       && batchState.reloadBursts === 1 && batchState.deferRefreshed,
     JSON.stringify({ addAllGate, batchState }));
+  // ⑥.5k6b 表单保存加入同一 (model id + base_url) 身份契约。此时表单
+  // model=glm-5.3-flash(⑥.5k2c 设置)且 ⑥.5g 已把它落库在同一端点——
+  // 「全部添加」确认后 picker 关闭、用户再点「保存」正是用户实测的复现
+  // 路径(旧实现以新 id 双落库 deepseek-flash)。填 key 让 canSave 通过:
+  // 保存必须禁用 + 行内提示 + 点击零落库;换成未保存的 model id 后保存
+  // 恢复可用(禁用由身份冲突驱动,不只是 canSave)。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, 'sk-dup-guard');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  const dupGuardState = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root.querySelector('[data-testid="model-form-save"]');
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!root.querySelector('[data-testid="model-form-duplicate-hint"]'),
+      saves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(300);
+  const dupGuardNoSave = await page.evaluate(saves => ({
+    savesAfter: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    unchanged: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length === saves,
+  }), dupGuardState.saves);
+  await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'glm-9-unsaved');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  const reenabled = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      saveDisabled: root.querySelector('[data-testid="model-form-save"]').disabled,
+      hintGone: !root.querySelector('[data-testid="model-form-duplicate-hint"]'),
+    };
+  });
+  await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'glm-5.3-flash');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  const reDisabled = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      saveDisabled: root.querySelector('[data-testid="model-form-save"]').disabled,
+      hintShown: !!root.querySelector('[data-testid="model-form-duplicate-hint"]'),
+    };
+  });
+  rec('⑥.5k6b the form save joins the (model id + base_url) identity contract — after add-all, save is disabled with an inline hint and stays a no-op click; the guard tracks the live model id (unsaved id re-enables)',
+    dupGuardState.saveDisabled && dupGuardState.hintShown && dupGuardNoSave.unchanged
+    && !reenabled.saveDisabled && reenabled.hintGone
+    && reDisabled.saveDisabled && reDisabled.hintShown,
+    JSON.stringify({ dupGuardState, dupGuardNoSave, reenabled, reDisabled }));
+  // 还原:清 key(回到 k6 之前的表单形态),后续 k7+ 的取列表断言不受影响。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, '');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
   // 恢复默认 test_model_connection 响应,不污染后续流程。
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
   // round-4 m1-12:truncated 通知与渲染上限尾注的运行时钉(setProbeEndpointListing
