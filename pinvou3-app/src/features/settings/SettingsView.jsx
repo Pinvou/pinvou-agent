@@ -949,6 +949,9 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         const batchSavedKeys = new Set(endpointSavedKeys);
         for (const key of inFlightModelCreates) batchSavedKeys.add(key);
         // 已落库但列表未确认的身份(刷新失败分支,r3 lane G)同样不入批。
+        // 活册同样入快照(r5 复审补线):确认弹窗挂起期间另一入口落库的身份,
+        // 即使刷新失败(.listed 与冻结快照都看不见)也绝不进批。
+        for (const key of inFlightModelCreates.committed) batchSavedKeys.add(key);
         for (const key of pendingSavedKeys) batchSavedKeys.add(key);
         const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), batchSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
@@ -982,6 +985,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             // 闭包三源停在首次 await 前,重开弹窗在本行等待期间落库的同一
             // 身份只出现在实时镜像里。
             if (inFlightModelCreates.has(rowIdentity) || inFlightModelCreates.listed.has(rowIdentity)
+              || inFlightModelCreates.committed.has(rowIdentity)
               || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
             inFlightModelCreates.add(rowIdentity);
             batchIdentities.push(rowIdentity);
@@ -1704,7 +1708,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // identities until settle; this holds them until the list confirms.
       // Not memoized, same as endpointSavedKeys (React Compiler constraint;
       // sub-millisecond rebuild).
-      const pendingSavedKeys = new Set([...justSavedKeys].filter(key => !endpointSavedKeys.has(key)));
+      // r5 复审补线(P2-2 收口):派生源改为模块簿 .committed(每渲染由上层
+      // effect 出册已列身份)。旧实现读只增不减的 justSavedKeys,列表确认后
+      // 用户删除身份,过滤器把旧键复活成 pending——同身份从此加不回,提示还
+      // 谎称"已存在"(活体复现见 ⑦.8)。模块簿在确认时出册,删除后无从复活。
+      const pendingSavedKeys = new Set([...inFlightModelCreates.committed].filter(key => !endpointSavedKeys.has(key)));
       // The save button joins the same identity contract (spec §2.6: model id
       // + base_url). The endpoint list's per-row and add-all adds already
       // dedupe by it; the form save was the one path that never checked —
@@ -3261,11 +3269,19 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // contains the identity; nothing is registered on failure, so retries
       // stay possible.
       const [justSavedKeys, setJustSavedKeys] = useState(() => new Set());
-      const markSaveCommitted = key => setJustSavedKeys(prev => {
-        const next = new Set(prev);
-        next.add(key);
-        return next;
-      });
+      const markSaveCommitted = key => {
+        // 模块簿是唯一活源(r5 复审补线,commit-only 版):批量循环逐行直读
+        // committed——刷新失败(loadModels 吞错清列表)时实时镜像与冻结快照
+        // 里都没有该身份,这里不记,循环就会对同一身份再落一个 id。
+        inFlightModelCreates.committed.add(key);
+        // state Set 从此只作渲染驱动(pendingSavedKeys 改读模块簿):落库后
+        // 用一次重渲把禁用态刷出来;值本身不再被读取。
+        setJustSavedKeys(prev => {
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
+      };
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
         { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
