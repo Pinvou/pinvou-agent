@@ -1052,9 +1052,21 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 索引进度 1s 轮询(#817 B3 起走共享的 useIntervalWhen;回调 latest-ref
       // 取最新 replaceIndexState/loadColls/loadDocs/activeColl)。
       useIntervalWhen(async () => {
+        // 发起时先钉住本次轮询的集:await 会跨越用户切集,闭包捕获的
+        // activeColl 在落地时已是旧集。
+        const selectedId = activeColl && activeColl.id;
         try {
           const s = await invokeTauri('kb_index_status'); replaceIndexState(s);
-          if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
+          if (!s.running) {
+            loadColls();
+            // 复审 P2:落地后核对当前选择。A 库的状态请求待定期间切到 B,
+            // A 的迟到「索引完成」若仍以闭包里的旧集调 loadDocs(A),该请求
+            // 拿到的 generation 晚于 B——A 的内容盖掉 B,新增分页的页状态
+            // 却属于 A:续页被身份校验拒发,B 的后续页不可达,行操作引用
+            // A 的文档。仍是发起时的集才代劳刷新;已切集的场景由切换路径
+            // 自己加载,这里绝不能碰。
+            if (selectedId && activeCollRef.current?.id === selectedId) loadDocs(selectedId);
+          }
         } catch { /* silently degrade */ }
       }, 1000, indexing);
 

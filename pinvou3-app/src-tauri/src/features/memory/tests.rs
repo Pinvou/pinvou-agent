@@ -1620,6 +1620,113 @@ fn confirm_pending_memory_refuses_wipe_shaped_profile_labels_and_keeps_them_pend
     drop(home);
 }
 
+/// 复审 P2：确认一个称呼会整档写回 profile——若文件里保留的另一称呼是
+/// wipe 形（手改或旧版本写入的历史形态，update_profile 的存量守卫所保护
+/// 的同一形状），确认本侧的完全合法候选仍会把它静默抹掉。确认臂在同一条
+/// 写锁内复用现成的存量字段检查（原始文件读取：load_profile 读时即归一
+/// 化，内存档案无法作证），只看保留侧；拒绝保持候选 pending。两个方向
+/// 各钉一例，同侧豁免（候选整体替换存量）与干净档案照常确认各收一例。
+#[test]
+fn confirm_refuses_when_the_retained_stored_label_is_wipe_shaped() {
+    let home = IsolatedPinvouHome::new("confirm-retained-wipe-shaped-label");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    // (a) 确认 call_name，文件里保留的 assistant_alias 是 wipe 形：拒绝并
+    // 点名保留侧 topic，原始文件原样保留，候选保持 pending。
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"阿宝","assistant_alias":"Christian Wolf"}}"#,
+    )
+    .unwrap();
+    let candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "阿欢".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused = confirm_pending_memory(&candidate.id)
+        .expect_err("confirming over a wipe-shaped retained alias must be refused");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("memory_profile_label_rejected"),
+        "the refusal carries the family's crafted prefix: {refused}"
+    );
+    assert!(
+        refused.to_string().contains("assistant_alias"),
+        "the refusal names the retained topic: {refused}"
+    );
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.contains("Christian Wolf"),
+        "nothing was written: the stored alias survives untouched: {raw}"
+    );
+    let still = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == candidate.id)
+        .expect("the refused candidate stays pending");
+    assert_eq!(still.status, PENDING_STATUS_PENDING);
+    drop(home);
+
+    // (b) 反向：确认 assistant_alias，保留侧 call_name 是 wipe 形——同样
+    // 拒绝并点名 call_name。
+    let home = IsolatedPinvouHome::new("confirm-retained-wipe-shaped-call-name");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"Christian Wolf","assistant_alias":"小品"}}"#,
+    )
+    .unwrap();
+    let alias_candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "assistant_alias".to_string(),
+        content: "小宝".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused_alias = confirm_pending_memory(&alias_candidate.id)
+        .expect_err("the retained call_name shape must refuse an alias confirm");
+    assert!(
+        refused_alias.to_string().contains("call_name"),
+        "the refusal names the retained call_name: {refused_alias}"
+    );
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("Christian Wolf"), "nothing written: {raw}");
+    drop(home);
+
+    // (c) 同侧豁免：wipe 形的是候选自己的 topic——候选整体替换存量，照常
+    // 确认（对侧字段缺省不受影响）。
+    let home = IsolatedPinvouHome::new("confirm-same-topic-stored-shape-exempt");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"Christian Wolf"}}"#,
+    )
+    .unwrap();
+    let same_topic = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "阿欢".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&same_topic.id)
+        .unwrap()
+        .expect("replacing the same topic's stored shape must confirm");
+    let profile = load_profile().unwrap();
+    assert_eq!(profile.identity.call_name, "阿欢");
+    assert!(
+        profile.identity.assistant_alias.is_empty(),
+        "the absent alias stays absent"
+    );
+    drop(home);
+}
+
 #[test]
 fn render_empty_profile_is_empty() {
     let profile = MemoryProfile {

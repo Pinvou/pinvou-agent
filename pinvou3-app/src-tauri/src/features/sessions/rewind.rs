@@ -653,15 +653,16 @@ impl SessionStore {
                     );
                 }
                 if let Err(error) = persist_rewound_turns_map(&backups) {
-                    eprintln!(
-                        "[sessions] remove consumed rewind backup for {id} failed: {error:#}"
-                    );
+                    // Session ids are identifiers, not diagnostics: the
+                    // operation label plus the error carries the diagnosis
+                    // (review CodeQL threads — keep ids out of stderr).
+                    eprintln!("[sessions] remove consumed rewind backup failed: {error:#}");
                 }
                 Ok(())
             };
             if let Err(error) = consume() {
                 eprintln!(
-                    "[sessions] consume rewind backup for {id} skipped (transcript already restored; orphaned record is the documented worst case): {error:#}"
+                    "[sessions] consume rewind backup skipped (transcript already restored; orphaned record is the documented worst case): {error:#}"
                 );
             }
         }
