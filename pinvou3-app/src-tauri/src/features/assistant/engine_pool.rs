@@ -5387,8 +5387,11 @@ impl EnginePool {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
             (Err(change_mode), Err(ruleset)) => {
+                // Session ids are identifiers, not diagnostics (CodeQL
+                // cleartext-logging discipline): the operation label plus
+                // the two errors carry the diagnosis.
                 eprintln!(
-                    "[engine_pool] sync_session_safety_posture {session_id}: ruleset refresh \
+                    "[engine_pool] sync_session_safety_posture: ruleset refresh \
                      also failed after the change-mode failure: {ruleset:?}"
                 );
                 Err(change_mode)
@@ -5485,8 +5488,10 @@ impl EnginePool {
         // itself still goes out on the best-known posture, exactly the
         // trade the mode-publish path documents.
         if let Err(error) = self.sync_session_safety_posture(session_id).await {
+            // Same log discipline: the seam label plus the error carries the
+            // diagnosis; keep the session id out of stderr.
             eprintln!(
-                "[engine_pool] edit-resend posture sync for {session_id} failed: {error:#}; \
+                "[engine_pool] edit-resend posture sync failed: {error:#}; \
                  the resend runs on the engine's standing posture"
             );
         }

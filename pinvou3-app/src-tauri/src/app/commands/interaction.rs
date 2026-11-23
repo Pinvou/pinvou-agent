@@ -772,7 +772,10 @@ pub async fn decide_approval(
             pending.request_workspace_generation,
         ) {
             eprintln!(
-                "[interaction] grant memory refused (generation advanced by a rebind): session {session_id} approval {approval_id}"
+                // Session ids are identifiers, not diagnostics (CodeQL
+                // cleartext-logging discipline): the outcome label plus the
+                // approval id carries the diagnosis.
+                "[interaction] grant memory refused (generation advanced by a rebind): approval {approval_id}"
             );
         }
     }
@@ -785,7 +788,7 @@ pub async fn decide_approval(
             pending.request_workspace_generation,
         ) {
             eprintln!(
-                "[interaction] denial memory refused (generation advanced by a rebind): session {session_id} approval {approval_id}"
+                "[interaction] denial memory refused (generation advanced by a rebind): approval {approval_id}"
             );
         }
     }
