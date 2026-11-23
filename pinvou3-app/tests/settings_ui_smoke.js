@@ -617,31 +617,9 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /if \(!canSave \|\| savingModel \|\| duplicateSaved\) return;/,
-  'doSave must early-return on a duplicated (model id + base_url) identity — belt-and-braces behind the disabled button so no invocation path can double-book',
+  /if \(!canSave \|\| savingModel \|\| duplicateSaved \|\| localAddInFlightRef\.current\) return;/,
+  'doSave must early-return on a duplicated (model id + base_url) identity or a pending local row add — belt-and-braces behind the disabled button so no invocation path can double-book',
 );
-assert.match(
-  settingsViewSource,
-  /disabled=\{!canSave \|\| savingModel \|\| duplicateSaved\}/,
-  'the save button must disable on a duplicated (model id + base_url) identity (probed add-all then save must not double-book)',
-);
-assert.match(
-  settingsViewSource,
-  /data-testid="model-form-duplicate-hint" role="status"/,
-  'the duplicated identity must surface an inline hint announced to assistive tech (a silently dead save button reads as a broken form)',
-);
-assert.match(
-  settingsViewSource,
-  /\{duplicateSaved && !savingModel && \(/,
-  'the duplicate hint must hide while a save is in flight (the mid-save models refresh would otherwise flash a misleading already-exists hint)',
-);
-assert.match(
-  settingsViewSource,
-  /initial\.__new \? settingsCopy\.modelDuplicateExists : settingsCopy\.modelDuplicateExistsEdit/,
-  'the duplicate hint must be mode-aware: add mode says no need to save again, edit mode means a twin is already on disk and must be resolved first',
-);
-// 本地探测行添加与表单保存同守同一身份契约(复审 MAJOR:检测→再添加/双击
-// 会以两个新 id 落库同一身份)。行内去重 + 在飞禁用 + 早退三件套缺一即红。
 assert.match(
   settingsViewSource,
   /const rowSaved = endpointSavedKeys\.has\(modelDuplicationKey\(row\.model, row\.base_url\)\);/,
@@ -649,28 +627,53 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /disabled=\{localAddBusyKey === row\.key \|\| rowSaved\}/,
-  'the local-detect row add button must disable while its save is in flight (double-click must not land two records) and when the identity is already saved',
+  /disabled=\{!!busyAny \|\| saved\}/,
+  'the local-detect row add buttons must disable while ANY row add is in flight (the handler guard is global, so the visual must match it) and when the identity is already saved',
 );
 assert.match(
   settingsViewSource,
-  /\{rowSaved \? settingsCopy\.modelAlreadySaved : settingsCopy\.add\}/,
+  /busyAny=\{localAddBusyKey\}/,
+  'the global in-flight busy key must drive the row disable (not a per-row key — the handler blocks every row during flight, the visual must say so)',
+);
+assert.match(
+  settingsViewSource,
+  /\{saved \? settingsCopy\.modelAlreadySaved : settingsCopy\.add\}/,
   'an already-saved local candidate row must read 已保存 instead of a dead 添加 button',
 );
 assert.match(
   settingsViewSource,
-  /if \(localAddBusyKey \|\| endpointSavedKeys\.has\(modelDuplicationKey\(row\.model, row\.base_url\)\)\) return;/,
-  'handleLocalModelAdd must early-return on a duplicated identity or an in-flight add (defense behind the disabled button)',
+  /if \(localAddInFlightRef\.current \|\| savingModel \|\| pickInFlightRef\.current \|\| addingAllModels \|\| addAllModelsConfirm\) return;/,
+  'handleLocalModelAdd must lead its guard with the sync in-flight ref and join the sibling save-path mutex (review r2 live proof: with a busy-key state check alone, two native clicks 80 ms apart both landed onSave and minted two ids for one identity)',
+);
+assert.match(
+  settingsViewSource,
+  /const localAddInFlightRef = useRef\(false\);/,
+  'the local row-add in-flight latch must be a sync ref (state commits lose the race against fast successive dispatches — the round-3 M3 pickInFlightRef lesson)',
+);
+assert.match(
+  settingsViewSource,
+  /localAddInFlightRef\.current = true;/,
+  'the local row-add latch must engage synchronously before the await',
+);
+assert.match(
+  settingsViewSource,
+  /localAddInFlightRef\.current = false;/,
+  'the local row-add latch must clear on settle — a stuck latch silently blocks every later row add and the form save',
+);
+assert.match(
+  settingsViewSource,
+  /data-testid="local-model-add-error" role="alert"/,
+  'a failed local row add must surface an alert on the picker view itself — saveError renders only in the form body, which the picker early return never reaches (review r2 P2: the failure was invisible on the picker screen)',
 );
 assert.match(
   settingsViewSource,
   /const \[localAddBusyKey, setLocalAddBusyKey\] = useState\(null\);/,
-  'the local row-add in-flight key must exist (double-click protection state)',
+  'the local row-add in-flight key must exist (drives the disabled visual)',
 );
 assert.match(
   settingsViewSource,
-  /setLocalAddBusyKey\(null\)/,
-  'the in-flight local add busy key must clear back to null on settle — a stuck key silently blocks every later row add (the exact bug shape ⑥.5a/⑥.5b2 caught live in this fixwave)',
+  /\} finally \{\s*localAddInFlightRef\.current = false;\s*setLocalAddBusyKey\(null\);\s*\}/,
+  'the local row-add latch and busy key must clear together in the finally — a success-path-only clear strands the latch on the first failure and silently blocks every later row add (review r2 P2: the loose /setLocalAddBusyKey\\(null\\)/ pin could not see this shape)',
 );
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
@@ -1371,7 +1374,7 @@ function injectSource() {
               models: ['qwen36_35b_256k'],
               max_model_len: 262144,
             }],
-            // ⑦.5b2 持久化臂的未保存身份:8000 行与种子 local-qwen 同身份,
+            // ⑥.5b2 持久化臂的未保存身份:8000 行与种子 local-qwen 同身份,
             // 已被行内去重禁用,故 vLLM 的 max_model_len 持久化断言改走 8100。
             8100: [{
               provider: 'vllm',
@@ -2393,6 +2396,72 @@ async function modalWidth(page, headingText) {
       && savedUnsavedRow.context_window_tokens === 262144,
     JSON.stringify(savedUnsavedRow));
   await setPortDraft('');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  // ⑥.5b4 同步在飞闩锁挡连击(复审 r2 P1 实证:仅 busy-key state 守卫时,
+  // 两次原生点击间隔 80ms 各自通过守卫、各落一库——state 提交跑不赢连点,
+  // 正是 pickInFlightRef(round-3 M3)要挡的形状)。注入失败保持行未落库;
+  // save_model 在包装器入口即计数,注入的 reject 不影响调用计数,故双击后
+  // 计数差恰等于 handleLocalModelAdd 真正放行的次数(闩锁生效=1)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError('⑥.5b4 连击守卫注入'));
+  const dblClickSavesBefore = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  const dblClickProbe = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('deepseek-r1:14b'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(800);
+  const dblClickSavesAfter = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  rec('⑥.5b4 同任务双击仅放行一次落库(同步闩锁;state-only 守卫时计数差为 2 即红)',
+    dblClickProbe.clicked && dblClickSavesAfter - dblClickSavesBefore === 1,
+    JSON.stringify({ probe: dblClickProbe, saveModelCallsDelta: dblClickSavesAfter - dblClickSavesBefore }));
+  // ⑥.5b3 行添加失败必须就地可见(复审 r2 P2:saveError 的唯一渲染点在表单
+  // 分支,picker 早退分支永远到不了——失败在 picker 屏上不可见,与 PR 声明的
+  // 「行内提示」相悖,他审已用浏览器探针复现)。延续失败注入:错误提示出现
+  // 在 picker 内(role=alert)、行按钮恢复可点(在飞闩锁已清),清除注入后
+  // 同一行可重试成功且错误消失。r1 复审 P2 的「stuck busy key」形状也由
+  // 此活体钉住(失败后仍可再次添加)。
+  const localAddFail = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('deepseek-r1:14b'));
+    if (!button || button.disabled) return { clicked: false, wasDisabled: !!button && button.disabled };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(600);
+  const localAddFailState = await page.evaluate(() => ({
+    pickerStillOpen: !!document.querySelector('[data-testid="local-model-row-add"]'),
+    errorVisible: !!document.querySelector('[data-testid="local-model-add-error"]')
+      && document.body.innerText.includes('⑥.5b4 连击守卫注入'),
+    errorRoleAlert: document.querySelector('[data-testid="local-model-add-error"]')?.getAttribute('role') === 'alert',
+  }));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError(null));
+  const localAddRetry = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = dialog && [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('deepseek-r1:14b'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(600);
+  const localAddRetryState = await page.evaluate(() => ({
+    saved: window.__SETTINGS_TEST__.models().some(item => item.model === 'deepseek-r1:14b'
+      && item.base_url === 'http://127.0.0.1:11434/v1'),
+    errorGone: !document.querySelector('[data-testid="local-model-add-error"]'),
+  }));
+  rec('⑥.5b3 行添加失败在 picker 屏就地可见(alert),失败后行仍可重试,成功后错误消失且落库',
+    localAddFail.clicked && localAddFailState.pickerStillOpen
+      && localAddFailState.errorVisible && localAddFailState.errorRoleAlert
+      && localAddRetry.clicked && localAddRetryState.saved && localAddRetryState.errorGone,
+    JSON.stringify({ fail: localAddFail, state: localAddFailState, retry: localAddRetry, retryState: localAddRetryState }));
 
   await clickExact(page, '添加模型');
   await sleep(300);
@@ -2953,6 +3022,9 @@ async function modalWidth(page, headingText) {
     return {
       saveDisabled: !!save && save.disabled,
       hintShown: !!root.querySelector('[data-testid="model-form-duplicate-hint"]'),
+      // 复审 r2 P3:添加态文案此前只有 boolean 断言,空串/垃圾文案也能绿——
+      // 钉住添加态专用措辞,且不得串到编辑态文案。
+      hintText: (root.querySelector('[data-testid="model-form-duplicate-hint"]')?.textContent || '').trim(),
       saves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
     };
   });
@@ -2992,6 +3064,7 @@ async function modalWidth(page, headingText) {
   });
   rec('⑥.5k6b the form save joins the (model id + base_url) identity contract — after add-all, save is disabled with an inline hint and stays a no-op click; the guard tracks the live model id (unsaved id re-enables)',
     dupGuardState.saveDisabled && dupGuardState.hintShown && dupGuardNoSave.unchanged
+    && dupGuardState.hintText.includes('无需重复保存') && !dupGuardState.hintText.includes('删除重复项')
     && !reenabled.saveDisabled && reenabled.hintGone
     && reDisabled.saveDisabled && reDisabled.hintShown,
     JSON.stringify({ dupGuardState, dupGuardNoSave, reenabled, reDisabled }));

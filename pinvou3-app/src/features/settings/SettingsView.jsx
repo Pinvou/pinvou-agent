@@ -130,6 +130,32 @@ function hasStoredCredential(record) {
   return !!(record && record.has_secret) || state === 'configured' || state === 'env_override';
 }
 
+// One local-detect candidate row. The add click routes through the onAdd
+// prop (EndpointModelPicker's onPick pattern): the parent's sync in-flight
+// latch is touched only inside the parent's event handler, so this row stays
+// free of ref access in render (react-hooks/refs) and keeps a stable
+// module-scope component identity.
+const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedText, onAdd }) => (
+  <div className="min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]">
+    <ProviderIcon preset="local_vllm" compact />
+    <span className="min-w-0 flex-1">
+      <span className="flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]">
+        <span className="truncate">{row.model}</span>
+        {row.loaded === false && (
+          <span className="shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]">{settingsCopy.modelNotLoadedTag}</span>
+        )}
+      </span>
+      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
+        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
+      </span>
+    </span>
+    <button type="button" data-testid="local-model-row-add"
+      onClick={() => onAdd(row)}
+      disabled={!!busyAny || saved}
+      className={actionClass}>{saved ? settingsCopy.modelAlreadySaved : settingsCopy.add}</button>
+  </div>
+);
+
     const SSegmented = ({ options, value, onChange }) => (
       <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap bg-[#E1E5EA] dark:bg-[#131314]`}>
         {options.map(o => (
@@ -457,8 +483,23 @@ function hasStoredCredential(record) {
       const [testResult, setTestResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
-      // 本地候选行添加的在飞行 key(行 key):双击/连点的第二次落库被禁用挡住。
+      // In-flight row key (row.key) for local candidate row adds: drives the
+      // per-row disabled visual. The authoritative re-entrancy guard is
+      // localAddInFlightRef below — a state commit cannot beat a physical
+      // double-click on this tree (round-3 M3 lesson, mirrored from
+      // pickInFlightRef; review r2 live-proved two clicks 80 ms apart both
+      // landing onSave with the state-only guard).
       const [localAddBusyKey, setLocalAddBusyKey] = useState(null);
+      // Sync in-flight latch for local row adds: set/cleared synchronously in
+      // handleLocalModelAdd so same-task or fast successive dispatches can
+      // never run two onSave calls for one identity. Also consulted by doSave
+      // so a slow row add cannot interleave with a form save.
+      const localAddInFlightRef = useRef(false);
+      // Failure of the last local row add, surfaced on THIS picker view:
+      // saveError's only renderer sits in the form body, which the
+      // initial.__new && pickerOpen early return never reaches, so a
+      // picker-surface state is required for the failure to be visible.
+      const [localAddError, setLocalAddError] = useState('');
       // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
       const [localPortDraft, setLocalPortDraft] = useState('');
       // Inline validation message for the custom port. Kept separate from
@@ -1034,7 +1075,10 @@ function hasStoredCredential(record) {
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
-        if (!canSave || savingModel || duplicateSaved) return;
+        // localAddInFlightRef: a local row add still pending across a picker →
+        // form navigation must not interleave with this save (two mints for
+        // one identity — the contract this guard family enforces).
+        if (!canSave || savingModel || duplicateSaved || localAddInFlightRef.current) return;
         const id = initial.__new ? makeModelId() : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
@@ -1161,19 +1205,34 @@ function hasStoredCredential(record) {
           credential_action: 'keep_existing',
         };
       }
-      // 本地候选行添加与表单保存同守 (model id + base_url) 身份契约(规格 §2.6):
-      // 行添加总是新建 id,已保存(含正在编辑的记录本身——本 picker 仅在新建态
-      // 渲染,自身记录也已在列)即禁用并显示「已保存」,否则检测→再添加/双击会
-      // 以两个新 id 落库同一身份(与端点逐行添加同一去重口径)。
+      // Local candidate row adds join the same (model id + base_url) identity
+      // contract as the form save (spec §2.6): a row add always mints a fresh
+      // id, so an already-saved identity — including the record being edited,
+      // which this picker already lists since it only renders in add mode —
+      // disables the row with the Saved label, else detect → re-add or a
+      // double-click would land one identity under two new ids (same dedup
+      // semantics as the endpoint per-row adds).
       async function handleLocalModelAdd(row) {
-        if (localAddBusyKey || endpointSavedKeys.has(modelDuplicationKey(row.model, row.base_url))) return;
+        // The sync ref leads the guard (mirror of handleEndpointModelPick's
+        // round-3 M3 fix): a busy-key STATE check alone cannot stop a
+        // double-click, because the commit loses the race against a second
+        // dispatch on this heavy tree. The sibling in-flight latches join the
+        // same mutex so a row add can never interleave with a form save, an
+        // endpoint row add, or the add-all batch.
+        if (localAddInFlightRef.current || savingModel || pickInFlightRef.current || addingAllModels || addAllModelsConfirm) return;
+        localAddInFlightRef.current = true;
         setLocalAddBusyKey(row.key);
+        setLocalAddError('');
         try {
           await onSave(buildLocalModelPayload(row));
         } catch (error) {
-          // 与 doSave 同款:保存失败保持弹窗并给行内提示,不丢弃候选列表。
-          setSaveError(String(error && error.message ? error.message : error));
+          // Same shape as doSave (keep the modal open, drop nothing), but the
+          // message goes to THIS picker view: saveError renders only in the
+          // form body, which the initial.__new && pickerOpen early return
+          // never reaches — writing it there would hide the failure.
+          setLocalAddError(String(error && error.message ? error.message : error));
         } finally {
+          localAddInFlightRef.current = false;
           setLocalAddBusyKey(null);
         }
       }
@@ -1504,32 +1563,26 @@ function hasStoredCredential(record) {
                   <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
                 {rows.map(row => {
-                  // 与表单保存同一 (model id + base_url) 身份契约(规格 §2.6):
-                  // 已保存(含正在编辑的记录)的候选行禁用并显示「已保存」,防止
-                  // 检测→再添加/双击以两个新 id 落库同一身份;endpointSavedKeys
-                  // 同款不 memo 化(React Compiler 早退结构约束)。
+                  // Same (model id + base_url) identity contract as the form
+                  // save (spec §2.6): a candidate row whose identity is saved
+                  // — including the record being edited — disables with the
+                  // Saved label so detect → re-add / double-click cannot land
+                  // one identity under two new ids. Like endpointSavedKeys,
+                  // deliberately not memoized (React Compiler early-return
+                  // structure constraint; rebuilding the key set is
+                  // sub-millisecond).
                   const rowSaved = endpointSavedKeys.has(modelDuplicationKey(row.model, row.base_url));
                   return (
-                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
-                    <ProviderIcon preset="local_vllm" compact />
-                    <span className="min-w-0 flex-1">
-                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                        <span className="truncate">{row.model}</span>
-                        {row.loaded === false && (
-                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>{settingsCopy.modelNotLoadedTag}</span>
-                        )}
-                      </span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
-                        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
-                      </span>
-                    </span>
-                    <button type="button" data-testid="local-model-row-add"
-                      onClick={() => handleLocalModelAdd(row)}
-                      disabled={localAddBusyKey === row.key || rowSaved}
-                      className={actionClass}>{rowSaved ? settingsCopy.modelAlreadySaved : settingsCopy.add}</button>
-                  </div>
+                    <LocalModelRow key={row.key} row={row} saved={rowSaved} busyAny={localAddBusyKey}
+                      settingsCopy={settingsCopy} actionClass={actionClass} mutedText={mutedText}
+                      onAdd={handleLocalModelAdd} />
                   );
                 })}
+                {localAddError && (
+                  // Failure of the last row add, on the view where it happened
+                  // (role=alert: an async failure announced without focus).
+                  <div data-testid="local-model-add-error" role="alert" className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{settingsCopy.imageCapabilitySaveFailed(localAddError)}</div>
+                )}
               </div>
             </section>
             <section>
@@ -1564,14 +1617,19 @@ function hasStoredCredential(record) {
       // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
       // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
       const endpointSavedKeys = savedModelKeys(models);
-      // 保存按钮加入同一身份契约(规格 §2.6:model id + base_url):「获取模型
-      // 列表」的逐行/批量添加都按它去重,唯独表单保存此前不查——先探测把
-      // 端点行(带真实长度事实,更权威)落库,再点「保存」,同一条身份会以两
-      // 个新 id 落库两次。命中已保存身份时禁用保存并提示;编辑态排除自身,
-      // 但其余条目命中意味着盘上已有重复条目(旧版本落库的双记录),提示
-      // 文案换编辑态专用措辞(先去重再改)。本地探测行添加走同一契约
-      // (handleLocalModelAdd)。
-      // 与 endpointSavedKeys 同样不 memo 化(同款 React Compiler 约束)。
+      // The save button joins the same identity contract (spec §2.6: model id
+      // + base_url). The endpoint list's per-row and add-all adds already
+      // dedupe by it; the form save was the one path that never checked —
+      // after a probe landed the endpoint row (carrying the real length
+      // facts, the authoritative record), clicking Save would land the same
+      // identity a second time under a fresh id. On a hit, save is disabled
+      // with an inline hint. Edit mode excludes the record itself; any other
+      // hit there means a duplicate twin is already on disk (legacy pairs
+      // from the 1.0.2 bug), so the hint switches to the edit-mode copy
+      // (dedupe first, then edit). Local candidate row adds run the same
+      // contract via handleLocalModelAdd.
+      // Not memoized, same as endpointSavedKeys (React Compiler constraint;
+      // rebuilding the key set is sub-millisecond).
       const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
       const duplicateSaved = formSavedKeys.has(modelDuplicationKey(model.trim(), baseUrl.trim()));
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
@@ -1961,10 +2019,13 @@ function hasStoredCredential(record) {
                 </div>
               </div>
             )}
-            {/* (model id + base_url) 已保存:禁用保存并提示(规格 §2.6 身份契约;
-                端点探测落库的行带真实长度事实,重复的目录行不再二次落库)。
-                编辑态换专用文案(盘上已有双条目,先去重);savingModel 期间不渲染,
-                避免保存链路中 models 先行刷新导致的瞬时「已存在」闪现。 */}
+            {/* (model id + base_url) already saved: disable save and show the
+                inline hint (spec §2.6 identity contract; the endpoint-probed
+                row carries the real length facts, so the duplicate catalog
+                row must not land a second time). Edit mode swaps in the
+                dedicated copy (a duplicate twin is already on disk — dedupe
+                first). Hidden while savingModel so the mid-save models
+                refresh cannot flash a misleading "already exists". */}
             {duplicateSaved && !savingModel && (
               <div data-testid="model-form-duplicate-hint" role="status" className={`px-5 pt-3 border-t ${formDivider}`}>
                 <div className={`text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{initial.__new ? settingsCopy.modelDuplicateExists : settingsCopy.modelDuplicateExistsEdit}</div>
