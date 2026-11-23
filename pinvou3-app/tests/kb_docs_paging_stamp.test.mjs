@@ -42,13 +42,17 @@ assert.match(
   /setDocsPaging\(\{ gen: generation, collId, offset: docsPaging\.offset \+ page\.length, hasMore: page\.length >= KB_DOCS_PAGE_SIZE, loading: false \}\);/,
   'the landed continuation page must re-stamp the collection id',
 );
-// The completion poll's stale-collection hazard is closed on the rebased
-// base by the shared useIntervalWhen skeleton (#817 B3, KnowledgeView index
-// is one of its four consumers): its callback ref re-syncs after every
-// commit, so the poll always sees the live focused collection — the manual
-// activeCollRef this PR originally pinned is superseded by that contract.
+// The completion poll's stale-collection hazard is closed at the source:
+// latest-ref alone does NOT cover an in-flight invocation — the callback
+// re-syncs only BETWEEN invocations, and the status await can span a
+// collection switch (review-verified A→B→A request order: the stale
+// continuation then takes a generation later than the new collection's
+// and its rows overwrite the live selection while the paging state still
+// belongs to the stale one). The poll must therefore capture the
+// selection at call time and re-check the live ref after the await;
+// the gated kb_smoke case ⑫ pins the behavior end to end.
 assert.match(
   source,
-  /useIntervalWhen\(async \(\) => \{[\s\S]{0,200}if \(!s\.running\) \{ loadColls\(\); if \(activeColl\) loadDocs\(activeColl\.id\); \}/,
-  'the completion poll must run through the shared useIntervalWhen skeleton, whose latest-ref dispatch keeps the collection live',
+  /const selectedId = activeColl && activeColl\.id;[\s\S]{0,600}if \(selectedId && activeCollRef\.current\?\.id === selectedId\) loadDocs\(selectedId\);/,
+  'the completion poll must capture the selection at call time and re-check the live ref after the await',
 );
