@@ -20,9 +20,11 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     static CLOSING = 2;
     static CLOSED = 3;
     static instances = [];
-    // Round-9 复审:构造器抛错路径(浏览器在 URL 非法/策略阻断时真的会
-    // 抛)此前零覆盖——默认夹具的构造器不可能抛错。测试把本字段设为 N,
-    // 第 N+1 次构造(下标 ≥ N)即抛错,spawn 不注册实例。
+    // Round-9 review: the throwing-constructor path (real browsers do throw
+    // on an invalid URL / policy block) previously had zero coverage — the
+    // default fixture's constructor cannot throw. Setting this field to N
+    // makes construction number N+1 (index >= N) throw, without registering
+    // the instance.
     static throwFrom = null;
 
     constructor(url) {
@@ -114,6 +116,18 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     },
   };
   window.window = window;
+  // Round-20 review: an advanceable clock (the Date the shimmed production
+  // code reads). When not advanced, each call passes through the host's real
+  // clock (plus offset), so existing fixture behavior is unchanged; new
+  // fixtures advance whole stretches via __clock.advance to drive the
+  // wedge-window / silence-window judgments. Clock-driven production lines
+  // (closingStartedAt/lastInboundAt resets and gate ordering) previously
+  // could only be exercised by hand-injecting values in fixtures, where the
+  // corresponding mutations all stayed green and the behavior was
+  // unobservable (S07 evidence).
+  const clock = { offsetMs: 0 };
+  const shimDate = { now: () => Date.now() + clock.offsetMs };
+  window.__clock = { advance: ms => { clock.offsetMs += ms; } };
   const deterministicMath = Object.create(Math);
   deterministicMath.random = () => 0.5;
 
@@ -148,6 +162,7 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     Number,
     String,
     Math: deterministicMath,
+    Date: shimDate,
     JSON,
     Error,
     console: {
@@ -158,11 +173,12 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     queueMicrotask,
   };
   vm.runInNewContext(source, context, { filename: 'platform/web/bootstrap.js' });
-  return { window, document, storage, dispatched, timers, MockWebSocket };
+  return { window, document, storage, dispatched, timers, MockWebSocket, clock };
 }
 
-// 重连退避定时器（<10s）与 30s 看门狗 interval、180s RPC 超时共存于 timers，
-// 断言重连行为时必须只取出退避定时器。
+// Reconnect backoff timers (<10s) share the timers list with the 30s watchdog
+// interval and the 180s RPC timeout, so reconnect assertions must pick out
+// only the backoff timers.
 function takeReconnectTimer(timers) {
   const index = timers.findIndex(timer => timer.delay < 10_000);
   assert.ok(index >= 0, 'expected a pending reconnect timer');
@@ -261,7 +277,7 @@ async function connectWithCapabilities(events, listener) {
 
 {
   let handled = 0;
-  const { client, socket, storage } = await connectWithCapabilities(['chat:delta'], () => {
+  const { client, socket, storage, timers } = await connectWithCapabilities(['chat:delta'], () => {
     handled += 1;
     throw new Error('listener failed');
   });
@@ -278,6 +294,25 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(handled, 1);
   assert.equal(socket.closeCalled, true);
   assert.equal(JSON.parse(storage.get('pinvou.web.cursor.endpoint_test')).after_seq, 0);
+  // The catch path invalidates the socket itself, so the close event is noise
+  // under the close handler's identity gate: the recovery must schedule the
+  // replay reconnect directly, not wait for a close event that never runs.
+  assert.equal(timers.filter(timer => timer.delay < 10_000).length, 1,
+    'event-processing failure must schedule a reconnect for replay');
+  // Round-19 review: the catch path's four cycle-flag resets previously had
+  // zero pins (deleting all four lines kept this file and the contract suite
+  // green — probe evidence). Residue of the old cycle's joined/leaseId would
+  // let a sendJoined frame sent after the successor socket OPENs but before
+  // its join ack carry the previous cycle's lease (same family as the
+  // cross-cycle leak the handleMessage identity gate shuts off).
+  assert.equal(client.joined, false,
+    'the catch path must reset the joined flag');
+  assert.equal(client.desktopOnline, false,
+    'the catch path must reset desktopOnline');
+  assert.equal(client.desktopCapabilitiesReady, false,
+    'the catch path must reset desktopCapabilitiesReady');
+  assert.equal(client.leaseId, null,
+    'the catch path must clear the cycle lease');
 }
 
 {
@@ -299,8 +334,10 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(JSON.parse(storage.get('pinvou.web.cursor.endpoint_test')).after_seq, 1);
 }
 
-// 设备文件上传能力:未收到快照前 fail closed;旧桌面缺任一命令保持关闭,
-// 两条命令齐备才开放,与桌面附件双入口的显示/隐藏协商一致。
+// Device file upload capability: fail closed until a snapshot arrives; older
+// desktops missing either command stay closed, and the surface opens only once
+// both commands exist — matching the desktop attachment dual-entry show/hide
+// negotiation.
 {
   const uploadCommands = [
     'web_access_upload_attachment_chunk',
@@ -348,8 +385,9 @@ async function connectWithCapabilities(events, listener) {
     'an older desktop without upload support must keep the device upload entry hidden');
 }
 
-// 代码模式只在目标桌面完整实现 Web-safe ACP 命令与事件合同时开放。
-// 任一命令或 acp:event 缺失都代表旧桌面，入口必须 fail closed。
+// Code mode opens only when the target desktop implements the complete
+// Web-safe ACP command and event contract. Any missing command or acp:event
+// marks an older desktop, so the entry must fail closed.
 {
   const acpCommands = [
     'web_access_list_acp_agents',
@@ -427,8 +465,10 @@ async function connectWithCapabilities(events, listener) {
     'a desktop missing acp:event must keep code mode hidden');
 }
 
-// 首条消息使用调用方提供的稳定请求 ID。WebSocket 重连后必须复用同一 ID，
-// 桌面端才能从持久 RPC ledger 返回原结果而不重复创建 Session 或发送消息。
+// The first message uses the caller-provided stable request ID. After a
+// WebSocket reconnect the same ID must be reused so the desktop can return the
+// original result from its persistent RPC ledger instead of creating another
+// session or sending the message again.
 {
   const command = 'web_access_create_session_and_chat';
   const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
@@ -507,7 +547,8 @@ async function connectWithCapabilities(events, listener) {
   assert.equal((await resultPromise).id, 'session_created_once');
 }
 
-// 结构化错误码必须传到 Bridge，才能区分可安全重试的超时和结果未知。
+// Structured error codes must reach the Bridge so it can tell a safely
+// retryable timeout from an unknown-outcome failure.
 {
   const command = 'web_access_create_session_and_chat';
   const harness = bootClient({ allowed_commands: [command], allowed_events: [] });
@@ -548,9 +589,11 @@ async function connectWithCapabilities(events, listener) {
   ));
 }
 
-// TTL 到期的 endpoint_revoked 不是永久吊销（PROTOCOL.md）：桌面端可能稍后用
-// 持久凭证重建同一 endpoint，浏览器必须进入 desktop_offline 等待并走普通重连
-// 路径自动重新 join，而不是永久死路覆盖层。
+// A TTL-expired endpoint_revoked is not a permanent revocation (PROTOCOL.md):
+// the desktop may recreate the same endpoint later with its persistent
+// credentials, so the browser must enter desktop_offline, wait, and rejoin
+// automatically through the ordinary reconnect path instead of a permanent
+// dead-end overlay.
 {
   const { client, socket, timers, MockWebSocket, dispatched } = await connectWithCapabilities(['chat:delta'], () => {});
   socket.message({
@@ -566,9 +609,11 @@ async function connectWithCapabilities(events, listener) {
     event.type === 'pinvou:web-connection' && event.detail.status === 'desktop_offline'
   )), 'TTL expiry must surface the desktop-offline state');
   assert.equal(socket.closeCalled, true, 'the expired socket must be closed normally');
-  // 退避窗口内保持 desktop_offline 专属文案(「桌面端离线,保持页面打开」):
-  // 紧随其后的 close→scheduleReconnect 不得把该状态覆盖成「连接中」,
-  // 否则在最长 60s 的退避里用户看到的是误导性的转圈。
+  // Keep the dedicated desktop_offline copy ("desktop offline, keep this page
+  // open") through the backoff window: the immediately following
+  // close→scheduleReconnect must not overwrite the status with "connecting",
+  // or the user would stare at a misleading spinner for the whole up-to-60s
+  // backoff.
   assert.equal(client.connectionState.status, 'desktop_offline',
     'the dedicated desktop-offline copy must survive the close/reconnect clobber');
   takeReconnectTimer(timers).callback();
@@ -590,9 +635,11 @@ async function connectWithCapabilities(events, listener) {
     'the liveness watchdog must keep running across a TTL-expiry reconnect');
 }
 
-// 异常断线先触发 error 再触发 close:error 监听同样不得把 desktop_offline
-// 的专属文案覆盖成「连接中」——close→scheduleReconnect 有门,round-4 复审
-// 发现 error 监听没有,离线窗口内的 TCP reset 会把诚实文案换成转圈。
+// An abnormal disconnect fires error before close: the error listener must
+// likewise not overwrite the dedicated desktop_offline copy with "connecting"
+// — the close→scheduleReconnect side has the guard, but a round-4 review found
+// the error listener did not, and a TCP reset inside the offline window would
+// swap the honest copy for a spinner.
 {
   const { client, socket } = await connectWithCapabilities(['chat:delta'], () => {});
   socket.message({
@@ -612,11 +659,13 @@ async function connectWithCapabilities(events, listener) {
     'an error on an ordinary socket must still escalate to the connecting state');
 }
 
-// Round-10 复审 minor:看门狗投机关闭的半开 socket 在部分浏览器上会先触发
-// error(失败的关闭握手报成 error+close)。这是关闭握手的一部分,不是验证
-// 失败——不得计入投机失败,也不得提前点亮 connecting(否则「UI 保持
-// connected 直到验证失败」随浏览器引擎分叉)。Mock 的 close 从不发 error,
-// 该交错此前不可达。
+// Round-10 review minor: the half-open socket closed speculatively by the
+// watchdog surfaces as error first on some browsers (a failed closing
+// handshake is reported as error+close). That is part of the closing
+// handshake, not a verification failure — it must not count a speculative
+// failure nor light up connecting early (otherwise "the UI stays connected
+// until verification fails" forks across browser engines). The mock's close
+// never emits error, so this interleaving was previously unreachable.
 {
   const speculative = await connectWithCapabilities(['chat:delta'], () => {});
   speculative.client.lastInboundAt = Date.now() - 121_000;
@@ -634,7 +683,8 @@ async function connectWithCapabilities(events, listener) {
     'the speculative source error must not surface the connecting banner');
 }
 
-// 真正的吊销（其他 reason 或缺失 reason）保持今天的永久关闭行为。
+// A real revocation (any other reason, or a missing reason) keeps today's
+// permanent-close behavior.
 {
   const revoke = async message => {
     const harness = await connectWithCapabilities(['chat:delta'], () => {});
@@ -661,10 +711,13 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(unreasoned.client.connectionState.status, 'revoked');
 }
 
-// 半开连接看门狗：OPEN 且静默超过阈值必须投机重连（游标重放使重连幂等）；
-// 有近期入站流量或 socket 未 OPEN 时不得误杀连接。staleness 只是怀疑而非证
-// 据：投机重连验证期间 UI 保持 connected、不广播 connecting；验证失败（重连
-// socket 在 join 前再断开）才清除投机状态并升级为可见的 connecting。
+// Half-open connection watchdog: an OPEN socket silent past the threshold must
+// be speculatively reconnected (cursor replay makes reconnects idempotent);
+// recent inbound traffic or a non-OPEN socket must not be killed by mistake.
+// Staleness is suspicion, not proof: the UI stays connected and no connecting
+// status is broadcast while the speculative reconnect verifies; only a failed
+// verification (the reconnect socket dying again before its join) clears the
+// speculative state and escalates to a visible connecting status.
 {
   const stale = await connectWithCapabilities(['chat:delta'], () => {});
   stale.client.lastInboundAt = Date.now() - 121_000;
@@ -700,10 +753,12 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(stale.client.speculativeReconnect, false,
     'a successful speculative rejoin must clear the speculative flag silently');
   assert.equal(stale.client.connectionState.status, 'connected');
-  // Round-11:只有完整验证的周期(join ack + 能力快照抵达——只有真实桌
-  // 面帧能落点)才复位梯子;ack 单独不复位。改动前:ack 处复位,自铸 ack
-  // 的 relay 每周期清零梯子,把 UI 永久楔死在 connected。
-  // ack-only 周期的静默死亡计入失败(封顶内仍隐藏)。
+  // Round-11: only a fully verified cycle (join ack + capability snapshot
+  // arrival — only a real desktop frame can reach that point) resets the
+  // ladder; the ack alone must not. Before the change, the ladder reset at
+  // the ack, so a relay minting its own acks zeroed the ladder every cycle
+  // and wedged the UI on connected forever. A silent death in an ack-only
+  // cycle counts toward the failure cap (still hidden below the cap).
   stale.client.lastInboundAt = Date.now() - 121_000;
   stale.client._livenessCheck();
   assert.equal(stale.client.speculativeFailures, 1,
@@ -731,14 +786,17 @@ async function connectWithCapabilities(events, listener) {
     'a fully verified cycle (ack + capability snapshot) resets the ladder');
   assert.equal(stale.client.speculativeReconnect, false,
     'a fully verified join clears the speculative flag');
-  // 完整验证后的静默死亡:健康的空闲循环(快照已抵达),不计失败。
+  // A silent death after full verification: a healthy idle cycle (snapshot
+  // arrived) must not count a failure.
   stale.client.lastInboundAt = Date.now() - 121_000;
   stale.client._livenessCheck();
   assert.equal(stale.client.speculativeReconnect, true,
     'a silent fully-verified cycle must not escalate');
-  // Round-6 判别(迁移到快照复位):先积一次失败,经完整验证复位,再经
-  // 历一个 ackless 周期——复位生效时 1→0→1 仍隐藏;复位缺失时 1→2 越
-  // 过封顶,该周期必须可见,断言变红。
+  // Round-6 discriminator (migrated to the snapshot reset): accumulate one
+  // failure, reset it via full verification, then go through an ackless
+  // cycle — with the reset working, 1→0→1 stays hidden; without it, 1→2
+  // crosses the cap, that cycle must become visible, and the assertion goes
+  // red.
   takeReconnectTimer(stale.timers).callback();
   const ackless = stale.MockWebSocket.instances[3];
   ackless.open();
@@ -866,7 +924,8 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(idle.timers.some(timer => timer.delay < 10_000), false);
 }
 
-// 看门狗 interval 必须真实注册并驱动 _livenessCheck，重连后不得重复注册。
+// The watchdog interval must be genuinely registered and drive _livenessCheck,
+// and rejoining must not register a second one.
 {
   const wired = await connectWithCapabilities(['chat:delta'], () => {});
   const watchdog = wired.timers.find(timer => timer.delay === 30_000);
@@ -889,7 +948,8 @@ async function connectWithCapabilities(events, listener) {
     'rejoining must not register a second watchdog');
 }
 
-// 网络恢复（online 事件）：断开时立即重连并清退避；OPEN 连接视为可疑并重连。
+// Network recovery (online event): reconnect immediately when disconnected and
+// clear the backoff; treat an OPEN connection as suspicious and reconnect.
 {
   const offline = bootClient();
   const offlineClient = offline.window.PinvouWebClient;
@@ -925,11 +985,13 @@ async function connectWithCapabilities(events, listener) {
     'a failed speculative verification must escalate to the visible status');
 }
 
-// Round-8 复审:online 路径的投机 close(handleNetworkBecomeOnline 内与看门狗
-// 字节级孪生的块)必须同样给从未收到 join ack 的 socket 计失败数。缺这一行
-// 时,OS 网络切换反复打断一个收不到 join ack 的 socket,失败数停在封顶之内,
-// 重连永远保持投机,UI 永远停在 connected——与 round-5 的看门狗 wedged
-// relay 场景同罪。
+// Round-8 review: the online path's speculative close (the block inside
+// handleNetworkBecomeOnline that is a byte-level twin of the watchdog's) must
+// likewise count a failure for a socket that never received its join ack.
+// Without that line, OS network flips repeatedly interrupting an ackless
+// socket keep the failure count below the cap, the reconnect stays speculative
+// forever, and the UI stays on connected forever — same sin as the round-5
+// watchdog wedged-relay scenario.
 {
   const harness = bootClient();
   const client = harness.window.PinvouWebClient;
@@ -956,8 +1018,9 @@ async function connectWithCapabilities(events, listener) {
     'the capped online-path reconnect must surface the visible reconnecting state');
 }
 
-// 看门狗必须救出卡在 CONNECTING 的 wedge 连接:超过 wedge 窗口的 CONNECTING
-// socket 被中止走重连漏斗;窗口内的年轻 CONNECTING socket 不受影响。
+// The watchdog must rescue a connect wedged in CONNECTING: a CONNECTING socket
+// past the wedge window is aborted into the reconnect funnel; a young
+// CONNECTING socket inside the window is untouched.
 {
   const wedged = bootClient();
   const wedgedClient = wedged.window.PinvouWebClient;
@@ -978,8 +1041,860 @@ async function connectWithCapabilities(events, listener) {
     'a young CONNECTING socket must keep its full wedge window');
 }
 
-// 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
-// 定时器被节流，唤醒后的存活判断交给看门狗与 online 事件）。
+// Round-15 review: CLOSING used to be ignored by the watchdog forever — a
+// speculative close on a silently dropped link may never receive a close
+// event, leaving "connected but dead" wedged beyond the client's own
+// constants. A CLOSING socket past the same wedge window must be dropped and
+// routed through the backoff reconnect; a young CLOSING socket inside the
+// window is unaffected; OPEN sockets are unaffected.
+{
+  const stuck = bootClient();
+  const stuckClient = stuck.window.PinvouWebClient;
+  await stuckClient.policyPromise;
+  const stuckSocket = stuck.MockWebSocket.instances[0];
+  stuckSocket.open();
+  stuckClient.lastInboundAt = Date.now();
+  stuckSocket.readyState = stuck.MockWebSocket.CLOSING;
+
+  stuckClient._livenessCheck();
+  assert.equal(stuck.MockWebSocket.instances.length, 1,
+    'the first observation of a CLOSING socket only starts its wedge clock');
+  assert.equal(stuckClient.closingStartedAt > 0, true,
+    'the wedge clock must be recorded for the CLOSING socket');
+
+  stuckClient.closingStartedAt = Date.now() - 46_000;
+  stuckClient._livenessCheck();
+  assert.equal(stuckClient.socket, null,
+    'a CLOSING socket wedged past the window must be dropped');
+  takeReconnectTimer(stuck.timers).callback();
+  assert.equal(stuck.MockWebSocket.instances.length, 2,
+    'the rescue must funnel through the ordinary backoff reconnect');
+  assert.notEqual(stuck.MockWebSocket.instances[1], stuckSocket,
+    'the dead socket must not be reused');
+
+  const young = bootClient();
+  const youngClosing = young.window.PinvouWebClient;
+  await youngClosing.policyPromise;
+  const youngSocket = young.MockWebSocket.instances[0];
+  youngSocket.open();
+  youngClosing.lastInboundAt = Date.now();
+  youngSocket.readyState = young.MockWebSocket.CLOSING;
+  youngClosing.closingStartedAt = Date.now();
+  youngClosing._livenessCheck();
+  assert.equal(young.MockWebSocket.instances.length, 1,
+    'a young CLOSING socket must keep its full wedge window');
+  // Round-19 review: the instance-count assertion above has no teeth — a
+  // premature rescue only detaches the socket reference and schedules a
+  // reconnect timer, no new instance is spawned until the timer fires, and
+  // this fixture never fires it, so deleting the window check kept this block
+  // green (probe evidence). Pin the real payload directly: the socket
+  // reference must be untouched and no reconnect timer may be scheduled.
+  assert.equal(youngClosing.socket, youngSocket,
+    'a young CLOSING socket must keep its socket reference');
+  assert.equal(young.timers.some(timer => timer.delay < 10_000), false,
+    'a young CLOSING socket must not trigger a reconnect');
+}
+
+// Round-20 review: connect()'s closingStartedAt reset used to be a mutation
+// hole — every young-CLOSING fixture hand-injected the field before the
+// check, so deleting the reset (all three reset sites deleted together) kept
+// the whole suite green: a stale wedge clock would make the new socket's
+// first CLOSING observation look "already past the window" and rescue it
+// instantly, denying the new socket its own full wedge window. This fixture
+// lets the production code stamp the timestamps itself (no injection):
+// S1 wedges → first observation stamps the clock → clock advances past the
+// window → the close event delivers normally and detaches → the reconnect
+// timer fires S2 → S2 wedges → the very next watchdog tick must restamp from
+// "the new socket's first observation" and return, not rescue immediately off
+// the stale stamp. (The speculativeClose/rescue resets are redundant defenses
+// behind connect's reset; this pin holds the load-bearing site at connect, so
+// a joint-deletion mutation's remaining sites go red too.)
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const s1 = env.MockWebSocket.instances[0];
+  s1.open();
+  client.lastInboundAt = Date.now();
+  s1.readyState = 2; // CLOSING: wedged shape; the close event is never delivered
+  client._livenessCheck();
+  const stampedAt = client.closingStartedAt;
+  assert.notEqual(stampedAt, null,
+    'the first CLOSING observation must stamp the wedge clock');
+  env.window.__clock.advance(46_000);
+  s1.close(); // the close event delivers normally here: detach the socket, take the ordinary backoff reconnect
+  const reconnect = takeReconnectTimer(env.timers);
+  reconnect.callback();
+  assert.equal(env.MockWebSocket.instances.length, 2,
+    'the reconnect must spawn the successor');
+  const s2 = env.MockWebSocket.instances[1];
+  assert.equal(client.socket, s2, 'the successor must be current');
+  assert.equal(client.closingStartedAt, null,
+    'connect() must give the successor a fresh wedge clock');
+  s2.readyState = 2; // the successor wedges the same way
+  client._livenessCheck();
+  assert.equal(client.socket, s2,
+    'a fresh successor must keep its full wedge window (a stale clock must not rescue it instantly)');
+  assert.equal(client.closingStartedAt > stampedAt, true,
+    'the fresh observation must restamp, not inherit the predecessor clock');
+  assert.equal(env.timers.some(timer => timer.delay < 10_000), false,
+    'no instant rescue reconnect may be scheduled for the fresh successor');
+}
+
+// Round-20 review: the post-gate liveness-evidence update previously had no
+// pin — moving the lastInboundAt update ahead of the identity gate (the
+// mutation where a stale frame refreshes the watchdog clock) kept the whole
+// suite green, and an in-flight frame on a detached socket could postpone the
+// silence judgment by a full silence window. Pin both directions: a detached
+// socket's frame must not refresh; a legitimate frame on the current socket
+// must still refresh (the positive leg gives "delete the update" mutations a
+// signal too; the negative leg is this pin's payload).
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck(); // rescue: the socket reference is cleared
+  assert.equal(client.socket, null, 'setup: the wedged socket must be rescued');
+  const t0 = Date.now() - 5;
+  client.lastInboundAt = t0;
+  dead.message({ v: 2, type: 'event', event: 'chat:delta', stream_epoch: 'epoch_dead', seq: 1, payload: { text: 'stale' } });
+  assert.equal(client.lastInboundAt, t0,
+    'a gated stale frame must not refresh liveness evidence');
+  const reconnect = takeReconnectTimer(env.timers);
+  reconnect.callback();
+  const successor = env.MockWebSocket.instances[1];
+  assert.equal(client.socket, successor, 'setup: the successor must be current');
+  successor.message({ v: 2, type: 'event', event: 'chat:delta', stream_epoch: 'epoch_live', seq: 1, payload: { text: 'live' } });
+  assert.ok(client.lastInboundAt > t0,
+    'a current-socket frame must refresh liveness evidence');
+}
+
+// Round-20 review: a non-TTL endpoint_revoked bypasses the identity gate
+// (a link-level fact; see the comment beside the gate in bootstrap.js).
+// Pin both directions: (a) a real revocation frame on a detached socket must
+// reach the terminal state — the gate used to drop the whole frame, so when
+// its only copy landed inside the detach window the revocation degenerated
+// into the endpoint_not_found "desktop offline" retry loop (that code is
+// deliberately classified as transient, leaving the revocation card
+// unreachable); (b) an expired TTL-arm copy stays gated — letting it through
+// would knock later healthy cycles back to desktop_offline (a fresh copy
+// after the rejoin will reach the current socket anyway).
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck(); // rescue-detach: the socket reference is cleared
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'manual_revoke' });
+  assert.equal(client.closedPermanently, true,
+    'a real revoke must surface even when its only copy arrives on a detached socket');
+  assert.equal(env.timers.some(timer => timer.delay < 10_000), false,
+    'the revoked terminal state must not schedule reconnects');
+}
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck();
+  const statusBefore = client.connectionState.status;
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'desktop_offline_ttl_expired' });
+  assert.equal(client.closedPermanently, false,
+    'a stale TTL-expiry copy must stay gated');
+  assert.equal(client.connectionState.status, statusBefore,
+    'the gated TTL copy must not flip the cycle state');
+}
+
+// Round-22 review: once the terminal state is established (closedPermanently)
+// the bypass must stop — closePermanently is idempotent state-wise, but a late
+// non-TTL revocation copy would re-enter it: re-dispatching connection events
+// and overwriting the established terminal card (endpoint_replaced's "opened
+// in another browser") with the revocation copy. One guard line; deleting the
+// guard turns this fixture red (both the re-dispatch and the card flip are
+// asserted).
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.message({ v: 2, type: 'endpoint_replaced' });
+  assert.equal(client.closedPermanently, true,
+    'fixture: the replaced terminal card must be established first');
+  const eventsBefore = env.dispatched.filter(event => event.type === 'pinvou:web-connection').length;
+  const statusAfterTerminal = client.connectionState.status;
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'manual_revoke' });
+  assert.equal(
+    env.dispatched.filter(event => event.type === 'pinvou:web-connection').length,
+    eventsBefore,
+    'a late non-TTL revoke must not re-dispatch the terminal connection event');
+  assert.equal(client.connectionState.status, statusAfterTerminal,
+    'a late non-TTL revoke must not overwrite the established terminal card');
+}
+
+// Round-16 review MAJOR-1: after the rescue detaches the socket reference, its
+// close event may only arrive after the successor cycle has finished joining
+// and negotiating. A late close must not clear the current cycle's flags, must
+// not schedule another reconnect, and above all must not knock a healthy
+// successor back to the unnegotiated state (otherwise the next inbound event
+// hits !desktopCapabilitiesReady and processRemoteEvent permanently shuts the
+// door as incompatible_desktop — probe end-to-end reproduction from before the
+// fix; the identity gate is the only barrier).
+{
+  const late = bootClient();
+  const lateClient = late.window.PinvouWebClient;
+  await lateClient.policyPromise;
+  const events = [];
+  await lateClient.listen('chat:delta', (event) => events.push(event));
+  lateClient.markFrontendReady();
+  await Promise.resolve();
+  lateClient.markStateReady();
+
+  const deadSocket = late.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  lateClient.lastInboundAt = Date.now();
+
+  // Silent link drop: the socket enters CLOSING and its close event never
+  // arrives, so the watchdog rescues it.
+  deadSocket.readyState = late.MockWebSocket.CLOSING;
+  lateClient._livenessCheck();
+  lateClient.closingStartedAt = Date.now() - 46_000;
+  lateClient._livenessCheck();
+  assert.equal(lateClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(late.timers).callback();
+
+  // The successor connects and completes the full negotiation (joined +
+  // capability snapshot).
+  const successor = late.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  successor.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_b',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(lateClient.joined, true, 'the successor cycle must be fully joined');
+  assert.equal(lateClient.desktopCapabilitiesReady, true,
+    'the successor cycle must have negotiated capabilities');
+
+  // The old socket's close event only arrives now: the identity gate must
+  // ignore it wholesale.
+  deadSocket.emit('close', {});
+  assert.equal(lateClient.socket, successor,
+    'a late close of a rescued socket must not detach its successor');
+  assert.equal(lateClient.joined, true,
+    'a late close of a rescued socket must not clobber the successor join state');
+  assert.equal(lateClient.desktopCapabilitiesReady, true,
+    'a late close of a rescued socket must not wipe negotiated capabilities');
+  assert.equal(lateClient.leaseId, 'lease_test_b',
+    'a late close of a rescued socket must not clear the successor lease');
+  assert.equal(late.timers.filter(timer => timer.delay < 10_000).length, 0,
+    'a late close of a rescued socket must not schedule a second reconnect');
+
+  // A late error is likewise noise: the identity gate must ignore it
+  // wholesale — no speculative failure counted, no connected flipped back to
+  // connecting (deleting the error handler's identity gate turns the status
+  // flip assertion below red; the gate previously had no mutation coverage).
+  // In this fixture the count assertion is only sensitive to a coarse mutation
+  // (unconditional +1): noteSpeculativeFailure only counts inside a
+  // speculative window, and this fixture's rescue takes the CLOSING arm
+  // without setting speculativeReconnect — making the count assertion
+  // sensitive to gate deletion would require constructing the rare race of "a
+  // non-source late error colliding with an active speculative window", which
+  // has no fixture coverage (disclosed).
+  const failuresBeforeLateError = lateClient.speculativeFailures;
+  deadSocket.emit('error', {});
+  assert.equal(lateClient.speculativeFailures, failuresBeforeLateError,
+    'a late error of a rescued socket must not count a speculative failure');
+  assert.equal(lateClient.connectionState.status, 'connected',
+    'a late error of a rescued socket must not flip the UI back to connecting');
+
+  // The successor is still healthy: inbound events dispatch normally, with no
+  // incompatible_desktop permanent shutdown.
+  successor.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_b',
+    seq: 1,
+    payload: { text: 'after-late-close' },
+  });
+  await lateClient.eventDispatch;
+  assert.equal(lateClient.closedPermanently, false,
+    'a healthy successor must never be closed as incompatible_desktop by a stale close');
+  assert.equal(events.length, 1, 'the successor must keep dispatching inbound events');
+}
+
+// Round-16 review: CLOSED wedges exactly like CLOSING — the close event may
+// never be delivered (the browser can reclaim the socket without delivering),
+// so past the same wedge window it must be rescued too, not ignored forever.
+{
+  const closed = bootClient();
+  const closedClient = closed.window.PinvouWebClient;
+  await closedClient.policyPromise;
+  const closedSocket = closed.MockWebSocket.instances[0];
+  closedSocket.open();
+  closedClient.lastInboundAt = Date.now();
+  closedSocket.readyState = closed.MockWebSocket.CLOSED;
+
+  closedClient._livenessCheck();
+  assert.equal(closedClient.closingStartedAt > 0, true,
+    'the wedge clock must be recorded for a CLOSED socket too');
+  closedClient.closingStartedAt = Date.now() - 46_000;
+  closedClient._livenessCheck();
+  assert.equal(closedClient.socket, null,
+    'a CLOSED socket wedged past the window must be dropped like CLOSING');
+  takeReconnectTimer(closed.timers).callback();
+  assert.equal(closed.MockWebSocket.instances.length, 2,
+    'the CLOSED rescue must funnel through the ordinary backoff reconnect');
+}
+
+// Round-16 follow-up review N1: the event-failure path detaches the socket
+// deliberately (the catch handler sets this.socket = null then closes), so its
+// close event is judged noise by the identity gate — the reconnect must be
+// scheduled by the catch handler itself; delegating to the close event would
+// leave a zombie "connected with no transport" UI whenever close() delivered
+// normally (probe end-to-end reproduction from before the fix, and the
+// watchdog no longer backstops a missing !this.socket either). Late
+// close/error events still must not disturb the successor cycle.
+{
+  const failed = bootClient();
+  const failedClient = failed.window.PinvouWebClient;
+  await failedClient.policyPromise;
+  const events = [];
+  await failedClient.listen('chat:delta', (event) => {
+    events.push(event);
+    throw new Error('listener failed');
+  });
+  failedClient.markFrontendReady();
+  await Promise.resolve();
+  failedClient.markStateReady();
+
+  const deadSocket = failed.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  deadSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(failedClient.connectionState.status, 'connected');
+
+  // Event-processing failure: the socket is detached, so the reconnect must be
+  // scheduled on the spot, not left waiting for a close event the identity
+  // gate will swallow.
+  deadSocket.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_test',
+    seq: 1,
+    payload: { text: 'poison' },
+  });
+  await failedClient.eventDispatch;
+  assert.equal(deadSocket.closeCalled, true,
+    'the failed socket must be detached immediately');
+  assert.equal(failedClient.socket, null,
+    'the failed socket must not stay registered');
+  assert.equal(failed.timers.filter(timer => timer.delay < 10_000).length, 1,
+    'the catch path must schedule its own reconnect (the gated close event cannot)');
+  const reconnect = takeReconnectTimer(failed.timers);
+  reconnect.callback();
+
+  // The successor connects and completes negotiation; the dead socket's
+  // close/error only arrive now: they must be ignored wholesale, neither
+  // smearing the successor state nor appending a second reconnect timer.
+  const successor = failed.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  successor.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_b',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(failedClient.joined, true, 'the successor cycle must be fully joined');
+  deadSocket.emit('close', {});
+  deadSocket.emit('error', {});
+  assert.equal(failedClient.socket, successor,
+    'the late close/error of a replay-detached socket must not detach its successor');
+  assert.equal(failedClient.joined, true, 'the late events must not clobber the join state');
+  assert.equal(failedClient.desktopCapabilitiesReady, true,
+    'the late events must not wipe negotiated capabilities');
+  assert.equal(failedClient.connectionState.status, 'connected',
+    'the late error must not flip the healthy successor back to connecting');
+  assert.equal(failed.timers.filter(timer => timer.delay < 10_000).length, 0,
+    'the late events must not schedule a second reconnect');
+}
+
+// Round-16 follow-up review M8: the error gate previously had no test pinning
+// it (deleting the error gate alone kept the whole suite green). A late error
+// from a rescue-detached socket must not knock a healthy successor back to
+// connecting and must not pollute the speculative failure count — the same
+// identity semantics as the close gate.
+{
+  const late = bootClient();
+  const lateClient = late.window.PinvouWebClient;
+  await lateClient.policyPromise;
+  const deadSocket = late.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  lateClient.lastInboundAt = Date.now();
+
+  deadSocket.readyState = late.MockWebSocket.CLOSING;
+  lateClient._livenessCheck();
+  lateClient.closingStartedAt = Date.now() - 46_000;
+  lateClient._livenessCheck();
+  assert.equal(lateClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(late.timers).callback();
+
+  const successor = late.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  assert.equal(lateClient.connectionState.status, 'connected');
+  assert.equal(lateClient.joined, true);
+
+  // Round-25 review MINOR: the three late-error assertions here (socket kept /
+  // status not flipped / no reconnect scheduled) duplicate the MAJOR-1 block's
+  // late-error assertions verbatim — the error gate's deletion mutation goes
+  // red at the earlier assertion, so this block adds no new mutation coverage
+  // for the gate itself. After deduplication only this block's unique payload
+  // remains: with the gate in place the speculative count stays unpolluted —
+  // a genuine natural death immediately afterwards still counts under the
+  // original semantics.
+  deadSocket.emit('error', {});
+  successor.close();
+  takeReconnectTimer(late.timers);
+  assert.equal(late.timers.some(timer => timer.delay < 10_000), false,
+    'a real death after the gated late error must still reach the reconnect funnel (exactly one timer)');
+}
+
+// Round-28 review M1: the catch path's identity gate (the
+// closedPermanently || this.socket !== sourceSocket check at the top of the
+// event-failure handler) previously had no fixture at all — narrowing it to
+// closedPermanently-only kept the whole suite green. This fixture builds a
+// genuinely detectable scenario: the poisoned event passes the :623 frame gate
+// and the handleRemoteEvent gate while the socket is still current (dispatch
+// already past the gates), the listener detaches the socket via a rescue
+// mid-execution (simulating the rescue/reconnect race), and then throws — the
+// catch's identity gate must judge "the event belongs to a socket that has
+// already been swapped out" and return wholesale: it must not wipe the cycle
+// flags and must not append a second reconnect. Under the narrowing mutation
+// the flag-reset assertion goes red (the reconnect timer self-guards, so
+// timer counts alone cannot tell the difference).
+{
+  const midSwap = bootClient();
+  const midClient = midSwap.window.PinvouWebClient;
+  await midClient.policyPromise;
+  await midClient.listen('chat:delta', () => {
+    // Swap the socket mid-dispatch: CLOSING wedge + past-window rescue, with
+    // the reconnect timer scheduled on the spot.
+    const dying = midClient.socket;
+    dying.readyState = midSwap.MockWebSocket.CLOSING;
+    midClient.closingStartedAt = Date.now() - 46_000;
+    midClient._livenessCheck();
+    throw new Error('listener failed after mid-dispatch swap');
+  });
+  midClient.markFrontendReady();
+  await Promise.resolve();
+  midClient.markStateReady();
+
+  const swapSocket = midSwap.MockWebSocket.instances[0];
+  swapSocket.open();
+  swapSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  swapSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_swap',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(midClient.joined, true, 'the cycle must be fully joined before the poison event');
+  assert.equal(midClient.desktopCapabilitiesReady, true,
+    'capabilities must be negotiated before the poison event');
+
+  // The poisoned event during dispatch: the listener swaps the socket first,
+  // then throws.
+  swapSocket.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_swap',
+    seq: 1,
+    payload: { text: 'mid-swap poison' },
+  });
+  await midClient.eventDispatch;
+
+  // The catch's identity gate must return wholesale: the successor cycle's
+  // flags stay untouched, and the reconnect funnel holds only the one timer
+  // the rescue scheduled itself.
+  assert.equal(midClient.joined, true,
+    'the catch path must not reset the cycle flags when the event belongs to a swapped-out socket');
+  assert.equal(midClient.desktopCapabilitiesReady, true,
+    'the catch path must not wipe the post-swap cycle negotiated capabilities');
+  assert.equal(midClient.leaseId, 'lease_test',
+    'the catch path must not clear the post-swap cycle lease');
+  assert.equal(midClient.socket, null, 'the rescued socket must stay detached');
+  assert.equal(midSwap.timers.filter(timer => timer.delay < 10_000).length, 1,
+    'exactly the rescue reconnect timer must exist — the catch path must not add a second');
+}
+
+// Round-18 review: in an all-rescue topology (every close wedged and never
+// delivered) the close handler's verification branch can never run — the
+// rescue must carry that same branch along. The death of a successor rescued
+// inside a speculative cycle (not the speculativeSource; its join ack has not
+// arrived) must count toward the failure ladder and make the recovery visible;
+// rescuing the speculative source socket itself is still "the suspicion being
+// verified", keeping the original no-count contract (verbatim-identical to
+// the close handler's identity contract).
+{
+  const chained = bootClient();
+  const chainedClient = chained.window.PinvouWebClient;
+  await chainedClient.policyPromise;
+  const source = chained.MockWebSocket.instances[0];
+  source.open();
+  source.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_a',
+    desktop_connected: true,
+  });
+  // Speculative window: the previous socket was speculatively closed by the
+  // watchdog (the speculativeSource) and the successor is issued by the
+  // speculative reconnect — the copy is suppressed by the speculative
+  // semantics and the UI stays on connected.
+  chainedClient.speculativeReconnect = true;
+  chainedClient.speculativeFailures = 0;
+  chainedClient.speculativeSource = source;
+  chainedClient.socket = null;
+  chainedClient.scheduleReconnect('连接已断开，正在重试…');
+  assert.equal(chainedClient.connectionState.status, 'connected',
+    'a speculative reconnect must keep the UI on connected');
+  takeReconnectTimer(chained.timers).callback();
+  const successor = chained.MockWebSocket.instances[1];
+  assert.equal(chainedClient.socket, successor);
+  successor.open();
+  chainedClient.lastInboundAt = Date.now();
+  // The successor also wedges in CLOSING (its close event is never delivered);
+  // the watchdog rescues it:
+  successor.readyState = chained.MockWebSocket.CLOSING;
+  chainedClient._livenessCheck();
+  chainedClient.closingStartedAt = Date.now() - 46_000;
+  chainedClient._livenessCheck();
+  assert.equal(chainedClient.socket, null, 'the wedged successor must be rescued');
+  assert.equal(chainedClient.speculativeFailures, 1,
+    'a rescued successor whose join ack never arrived counts as a verification failure');
+  assert.equal(chainedClient.speculativeReconnect, false,
+    'the ladder must stop hiding recovery after the failed verification');
+  assert.equal(chainedClient.connectionState.status, 'connecting',
+    'the rescue reconnect must become visible once verification failed');
+  takeReconnectTimer(chained.timers).callback();
+
+  // Contrast: rescuing the speculative source socket itself still does not
+  // count and stays suppressed (the original contract preserved).
+  const forgiven = bootClient();
+  const forgivenClient = forgiven.window.PinvouWebClient;
+  await forgivenClient.policyPromise;
+  const forgivenSocket = forgiven.MockWebSocket.instances[0];
+  forgivenSocket.open();
+  forgivenSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_a',
+    desktop_connected: true,
+  });
+  forgivenClient.joined = true;
+  forgivenClient.speculativeReconnect = true;
+  forgivenClient.speculativeFailures = 0;
+  forgivenClient.speculativeSource = forgivenSocket;
+  forgivenClient.lastInboundAt = Date.now();
+  forgivenSocket.readyState = forgiven.MockWebSocket.CLOSING;
+  forgivenClient._livenessCheck();
+  forgivenClient.closingStartedAt = Date.now() - 46_000;
+  forgivenClient._livenessCheck();
+  assert.equal(forgivenClient.socket, null, 'the speculative source is still rescued');
+  assert.equal(forgivenClient.speculativeFailures, 0,
+    'rescuing the speculative source itself is the suspicion being verified, not a failed one');
+  assert.equal(forgivenClient.speculativeReconnect, true,
+    'the source rescue must keep the speculative window');
+  assert.equal(forgivenClient.connectionState.status, 'connected',
+    'the source rescue reconnect must stay suppressed');
+}
+
+// Round-19 review: when an event failure inside a speculative cycle goes
+// through the catch path, it must carry the same verification branch as the
+// rescue / close handler — a proven processing failure of a non-speculative-
+// source socket counts toward the ladder and lifts the copy suppression; the
+// speculative source itself is still forgiven (window kept, count 0, copy
+// stays suppressed). Without that branch, a proven failure is suppressed as
+// "suspected" for one cycle (a probe once classified this as a UI-honesty
+// gap).
+{
+  const spec = bootClient();
+  const specClient = spec.window.PinvouWebClient;
+  await specClient.policyPromise;
+  const prev = spec.MockWebSocket.instances[0];
+  prev.open();
+  prev.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_a',
+    desktop_connected: true,
+  });
+  // Speculative window: the previous cycle was speculatively closed and the
+  // successor was issued by the speculative reconnect, not yet joined.
+  specClient.speculativeReconnect = true;
+  specClient.speculativeFailures = 0;
+  specClient.speculativeSource = prev;
+  specClient.socket = null;
+  specClient.scheduleReconnect('连接已断开，正在重试…');
+  takeReconnectTimer(spec.timers).callback();
+  const successor = spec.MockWebSocket.instances[1];
+  assert.equal(specClient.socket, successor);
+  successor.open();
+  // The successor has not joined and state_ready is not marked —
+  // processRemoteEvent throws stateNotReady on the event frame, and the catch
+  // path takes over recovery.
+  successor.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_test',
+    seq: 1,
+    payload: { text: 'x' },
+  });
+  await specClient.eventDispatch;
+  assert.equal(specClient.speculativeFailures, 1,
+    'an event failure on a speculative successor counts as a verification failure');
+  assert.equal(specClient.speculativeReconnect, false,
+    'the speculative window must close once the failure is proven');
+  assert.equal(specClient.socket, null,
+    'the catch path must detach the failed socket');
+  assert.equal(spec.timers.some(timer => timer.delay < 10_000), true,
+    'the catch path must schedule the replay reconnect');
+  assert.equal(specClient.connectionState.status, 'connecting',
+    'a proven failure must make the reconnect visible, not stay suppressed');
+}
+{
+  // Contrast: an event failure on the speculative source itself is still
+  // forgiven under the original contract.
+  const forg = bootClient();
+  const forgClient = forg.window.PinvouWebClient;
+  await forgClient.policyPromise;
+  const src = forg.MockWebSocket.instances[0];
+  src.open();
+  src.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_a',
+    desktop_connected: true,
+  });
+  forgClient.joined = true;
+  forgClient.speculativeReconnect = true;
+  forgClient.speculativeFailures = 0;
+  forgClient.speculativeSource = src;
+  forgClient.lastInboundAt = Date.now();
+  src.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_test',
+    seq: 1,
+    payload: { text: 'x' },
+  });
+  await forgClient.eventDispatch;
+  assert.equal(forgClient.speculativeFailures, 0,
+    'the speculative source stays forgiven on the event-failure path too');
+  assert.equal(forgClient.speculativeReconnect, true,
+    'the source failure keeps the speculative window');
+  assert.equal(forgClient.connectionState.status, 'connected',
+    'the source failure reconnect stays suppressed');
+}
+
+// Round-18 review (the Round-20 review repaired this comment, which a round-19
+// insertion had cut in half): cycle-state frames previously had no identity
+// gate — a join ack still in flight on a rescue-detached socket would arrive
+// into the successor cycle and knock the already-negotiated successor back to
+// the unnegotiated state (the next inbound event hits !desktopCapabilitiesReady
+// → incompatible_desktop permanent shutdown, same family as round-16 MAJOR-1);
+// a late error/endpoint_replaced would this.socket.close()/closePermanently a
+// healthy successor (the non-TTL arm of endpoint_revoked already bypasses as a
+// deliberate exception; see the same-named comment in bootstrap.js). Frames
+// from an old socket must be dropped wholesale.
+{
+  const stale = bootClient();
+  const staleClient = stale.window.PinvouWebClient;
+  await staleClient.policyPromise;
+  const events = [];
+  await staleClient.listen('chat:delta', (event) => events.push(event));
+  staleClient.markFrontendReady();
+  await Promise.resolve();
+  staleClient.markStateReady();
+
+  const deadSocket = stale.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_a',
+    desktop_connected: true,
+  });
+  deadSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_a',
+    seq: 4,
+    snapshot: { capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] } },
+  });
+  assert.equal(staleClient.desktopCapabilitiesReady, true, 'cycle A must complete its handshake');
+
+  // Cycle A's socket wedges → rescue → the successor (B) connects and
+  // completes negotiation:
+  deadSocket.readyState = stale.MockWebSocket.CLOSING;
+  staleClient._livenessCheck();
+  staleClient.closingStartedAt = Date.now() - 46_000;
+  staleClient._livenessCheck();
+  takeReconnectTimer(stale.timers).callback();
+  const successor = stale.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_b',
+    desktop_connected: true,
+  });
+  successor.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_b',
+    seq: 5,
+    snapshot: { capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] } },
+  });
+  assert.equal(staleClient.desktopCapabilitiesReady, true, 'cycle B must complete its handshake');
+
+  // Cycle A's join ack arrives late: it must not knock the successor back to
+  // the unnegotiated state.
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_c',
+    desktop_connected: true,
+  });
+  assert.equal(staleClient.leaseId, 'lease_b',
+    'a stale join ack must not clobber the current cycle lease');
+  assert.equal(staleClient.desktopCapabilitiesReady, true,
+    'a stale join ack must not wipe negotiated capabilities');
+
+  // A real event on the successor must still dispatch normally (before the
+  // fix: it hit the !desktopCapabilitiesReady knocked back by the old ack →
+  // incompatible_desktop permanent shutdown).
+  successor.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_b',
+    seq: 6,
+    payload: { text: 'live' },
+  });
+  await staleClient.eventDispatch;
+  assert.equal(events.length, 1, 'the live event must dispatch despite the stale ack');
+  assert.equal(staleClient.closedPermanently, false,
+    'the stale ack must not brick the successor into incompatible_desktop');
+
+  // Same family: a late endpoint_revoked must not close the healthy successor.
+  deadSocket.message({ v: 2, type: 'endpoint_revoked', reason: 'desktop_offline_ttl_expired' });
+  assert.equal(successor.closeCalled, false,
+    'a stale endpoint_revoked must not close the healthy successor');
+  assert.equal(staleClient.connectionState.status, 'connected',
+    'a stale endpoint_revoked must not flip the successor to desktop_offline');
+  assert.equal(staleClient.reconnectForDesktopGone, false,
+    'a stale endpoint_revoked must not poison the fast-reconnect pacing');
+}
+
+// Page visible again: reconnect immediately when disconnected; never drop a
+// healthy OPEN connection on a whim (background-tab timers are throttled, so
+// the post-wake liveness judgment belongs to the watchdog and the online
+// event).
 {
   const hidden = bootClient();
   const hiddenClient = hidden.window.PinvouWebClient;
@@ -1003,9 +1918,10 @@ async function connectWithCapabilities(events, listener) {
     'becoming visible must not drop a healthy OPEN socket');
 }
 
-// online / visibilitychange 必须中止卡在 CONNECTING 的僵尸 socket：否则恢复要
-// 等浏览器 TCP 超时。关闭后走普通 close -> 重连漏斗，connect() 在 socket 存在
-// 期间早退，因此不会双重连接。
+// online / visibilitychange must abort a zombie socket stuck in CONNECTING:
+// otherwise recovery would wait for the browser's TCP timeout. After closing,
+// recovery flows through the ordinary close -> reconnect funnel, and connect()
+// early-returns while a socket still exists, so no double connect.
 {
   const online = bootClient();
   const onlineClient = online.window.PinvouWebClient;
@@ -1033,9 +1949,10 @@ async function connectWithCapabilities(events, listener) {
     'the aborted socket must be replaced through the reconnect funnel');
 }
 
-// 桌面端不在类失败（endpoint_not_found / desktop_offline_ttl_expired）：前 5 次
-// 重试保持既有 ≤10s 快节奏（TTL 恢复流程要快），之后逐次翻倍、60s 封顶；成功
-// join 后计数清零，重试节奏回到最初的快速档。
+// Desktop-gone failures (endpoint_not_found / desktop_offline_ttl_expired):
+// the first 5 retries keep the historical <=10s fast pace (TTL recovery must be
+// quick), then double per attempt capped at 60s; a successful join zeroes the
+// counter and the retry pace returns to the original fast regime.
 {
   const { window, MockWebSocket, timers } = bootClient();
   const client = window.PinvouWebClient;
@@ -1080,10 +1997,12 @@ async function connectWithCapabilities(events, listener) {
     'after a successful join the retry pace must restart fast');
 }
 
-// Round-8 复审:desktop-gone 计数必须只属于 desktop-gone 类失败——普通传输
-// 断线(无 desktop-gone/TTL 原因)在 scheduleReconnect 里把计数清零,退避
-// 回到快速档。保留 grown 值时,一次普通断线会继承离线场景的 20s+ 退避,
-// 桌面明明在线却要等满整段慢窗口。
+// Round-8 review: the desktop-gone count must belong only to desktop-gone
+// failures — an ordinary transport drop (no desktop-gone/TTL reason) zeroes
+// the counter in scheduleReconnect and the backoff returns to the fast regime.
+// If the grown value were kept, one ordinary drop would inherit the offline
+// scenario's 20s+ backoff, making the user wait out the whole slow window even
+// though the desktop is clearly online.
 {
   const { window, MockWebSocket, timers } = bootClient();
   const client = window.PinvouWebClient;
@@ -1102,7 +2021,8 @@ async function connectWithCapabilities(events, listener) {
     'the desktop-gone ladder must first grow past the fast window');
   timers.splice(timers.indexOf(grown), 1);
   grown.callback();
-  // 普通传输断线:socket 打开但从未 join,不带任何 desktop-gone/TTL 原因。
+  // Ordinary transport drop: the socket opens but never joins, with no
+  // desktop-gone/TTL reason attached.
   const takeFastTimer = () => {
     const index = timers.findIndex(timer => timer.delay === 10_000);
     assert.ok(index >= 0, 'expected the fast-regime reconnect timer');
@@ -1126,10 +2046,12 @@ async function connectWithCapabilities(events, listener) {
     'the following ordinary reconnect must stay in the fast regime');
 }
 
-// Round-8 复审:desktop_offline_ttl_expired 分支必须置 reconnectForDesktopGone,
-// TTL 恢复的连续重试才能参与 desktop-gone 阶梯(20s→60s 封顶)。缺失时每次
-// TTL 关闭都按普通 ladder 清零计数,离线桌面会被 <10s 的快速重试无限打断,
-// 而既有 TTL 测试只断言 <10s 定时器存在,删该行仍全绿。
+// Round-8 review: the desktop_offline_ttl_expired branch must set
+// reconnectForDesktopGone so consecutive TTL-recovery retries participate in
+// the desktop-gone ladder (20s→60s cap). Without it, every TTL close zeroes
+// the count through the ordinary ladder and an offline desktop is interrupted
+// endlessly by <10s fast retries — while the existing TTL tests only assert a
+// <10s timer exists, so deleting the line stayed green.
 {
   const { window, MockWebSocket, timers } = bootClient();
   const client = window.PinvouWebClient;
@@ -1176,7 +2098,8 @@ async function connectWithCapabilities(events, listener) {
     'the TTL ladder must stay capped at 60s');
 }
 
-// desktop_snapshot 缺失或空 seq 不得把游标重置为 0（否则下次 join 触发全量重放）。
+// A missing or empty snapshot seq must not reset the cursor to 0 (otherwise
+// the next join would trigger a full replay).
 {
   const { client, socket } = await connectWithCapabilities(['chat:delta'], () => {});
   const snapshot = seq => ({
@@ -1198,9 +2121,11 @@ async function connectWithCapabilities(events, listener) {
 }
 
 
-// 缺凭证的截断链接必须停在阻断卡:online/visibilitychange 看门狗等恢复路径
-// 不得绕过凭证 gate,把 credentials_missing 转成注定失败的 join 重试循环
-// (非阻断小转圈覆盖阻断卡,永远连不上却一直在重试)。
+// A truncated link missing credentials must stay parked on the blocking card:
+// recovery paths such as online/visibilitychange and the watchdog must not
+// bypass the credentials gate and turn credentials_missing into a join retry
+// loop that is doomed to fail (a non-blocking spinner covering the blocking
+// card, retrying forever without ever connecting).
 {
   const harness = bootClient(undefined, { hash: '#endpoint=endpoint_test' });
   const client = harness.window.PinvouWebClient;
@@ -1218,11 +2143,15 @@ async function connectWithCapabilities(events, listener) {
     'the truncated link must stay parked on the blocking card');
 }
 
-// Round-9 复审:构造器抛错路径零覆盖(noteSpeculativeFailure 在抛错臂是
-// 唯一计数点,夹具构造器此前不可能抛错)。判别场景:健康 join 后进入静
-// 默投机周期,从第二次构造开始抛错——第一个抛错的 spawn 必须把失败计入
-// 投机梯度(删除该计数,第二个抛错的 spawn 仍被视为投机,UI 永远停在
-// connected);第二个抛错的 spawn 把失败推过封顶,重连必须可见。
+// Round-9 review: the throwing-constructor path had zero coverage
+// (noteSpeculativeFailure is the only counting point on the throw arm, and the
+// fixture constructor previously could not throw). Discriminating scenario:
+// after a healthy join the cycle goes silently speculative, then constructors
+// start throwing from the second one — the first throwing spawn must count the
+// failure toward the speculative ladder (without that count, the second
+// throwing spawn would still be treated as speculative and the UI would stay
+// on connected forever); the second throwing spawn pushes the failure past the
+// cap, so the reconnect must become visible.
 {
   const blocked = await connectWithCapabilities(['chat:delta'], () => {});
   assert.equal(blocked.client.speculativeFailures, 0,
@@ -1237,8 +2166,10 @@ async function connectWithCapabilities(events, listener) {
     'a throwing constructor must not register a socket instance');
   assert.equal(blocked.client.speculativeFailures, 1,
     'a thrown constructor on a speculative spawn must count the failed cycle');
-  // 第一个抛错把投机位清掉:下一次 spawn 就是可见重连,再抛错不再计数
-  // (计数只发生在投机 spawn 上)——升级不靠「推过封顶」,靠投机位清空。
+  // The first throw clears the speculative flag: the next spawn is a visible
+  // reconnect and a further throw no longer counts (counting happens only on
+  // speculative spawns) — the escalation works not by "pushing past the cap"
+  // but by clearing the speculative flag.
   assert.equal(blocked.client.speculativeReconnect, false,
     'a thrown speculative spawn must clear the speculative flag');
   assert.equal(blocked.client.connectionState.status, 'connecting',
@@ -1250,9 +2181,47 @@ async function connectWithCapabilities(events, listener) {
     'the visible retry stays visible across repeated throw cycles');
 }
 
-// Round-9 复审:静默窗(120s)与 CONNECTING 楔死窗(45s)此前只有单侧行
-// 为钉(探针只从一侧越过阈值,把常数调小全部探针仍然绿)——源码级钉住
-// 常量字面量,与 vm 行为钉互补;改常数必须显式重审两侧行为钉。
+// Round-23 review hardening pin: open is the last of the four socket events
+// without an identity gate — a stale socket's open listener survives the
+// rescue/rebuild, and firing late it would sendRaw the join frame onto the
+// current this.socket (the successor). A spec-compliant browser does not
+// deliver open after a CONNECTING-phase close(), so this shape is unreachable
+// in the existing topology; the gate is defense symmetric with the
+// close/error/message trio. Deleting the identity gate goes red (the successor
+// sees a second join frame).
+{
+  const staleOpen = bootClient();
+  const staleOpenClient = staleOpen.window.PinvouWebClient;
+  await staleOpenClient.policyPromise;
+  const first = staleOpen.MockWebSocket.instances[0];
+  first.open();
+  first.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  first.readyState = staleOpen.MockWebSocket.CLOSING;
+  staleOpenClient._livenessCheck();
+  staleOpenClient.closingStartedAt = Date.now() - 46_000;
+  staleOpenClient._livenessCheck();
+  assert.equal(staleOpenClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(staleOpen.timers).callback();
+  const successor = staleOpen.MockWebSocket.instances[1];
+  successor.open();
+  first.open();
+  const joinFrames = successor.sent.filter((frame) => frame.type === 'web_client_join');
+  assert.equal(joinFrames.length, 1,
+    'a stale socket open event must not send its join frame on the successor');
+}
+
+// Round-9 review: the silence window (120s) and the CONNECTING wedge window
+// (45s) previously had only one-sided behavior pins (a probe crossing the
+// threshold from one side kept every probe green even with the constants
+// shrunk) — pin the constant literals at source level, complementing the vm
+// behavior pins; changing a constant requires explicitly re-reviewing the
+// behavior pins on both sides.
 assert.match(source, /const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;/);
 assert.match(source, /const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;/);
 assert.match(source, /const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;/);
@@ -1260,6 +2229,7 @@ assert.match(source, /const LIVENESS_CONNECT_WEDGE_TIMEOUT_MS = 45_000;/);
 assert.match(source, /const DESKTOP_GONE_FAST_RETRIES = 5;/);
 assert.match(source, /const DESKTOP_GONE_MAX_DELAY_MS = 60_000;/);
 
-// Round-11 复审 NIT:通过横幅移到真正的文件末尾——此前它先于凭据门/
-// 构造器抛错/常数钉三个块打印,失败运行也会先喊 passed。
+// Round-11 review NIT: move the pass banner to the true end of the file — it
+// previously printed before the credentials-gate / throwing-constructor /
+// constant-pin blocks, so a failing run announced "passed" first too.
 console.log('web bootstrap transport tests passed');
