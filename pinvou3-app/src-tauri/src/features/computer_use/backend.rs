@@ -600,6 +600,15 @@ struct BackendInner {
     /// click had to wait out the entire remaining request while the
     /// emergency release queued behind it.
     live_cancels: Mutex<Vec<Arc<AtomicBool>>>,
+    /// The worker's request sender, stashed at spawn time for non-blocking
+    /// reservation-release wakes (see [`BackendInner::release_cleanup_reservation`]).
+    /// `None` while never started. `release_cleanup_reservation` must NEVER
+    /// reach the state mutex for this — `ensure_sender` holds that mutex
+    /// across the whole factory startup (up to BACKEND_CALL_TIMEOUT), so a
+    /// state-lock acquisition or an `ensure_sender` call on a release path
+    /// would block Stop/revoke for as long as a concurrent first request's
+    /// lazy start takes.
+    wake_tx: Mutex<Option<Sender<BackendRequest>>>,
 }
 
 impl BackendInner {
@@ -635,6 +644,14 @@ impl BackendInner {
                         return Err(ComputerUseError::unavailable(message));
                     }
                 };
+                // Stash a wake sender for `release_cleanup_reservation`
+                // BEFORE the startup wait: from this moment a worker thread
+                // exists, so a concurrent release may signal it without
+                // touching this (still-held) state mutex or running
+                // `ensure_sender`. The Wake may queue while the worker is
+                // still inside the factory; on a startup failure the worker
+                // exits and the queued request is simply never consumed.
+                *self.wake_tx.lock() = Some(tx.clone());
                 let startup = startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT);
                 // On the failure branches, stash (sender, thread): write the state under the
                 // lock first and release the state lock, then finish up outside the lock.
@@ -751,13 +768,21 @@ impl BackendInner {
     /// loop-top resume only runs between requests. A no-op `Wake` control
     /// request gives it one more dequeue, so the parked slot drains
     /// promptly instead of stranding the re-granted session until the next
-    /// unrelated request arrives. Best-effort by design: a NeverStarted
-    /// backend has no worker (and nothing could have parked), and a
-    /// Shutdown/StartFailed backend refuses `ensure_sender`.
+    /// unrelated request arrives.
+    /// Strictly non-blocking by design (review P2 round 6): this runs on
+    /// the Stop/revoke caller thread, so it must not wait on the state
+    /// mutex — `ensure_sender` holds that mutex across the whole factory
+    /// startup (up to BACKEND_CALL_TIMEOUT), and a first request racing
+    /// the NeverStarted probe's guard release can be mid-startup right
+    /// here. The wake sender therefore comes from `wake_tx` (stashed at
+    /// spawn time, behind a microsecond-scale mutex) — never from an
+    /// `ensure_sender` call, which would also re-enter the blocking
+    /// startup path. `None` = no worker yet (nothing could have parked);
+    /// a send to a torn-down worker's dropped receiver errors and is
+    /// ignored, same as Drop's Shutdown send.
     fn release_cleanup_reservation(&self) {
-        let never_started = matches!(&*self.state.lock(), WorkerState::Pending(_));
-        if self.cleanup_pending.fetch_sub(1, Ordering::SeqCst) == 1 && !never_started {
-            if let Ok(tx) = self.ensure_sender() {
+        if self.cleanup_pending.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if let Some(tx) = self.wake_tx.lock().clone() {
                 let _ = tx.send(BackendRequest {
                     kind: BackendRequestKind::Wake,
                     // Same reply-orphan shape as Drop's Shutdown send: the
@@ -1151,6 +1176,7 @@ impl BackendHandle {
                 in_flight: AtomicBool::new(false),
                 cleanup_pending: Arc::new(AtomicUsize::new(0)),
                 live_cancels: Mutex::new(Vec::new()),
+                wake_tx: Mutex::new(None),
             }),
         }
     }
@@ -3524,6 +3550,63 @@ mod tests {
         let first = state.iter().position(|op| op == "open first").unwrap();
         let second = state.iter().position(|op| op == "open second").unwrap();
         assert!(first < second, "journal: {state:?}");
+    }
+
+    /// Regression (review P2 round 6): the reservation release runs on the
+    /// Stop/revoke caller thread, so it must not wait on the state mutex —
+    /// a first request racing the NeverStarted probe's guard release can be
+    /// mid-lazy-start right there, and `ensure_sender` holds that mutex
+    /// across the whole factory startup. The wake must come from the
+    /// spawn-time `wake_tx` stash instead: calling this while a slow
+    /// factory's startup holds the state lock must return promptly, not
+    /// block for the factory duration (mutation: the previous
+    /// state-lock/ensure_sender shape).
+    #[test]
+    fn releasing_a_reservation_never_blocks_on_a_concurrent_startup() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            // Simulate a slow platform/permission initialization: a first
+            // request entering ensure_sender holds the state mutex across
+            // this whole sleep.
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Trigger the lazy start on a helper thread: it takes the state
+        // mutex and parks on the startup signal while the factory sleeps.
+        let starter = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.capabilities())
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while handle.inner.state.try_lock().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lazy start never took the state lock; the helper thread likely died"
+            );
+            std::thread::yield_now();
+        }
+        // A cleanup's reservation is armed and released WHILE the startup
+        // holds the state mutex: the caller must not block on either the
+        // mutex or an ensure_sender call. (The worker thread already
+        // exists — spawn precedes the startup wait — so the wake sender is
+        // stashed and the Wake simply queues behind the factory.)
+        handle.inner.acquire_cleanup_reservation();
+        let started = std::time::Instant::now();
+        handle.inner.release_cleanup_reservation();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the reservation release must not wait on a concurrent startup; took {:?}",
+            started.elapsed()
+        );
+        starter.join().expect("starter thread");
+        // The session still works after the racing wake.
+        assert!(
+            handle.open_app("after", &[]).is_ok(),
+            "the backend must serve requests after the racing release"
+        );
     }
 
     /// Regression (round-13 review): a control request (emergency stop /
