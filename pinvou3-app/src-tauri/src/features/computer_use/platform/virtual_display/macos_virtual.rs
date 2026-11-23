@@ -17,12 +17,22 @@
 //! `CGVirtualDisplaySettings` / `CGVirtualDisplayMode` are NOT bound by any
 //! crate in the dependency tree, so every interaction goes through raw
 //! `msg_send!` over `objc2` 0.6. Crash-safety contract: **probe what you
-//! send** — [`probe`] checks every class and selector with `AnyClass::get` +
-//! `AnyClass::responds_to` before anything is ever sent, and creation
-//! re-runs the same probe. Sending an unverified selector to a private class
-//! would raise an Obj-C exception with no landing pad (process abort — same
-//! reasoning as `platform/screen_capture_kit.rs`'s version gate), so the
-//! probe is the crash-safety mechanism, not best-effort politeness.
+//! send** — [`probe`] checks every class and every UNCONDITIONAL selector
+//! with `AnyClass::get` + `AnyClass::responds_to` before anything is ever
+//! sent, and creation re-runs the same probe. Sending an unverified selector
+//! to a private class would raise an Obj-C exception with no landing pad
+//! (process abort — same reasoning as `platform/screen_capture_kit.rs`'s
+//! version gate), so the probe is the crash-safety mechanism, not
+//! best-effort politeness.
+//!
+//! The private selector surface moves between macOS versions (27.3 removed
+//! `setSerialString:`, `setProductName:` and the descriptor's `setModes:`,
+//! and builds nothing from a descriptor whose vendor id is zero). Selectors
+//! the versions disagree about are therefore never part of the required
+//! surface: [`descriptor_options`] asks the live descriptor's class which of
+//! them this host implements, and [`build_descriptor`] sends exactly those —
+//! each one verified by `responds_to` immediately before it is sent, so the
+//! "probe what you send" rule holds for them too.
 //!
 //! Threading model:
 //! - Creation runs on the computer_use worker thread (guaranteed by the
@@ -164,6 +174,24 @@ const VD_SIZE_MM: CGSize = CGSize {
 const PRODUCT_NAME: &str = "Pinvou Virtual Display";
 const SERIAL_STRING_PREFIX: &str = "PINVOU3-VD-";
 
+/// Seeds for the numeric vendor/product ids the descriptor carries. A
+/// descriptor whose vendor id is zero builds nothing on current macOS
+/// (`initWithDescriptor:` answers nil — verified on 27.3; Chromium's
+/// maintained virtual-display helper dates the requirement to macOS 14).
+/// Derived from fixed seeds rather than from the product name so the two ids
+/// stay independent of it and of each other, and stable across releases
+/// exactly like the serial: macOS persists a display arrangement per display
+/// identity (vendor, product, serial — observed on 27.3), so a per-session
+/// identity would add a layout entry to the user's display preferences on
+/// every session.
+const VENDOR_ID_SEED: &[u8] = b"PINVOU3-VD-VENDOR";
+const PRODUCT_ID_SEED: &[u8] = b"PINVOU3-VD-PRODUCT";
+
+/// Apple's own EDID vendor id: a third-party display must not claim it.
+/// Test-only: an expectation of the identity test, never sent.
+#[cfg(test)]
+const APPLE_VENDOR_ID: u32 = 0x0610;
+
 /// Serial dispatch-queue label for the display's event queue. Must NOT be
 /// the main queue (the private display machinery enqueues work there;
 /// starving the main run loop would stall the whole app).
@@ -194,6 +222,42 @@ fn serial_string() -> String {
     format!("{SERIAL_STRING_PREFIX}{:08X}", serial_number())
 }
 
+/// The vendor id handed to the display descriptor. EDID ids are 16 bits
+/// wide, so the seed hash is cut to the low 16 bits — a value that stays
+/// valid whatever integer width the host's private setter reads.
+fn display_vendor_id() -> u32 {
+    fnv1a32(VENDOR_ID_SEED) & 0xFFFF
+}
+
+/// The product id handed to the display descriptor (same 16-bit rule).
+fn display_product_id() -> u32 {
+    fnv1a32(PRODUCT_ID_SEED) & 0xFFFF
+}
+
+/// Panel chromaticities: the sRGB primaries and white point Chromium's
+/// maintained virtual-display helper (`ui/display/mac/test/
+/// virtual_display_util_mac.mm`) hands its descriptor. Sent only where the
+/// host has the setters. They are carried for parity with that descriptor
+/// shape — on 27.3 it was the shape the system extended by itself, without
+/// the Screen Mirroring alert — not because macOS is known to need them for
+/// that (removing any one other field of the shape stayed green in probing).
+const VD_RED_PRIMARY: CGPoint = CGPoint {
+    x: 0.6797,
+    y: 0.3203,
+};
+const VD_GREEN_PRIMARY: CGPoint = CGPoint {
+    x: 0.2559,
+    y: 0.6983,
+};
+const VD_BLUE_PRIMARY: CGPoint = CGPoint {
+    x: 0.1494,
+    y: 0.0557,
+};
+const VD_WHITE_POINT: CGPoint = CGPoint {
+    x: 0.3125,
+    y: 0.3291,
+};
+
 /// Effective PPI of the virtual panel: pixels over physical inches
 /// (25.4 mm per inch). Pure so the "≥ 200 PPI so the desktop UI stays
 /// normally sized" decision is pinned by a test. Test-only: without the
@@ -221,11 +285,17 @@ const CLASS_DESCRIPTOR: &std::ffi::CStr = c"CGVirtualDisplayDescriptor";
 const CLASS_SETTINGS: &std::ffi::CStr = c"CGVirtualDisplaySettings";
 const CLASS_MODE: &std::ffi::CStr = c"CGVirtualDisplayMode";
 
-/// Every selector this module sends, with the class it is sent to. The probe
-/// and the create path both walk this table — one table, so a future edit
-/// that adds a `msg_send!` must extend the probe in the same commit (the
-/// probe iterates exactly what creation sends). `init`/`alloc` are absent:
-/// every Obj-C class has them.
+/// Every selector this module sends on EVERY macOS that has the private
+/// classes, with the class it is sent to. The probe and the create path both
+/// walk this table — one table, so a future edit that adds an unconditional
+/// `msg_send!` must extend the probe in the same commit. `init`/`alloc` are
+/// absent: every Obj-C class has them.
+///
+/// Selectors the macOS versions disagree about are deliberately NOT here:
+/// they are [`descriptor_options`] fields, sent only where the host
+/// implements them. Listing them as required is what made macOS 27.3 (which
+/// removed `setSerialString:`, `setProductName:` and the descriptor's
+/// `setModes:`) answer Unavailable for a display it can build.
 fn required_selectors() -> Vec<(
     &'static std::ffi::CStr,
     &'static AnyClass,
@@ -249,10 +319,7 @@ fn required_selectors() -> Vec<(
                     sel!(setMaxPixelsWide:),
                     sel!(setMaxPixelsHigh:),
                     sel!(setSizeInMillimeters:),
-                    sel!(setSerialString:),
-                    sel!(setProductName:),
                     sel!(setQueue:),
-                    sel!(setModes:),
                 ],
                 n if n == CLASS_VIRTUAL_DISPLAY => {
                     &[
@@ -275,11 +342,77 @@ fn required_selectors() -> Vec<(
     table
 }
 
-/// Cheap availability probe: private class + selector presence only. No side
-/// effects, no display creation (it runs at the refresh points — startup
-/// replay, preference flips, creation reporting; status reads consume the
-/// cached snapshot). Unavailable carries the wording the status surface
-/// shows the user.
+/// Which descriptor setter carries the display name on this macOS. The
+/// legacy `setProductName:` — the setter this module was written against —
+/// is preferred wherever the host has it; macOS 27.3 removed it and takes
+/// `setName:` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameSetter {
+    ProductName,
+    Name,
+}
+
+/// The display-name setter to use for a descriptor whose class answers
+/// `responds_to` through `responds_to`. `None` means this macOS offers
+/// neither — the display would come up under a generic system name, so the
+/// probe reports Unavailable instead of building it unnamed.
+fn name_setter(responds_to: &impl Fn(objc2::runtime::Sel) -> bool) -> Option<NameSetter> {
+    if responds_to(sel!(setProductName:)) {
+        Some(NameSetter::ProductName)
+    } else if responds_to(sel!(setName:)) {
+        Some(NameSetter::Name)
+    } else {
+        None
+    }
+}
+
+/// Which version-dependent descriptor setters this macOS implements. Pure
+/// over a `responds_to` predicate so both host shapes are unit-testable on
+/// any macOS: the surface this module was written against (every setter
+/// present) and the macOS 27.3 surface (no serial string, no
+/// `setProductName:`, no descriptor modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DescriptorOptions {
+    /// `None` when the host has neither display-name setter.
+    name: Option<NameSetter>,
+    vendor_id: bool,
+    product_id: bool,
+    serial_num: bool,
+    serial_string: bool,
+    chromaticities: bool,
+    /// The descriptor's own mode list (the pre-`CGVirtualDisplaySettings`
+    /// slot; 27.3 carries modes through the settings object only).
+    modes: bool,
+}
+
+/// Every version-dependent selector this module may send resolves here — one
+/// place, so a future optional `msg_send!` must add its field in the same
+/// commit and [`build_descriptor`] cannot send an unlisted one.
+fn descriptor_options(responds_to: &impl Fn(objc2::runtime::Sel) -> bool) -> DescriptorOptions {
+    DescriptorOptions {
+        name: name_setter(responds_to),
+        vendor_id: responds_to(sel!(setVendorID:)),
+        product_id: responds_to(sel!(setProductID:)),
+        serial_num: responds_to(sel!(setSerialNum:)),
+        serial_string: responds_to(sel!(setSerialString:)),
+        chromaticities: [
+            sel!(setRedPrimary:),
+            sel!(setGreenPrimary:),
+            sel!(setBluePrimary:),
+            sel!(setWhitePoint:),
+        ]
+        .into_iter()
+        .all(responds_to),
+        modes: responds_to(sel!(setModes:)),
+    }
+}
+
+/// Cheap availability probe: private class + unconditional-selector
+/// presence, plus one usable display-name setter. No side effects, no
+/// display creation (it runs at the refresh points — startup replay,
+/// preference flips, creation reporting; status reads consume the cached
+/// snapshot). Unavailable carries the wording the status surface shows the
+/// user.
 pub(crate) fn probe() -> VirtualAvailability {
     for name in [
         CLASS_VIRTUAL_DISPLAY,
@@ -292,6 +425,23 @@ pub(crate) fn probe() -> VirtualAvailability {
                 detail: "private macOS virtual display API not present on this macOS".to_string(),
             };
         }
+    }
+    // The display name is the one requirement with two valid setters (see
+    // `name_setter`): which of them this macOS has is its choice, having
+    // neither is not. The class resolved in the loop above; the `if let`
+    // only restates that.
+    if let Some(class) = AnyClass::get(CLASS_DESCRIPTOR)
+        && name_setter(&|selector| class.responds_to(selector)).is_none()
+    {
+        return VirtualAvailability::Unavailable {
+            detail: format!(
+                "private macOS virtual display API is missing the selectors \
+                 {:?} and {:?} on {:?} on this macOS",
+                sel!(setProductName:),
+                sel!(setName:),
+                CLASS_DESCRIPTOR
+            ),
+        };
     }
     for (class_name, _class, selector) in required_selectors() {
         // Unwrapping the class here is safe: probe only reaches the table
@@ -320,6 +470,35 @@ pub(crate) fn probe() -> VirtualAvailability {
 /// the per-process display list AND reports membership — this call is the
 /// required refresh step, not just a query).
 const ACTIVATION_POLL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Extra activation wait, on the worker thread only. macOS 27.3 does not
+/// always extend the desktop onto a new virtual display by itself: it can
+/// leave the display offline and ask the user in Control Center's Screen
+/// Mirroring alert how to use it (the alert offers extended display, mirror
+/// display and window mirroring). The display joins the active list only
+/// after that choice, which the 5 s budget cannot cover. The wait runs on
+/// the worker with the main run loop pumping, so on a host where the display
+/// arrives immediately the longer ceiling costs nothing — it only delays the
+/// explicit Unavailable where it never does.
+const SYSTEM_PROMPT_GRACE: Duration = Duration::from_secs(25);
+
+/// The worker-side activation deadline for a creation started at `started`.
+/// Pure so the budget split is pinned: the MAIN-thread poll keeps the 5 s
+/// ceiling (a longer one would freeze the UI for its whole length); only the
+/// worker-side wait carries the system-prompt grace.
+fn worker_activation_deadline(started: Instant) -> Instant {
+    started + ACTIVATION_POLL_TIMEOUT + SYSTEM_PROMPT_GRACE
+}
+
+/// The worker-side activation timeout detail. Names the one way a healthy
+/// creation is known to stay inactive (the system's Screen Mirroring alert)
+/// and what to do about it. Pure so the guidance is pinned by a test.
+fn activation_timeout_detail() -> String {
+    format!(
+        "the virtual display did not become active within {} s; if macOS showed a \
+         Screen Mirroring alert for the new display, choose to extend the desktop to it",
+        (ACTIVATION_POLL_TIMEOUT + SYSTEM_PROMPT_GRACE).as_secs()
+    )
+}
 /// Poll cadence for display activation and pid discovery.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Channel wait for the main-thread dispatch (covers the ≤5 s in-closure
@@ -371,10 +550,14 @@ unsafe fn init_or_err(
 }
 
 /// Builds the descriptor: physical backing pixels, the ≥200 PPI millimeter
-/// size, vendor/product/serial identity, the serial dispatch queue, and an
-/// empty mode list (the mode arrives via applySettings below — the proven
-/// DeskPad sequence; `serialNum` stays at its default, only `serialString`
-/// carries identity, exactly like DeskPad).
+/// size, the vendor/product/serial identity, the display name, the panel
+/// chromaticities, and the serial dispatch queue — plus, where this macOS
+/// still has the setters, the legacy serial string and an empty mode list
+/// (the mode itself always arrives via applySettings below).
+///
+/// Identity is not decoration: a descriptor whose vendor id is zero builds
+/// nothing on current macOS (`initWithDescriptor:` answers nil — verified on
+/// 27.3), so every identity setter the host has is sent.
 unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
     let Some(class) = AnyClass::get(CLASS_DESCRIPTOR) else {
         return Err(ComputerUseError::unavailable(
@@ -388,10 +571,22 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
     // init_or_err itself only sends the probed `init` selector.
     let descriptor =
         unsafe { init_or_err(allocated, "CGVirtualDisplayDescriptor alloc/init failed")? };
+    // Which version-dependent setters this host takes, read off the live
+    // descriptor's own class: every guarded send below is decided here, so
+    // none reaches a class that lacks it ("probe what you send" for the
+    // selectors the macOS versions disagree about).
+    let options = descriptor_options(&|selector| descriptor.class().responds_to(selector));
+    let Some(name_setter) = options.name else {
+        return Err(ComputerUseError::unavailable(
+            "private macOS virtual display API has no setter to name the display",
+        ));
+    };
 
-    // SAFETY: each setter below is probed (responds_to) on this exact class
-    // before anything is sent; arguments are encoded primitives, CGSize, or
-    // Obj-C objects.
+    // SAFETY: the unconditional setters are in required_selectors() (the
+    // probe verified them on this exact class before creation); every other
+    // setter below is guarded by `options`, read from this descriptor's own
+    // class through responds_to. Arguments are encoded primitives, CGSize,
+    // CGPoint, or Obj-C objects.
     unsafe {
         // NSUInteger parameters: the explicit `as usize` keeps the ABI
         // zero-extension intent visible instead of resting on u32 register
@@ -399,10 +594,45 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
         let _: () = msg_send![&*descriptor, setMaxPixelsWide: VD_WIDTH_PX as usize];
         let _: () = msg_send![&*descriptor, setMaxPixelsHigh: VD_HEIGHT_PX as usize];
         let _: () = msg_send![&*descriptor, setSizeInMillimeters: VD_SIZE_MM];
-        let serial = NSString::from_str(&serial_string());
-        let _: () = msg_send![&*descriptor, setSerialString: &*serial];
+
+        // Identity triple. Stable per install (see the seed constants): a
+        // per-session value would make every session a new display to
+        // macOS. Two app instances would collide on it — the second
+        // creation answers nil and reports an explicit error rather than
+        // silently sharing one display.
+        if options.vendor_id {
+            let _: () = msg_send![&*descriptor, setVendorID: display_vendor_id()];
+        }
+        if options.product_id {
+            let _: () = msg_send![&*descriptor, setProductID: display_product_id()];
+        }
+        if options.serial_num {
+            let _: () = msg_send![&*descriptor, setSerialNum: serial_number()];
+        }
+
         let product = NSString::from_str(PRODUCT_NAME);
-        let _: () = msg_send![&*descriptor, setProductName: &*product];
+        match name_setter {
+            NameSetter::ProductName => {
+                let _: () = msg_send![&*descriptor, setProductName: &*product];
+            }
+            NameSetter::Name => {
+                let _: () = msg_send![&*descriptor, setName: &*product];
+            }
+        }
+
+        // Legacy serial string: macOS 27.3 dropped the setter, and the numeric
+        // serial above carries the identity there.
+        if options.serial_string {
+            let serial = NSString::from_str(&serial_string());
+            let _: () = msg_send![&*descriptor, setSerialString: &*serial];
+        }
+
+        if options.chromaticities {
+            let _: () = msg_send![&*descriptor, setRedPrimary: VD_RED_PRIMARY];
+            let _: () = msg_send![&*descriptor, setGreenPrimary: VD_GREEN_PRIMARY];
+            let _: () = msg_send![&*descriptor, setBluePrimary: VD_BLUE_PRIMARY];
+            let _: () = msg_send![&*descriptor, setWhitePoint: VD_WHITE_POINT];
+        }
 
         // Serial dispatch queue (label above). The +1 returned by
         // dispatch_queue_create is deliberately never released: the
@@ -420,11 +650,14 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
         }
         let _: () = msg_send![&*descriptor, setQueue: queue];
 
-        // Empty mode list: the actual mode is applied via
-        // CGVirtualDisplaySettings below.
-        let modes: Retained<objc2_foundation::NSArray<AnyObject>> =
-            objc2_foundation::NSArray::from_slice(&[]);
-        let _: () = msg_send![&*descriptor, setModes: &*modes];
+        // Empty mode list where the descriptor still has the slot (macOS 27.3
+        // dropped it — the mode is applied via CGVirtualDisplaySettings
+        // below either way).
+        if options.modes {
+            let modes: Retained<objc2_foundation::NSArray<AnyObject>> =
+                objc2_foundation::NSArray::from_slice(&[]);
+            let _: () = msg_send![&*descriptor, setModes: &*modes];
+        }
     }
     Ok(descriptor)
 }
@@ -621,9 +854,7 @@ fn wait_activation_on_worker(display_id: u32, deadline: Instant) -> Result<(), C
             }
         }
         if Instant::now() >= deadline {
-            return Err(ComputerUseError::unavailable(
-                "the virtual display did not become active within the creation budget",
-            ));
+            return Err(ComputerUseError::unavailable(activation_timeout_detail()));
         }
         sleep(POLL_INTERVAL);
     }
@@ -3388,7 +3619,8 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
             "private macOS virtual display API not present on this macOS",
         ));
     }
-    let deadline = Instant::now() + ACTIVATION_POLL_TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + ACTIVATION_POLL_TIMEOUT;
     let (tx, rx) = mpsc::channel::<CreatedDisplay>();
     let dispatched = super::super::dispatch_to_main_thread(Box::new(move || {
         // The closure holds the main thread for the build + the ≤1 s
@@ -3429,9 +3661,10 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     // Budgeted activation wait on the worker when the closure returned
     // early: the run loop kept pumping the whole time, and the poll uses
     // only global CG APIs (the VdHandle contract forbids messaging the
-    // crossed-thread object).
+    // crossed-thread object). The deadline carries the system-prompt grace
+    // (see `SYSTEM_PROMPT_GRACE`) — this is the only leg that can afford it.
     if !activated {
-        wait_activation_on_worker(display_id, deadline)?;
+        wait_activation_on_worker(display_id, worker_activation_deadline(started))?;
     }
     // Park right of the main display (session scope). Non-fatal: the guard
     // re-checks on every capture, and the display is fully functional
@@ -3521,9 +3754,10 @@ mod tests {
         }
     }
 
-    /// The probe is exactly the table walk: when all four private classes
-    /// exist, the probe's verdict must equal "every table selector
-    /// responds", so extending one without the other cannot drift.
+    /// The probe is exactly the table walk plus the name rule: when all four
+    /// private classes exist, the probe's verdict must equal "every table
+    /// selector responds AND the descriptor has a display-name setter", so
+    /// extending one without the other cannot drift.
     #[test]
     fn probe_is_the_selector_table_walk() {
         let all_classes_present = [
@@ -3543,10 +3777,14 @@ mod tests {
         let all_respond = required_selectors()
             .iter()
             .all(|(_, class, selector)| class.responds_to(*selector));
+        let descriptor = AnyClass::get(CLASS_DESCRIPTOR).expect("resolved above");
+        let named = descriptor_options(&|selector| descriptor.responds_to(selector))
+            .name
+            .is_some();
         assert_eq!(
             probe().is_available(),
-            all_respond,
-            "the probe must walk exactly the required-selector table"
+            all_respond && named,
+            "the probe must walk exactly the required-selector table plus the name rule"
         );
         // Every selector name is a non-empty Obj-C selector.
         for (_, _, selector) in required_selectors() {
@@ -3576,6 +3814,285 @@ mod tests {
         assert!(serial_string().starts_with(SERIAL_STRING_PREFIX));
         // Deterministic across calls (no hidden entropy).
         assert_eq!(serial_number(), serial_number());
+        // macOS 14+ tells displays apart by the serial: zero reads as unset.
+        assert_ne!(serial_number(), 0);
+    }
+
+    /// `descriptor_options` for a host whose descriptor implements every
+    /// selector EXCEPT `missing`, so either macOS surface is testable on any
+    /// host.
+    fn options_without(missing: &[&std::ffi::CStr]) -> DescriptorOptions {
+        descriptor_options(&|selector| {
+            !missing
+                .iter()
+                .any(|name| name.to_bytes() == selector.name().to_bytes())
+        })
+    }
+
+    /// The macOS 27.3 surface, reproduced by selector name: the descriptor
+    /// lost the serial string, the product-name setter and its mode list,
+    /// and kept the identity, chromaticity and plain-name setters. This is
+    /// the shape that made the old required table (and so every session)
+    /// answer Unavailable on 27.3.
+    #[test]
+    fn descriptor_options_follow_the_macos_27_surface() {
+        assert_eq!(
+            options_without(&[c"setSerialString:", c"setProductName:", c"setModes:"]),
+            DescriptorOptions {
+                name: Some(NameSetter::Name),
+                vendor_id: true,
+                product_id: true,
+                serial_num: true,
+                serial_string: false,
+                chromaticities: true,
+                modes: false,
+            }
+        );
+    }
+
+    /// The surface this module was written against: every setter present, and
+    /// the name then travels
+    /// through the legacy `setProductName:` — the behaviour those macOS
+    /// versions were verified with stays byte-for-byte what it was.
+    #[test]
+    fn descriptor_options_follow_the_legacy_surface() {
+        assert_eq!(
+            options_without(&[]),
+            DescriptorOptions {
+                name: Some(NameSetter::ProductName),
+                vendor_id: true,
+                product_id: true,
+                serial_num: true,
+                serial_string: true,
+                chromaticities: true,
+                modes: true,
+            }
+        );
+    }
+
+    /// Each optional field tracks its own setters: a partial chromaticity
+    /// surface drops the whole group (the panel is described fully or not at
+    /// all), and the identity fields are independent of one another.
+    #[test]
+    fn descriptor_options_track_each_setter_on_its_own() {
+        let no_blue = options_without(&[c"setBluePrimary:"]);
+        assert!(!no_blue.chromaticities);
+        assert!(no_blue.modes && no_blue.serial_string);
+
+        let vendor_only = descriptor_options(&|selector| {
+            selector.name().to_bytes() == c"setVendorID:".to_bytes()
+        });
+        assert_eq!(
+            (
+                vendor_only.vendor_id,
+                vendor_only.product_id,
+                vendor_only.serial_num
+            ),
+            (true, false, false)
+        );
+        assert_eq!(vendor_only.name, None, "no name setter means no name");
+    }
+
+    /// The required table must stay free of the selectors the macOS versions
+    /// disagree about: requiring one of them is exactly how macOS 27.3 became
+    /// "unavailable", and `build_descriptor` must read each of them off the
+    /// live descriptor instead (the source-shape half of the same contract).
+    #[test]
+    fn version_dependent_selectors_stay_out_of_the_required_table() {
+        let version_dependent = [
+            c"setSerialString:",
+            c"setProductName:",
+            c"setName:",
+            c"setModes:",
+            c"setVendorID:",
+            c"setProductID:",
+            c"setSerialNum:",
+            c"setRedPrimary:",
+            c"setGreenPrimary:",
+            c"setBluePrimary:",
+            c"setWhitePoint:",
+        ];
+        for (class_name, _, selector) in required_selectors() {
+            if class_name != CLASS_DESCRIPTOR {
+                continue;
+            }
+            assert!(
+                !version_dependent
+                    .iter()
+                    .any(|name| name.to_bytes() == selector.name().to_bytes()),
+                "the descriptor must not require the version-dependent selector {}",
+                selector.name().to_str().unwrap()
+            );
+        }
+
+        let prod = production_source();
+        assert!(
+            prod.contains(
+                "descriptor_options(&|selector| descriptor.class().responds_to(selector))"
+            ),
+            "build_descriptor must read its options off the live descriptor's class"
+        );
+        for field in [
+            "vendor_id",
+            "product_id",
+            "serial_num",
+            "serial_string",
+            "chromaticities",
+            "modes",
+        ] {
+            assert!(
+                prod.contains(&format!("if options.{field}")),
+                "the {field} send must be guarded by its own option"
+            );
+        }
+    }
+
+    /// The identity macOS 14+ insists on: both ids non-zero and 16-bit (the
+    /// EDID field width), the vendor id distinct from Apple's own and from
+    /// the product id, every value stable across calls (a drifting identity
+    /// looks like a display swap and adds a persisted arrangement per
+    /// session) — pinned byte-for-byte like the serial.
+    #[test]
+    fn display_identity_is_nonzero_16bit_and_stable() {
+        for (what, id) in [
+            ("vendor", display_vendor_id()),
+            ("product", display_product_id()),
+        ] {
+            assert_ne!(id, 0, "the {what} id must not be zero");
+            assert!(id <= 0xFFFF, "the {what} id must fit 16 bits: {id:#x}");
+        }
+        assert_ne!(display_vendor_id(), APPLE_VENDOR_ID);
+        assert_ne!(display_vendor_id(), display_product_id());
+        assert_eq!(display_vendor_id(), 0xD695);
+        assert_eq!(display_product_id(), 0x959E);
+        let identity = (display_vendor_id(), display_product_id(), serial_number());
+        assert_eq!(
+            (display_vendor_id(), display_product_id(), serial_number()),
+            identity,
+            "the identity triple must not depend on call history"
+        );
+    }
+
+    /// The activation budget split: the MAIN-thread poll keeps its 5 s
+    /// ceiling (it blocks the UI for its whole length), and only the
+    /// worker-side wait carries the system-prompt grace.
+    #[test]
+    fn worker_activation_deadline_adds_the_grace_to_the_main_budget() {
+        assert_eq!(
+            ACTIVATION_POLL_TIMEOUT,
+            Duration::from_secs(5),
+            "the main-thread ceiling must not grow"
+        );
+        let started = Instant::now();
+        let main_deadline = started + ACTIVATION_POLL_TIMEOUT;
+        assert_eq!(
+            worker_activation_deadline(started) - main_deadline,
+            SYSTEM_PROMPT_GRACE
+        );
+        // Long enough to read and answer a system alert, short enough that an
+        // unanswered one still hands the session back to the physical target.
+        assert!(SYSTEM_PROMPT_GRACE >= Duration::from_secs(15));
+        assert!(SYSTEM_PROMPT_GRACE <= Duration::from_secs(60));
+    }
+
+    /// The worker-side timeout must say how long it waited and name the one
+    /// known way a healthy creation stays inactive, with the way out.
+    #[test]
+    fn activation_timeout_detail_names_the_system_alert() {
+        let detail = activation_timeout_detail();
+        assert!(
+            detail.contains("Screen Mirroring alert"),
+            "the detail must name the system alert: {detail}"
+        );
+        assert!(
+            detail.contains(&format!(
+                "within {} s",
+                (ACTIVATION_POLL_TIMEOUT + SYSTEM_PROMPT_GRACE).as_secs()
+            )),
+            "the detail must state the real wait: {detail}"
+        );
+    }
+
+    /// How many displays are in this process's active list right now.
+    fn active_display_count() -> usize {
+        let mut displays = [0u32; 16];
+        let mut count = 0u32;
+        // SAFETY: both pointers are valid out buffers of the declared
+        // lengths; CGGetActiveDisplayList writes at most 16 entries.
+        let error = unsafe { CGGetActiveDisplayList(16, displays.as_mut_ptr(), &mut count) };
+        assert_eq!(error, CGError::Success);
+        usize::try_from(count).unwrap_or(0)
+    }
+
+    /// Opt-in live creation on a real macOS host — the only way to verify
+    /// what a given macOS does with a descriptor (the unit tests pin the
+    /// descriptor's shape; only the OS decides whether it builds the display
+    /// and how it places it):
+    ///
+    /// ```text
+    /// PINVOU_VD_LIVE=1 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+    ///   --lib -- --ignored --nocapture live_create_backend_builds_an_active_display
+    /// ```
+    ///
+    /// Builds a REAL virtual display through the production path, so it is
+    /// ignored by default and never runs in CI. It asserts only what this
+    /// module itself guarantees — a green probe, a Virtual backend within the
+    /// activation budget, and a display that is gone again once the backend
+    /// drops — and prints the arrangement the host chose: on macOS 27.3 that
+    /// choice (an extended desktop, or a mirror set through the Screen
+    /// Mirroring alert) belongs to the system and the user, not to this
+    /// module, so it is reported rather than asserted.
+    #[test]
+    #[ignore = "creates a real virtual display on the host; opt in with PINVOU_VD_LIVE=1"]
+    fn live_create_backend_builds_an_active_display() {
+        if std::env::var_os("PINVOU_VD_LIVE").is_none() {
+            return;
+        }
+        assert!(probe().is_available(), "the live run needs a green probe");
+        let active_before = active_display_count();
+        let main_before = CGMainDisplayID();
+        let started = Instant::now();
+        let backend = create_backend().expect("the virtual display must be created");
+        let creation = started.elapsed();
+        assert!(
+            matches!(backend.capabilities().target, DisplayTarget::Virtual),
+            "a created virtual backend must report the Virtual target"
+        );
+        let active_created = active_display_count();
+        let main_after = CGMainDisplayID();
+        let arrangement = if main_before != main_after {
+            "the virtual display became the main display — a mirror arrangement"
+        } else if active_created > active_before {
+            "an extended desktop: the virtual display is active beside the user's main display"
+        } else {
+            "the virtual display is active without changing the active count"
+        };
+        eprintln!(
+            "live virtual display: created in {creation:?}, active displays \
+             {active_before} -> {active_created}, main display {main_before} -> {main_after} \
+             ({arrangement})"
+        );
+        drop(backend);
+        // Teardown cannot be witnessed through this process's display list: on
+        // a run-loop-less thread like this one the list shows a REMOVAL only
+        // once a run loop has delivered the reconfiguration (on 27.3 the count
+        // stays stale for seconds here, while the system log shows the display
+        // gone within milliseconds). The identity can witness it instead:
+        // macOS rejects a second display with the same (vendor, product,
+        // serial) while the first is alive (27.3), so a re-creation that
+        // succeeds proves the dropped backend released its display.
+        let teardown_deadline = Instant::now() + Duration::from_secs(5);
+        let mut released = false;
+        while !released && Instant::now() < teardown_deadline {
+            released = create_backend().is_ok();
+            if !released {
+                sleep(POLL_INTERVAL);
+            }
+        }
+        assert!(
+            released,
+            "dropping the backend must release the display: its identity stayed taken"
+        );
     }
 
     /// The panel is sized for a sane desktop UI: ≥ 200 PPI at the pinned
