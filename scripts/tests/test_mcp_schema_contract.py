@@ -157,15 +157,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
-# The pre-T11 engine face the interim window is blessed against; see
-# test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed 2026-11-17 onto the
-# collapsible-if repay wave head 617360e0b (CodeWhale#164): beyond the
-# previously blessed f70a499d0 the wave adds three commits — contributor-docs
-# alignment (572a1df4), the release.yml allowance drop (e003e4634), and a
-# fail-closed caller-ownership test pin (617360e0b) — none of which touch the
-# pinned sanitizer face (schema_sanitize.rs, MFJS anyOf cap), verified via
-# the layer-2 source assertions on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "617360e0b91241a37c391837b7a3da0aa61bece5"
+# The pinned engine face this mirror ships against; see
+# test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed
+# 2026-11-24 onto the T11 close-out head cc2adf8ef: the Moonshot face
+# (#143) and the provider faces (#144/#145/#146) land on the gitlink, so
+# the layer-2 source assertions flip from the pre-T11 tripwire to the
+# shipped-face pins (anyOf cap 500, advisory strip, empty-items repair),
+# verified against the populated tree before flipping the pin. The
+# DeepSeek face (CodeWhale#147) is still open upstream and outside this
+# mirror's scope.
+_PINNED_CODEWHALE_GITLINK = "cc2adf8ef927fff072e9493734a0a32f3a044996"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
