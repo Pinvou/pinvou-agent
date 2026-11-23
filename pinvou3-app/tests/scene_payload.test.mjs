@@ -17,6 +17,7 @@ import {
   createPptDesignMessageMeta,
   scenePayloadSuffix,
 } from '../src/features/chat/work-scene-routes.js';
+import { buildSessionMentionBlock } from '../src/features/chat/session-mention.js';
 import {
   VISUAL_POSTER_AUDIT,
   VISUAL_POSTER_CONTEXT,
@@ -165,6 +166,64 @@ test('stale boilerplate is anchored on the stable header line, and only for the 
   const repeated = `${head}旧正文。${PERSONAL_WORKBENCH_REQUEST_MARK}理财${PERSONAL_WORKBENCH_REQUEST_MARK}自定义`;
   assert.equal(splitScenePayload(repeated, workbenchScene).text, `理财${PERSONAL_WORKBENCH_REQUEST_MARK}自定义`,
     'the first mark after the prompt head splits; later ones belong to the user');
+});
+
+test('a workbench payload behind a canonical mention block still inverts (the block survives)', () => {
+  // ChatView.jsx 组装发送 meta 时把规范提及块拼在 pinvouPayloadText 头部
+  // （buildSessionMentionBlock(refs) + payload）。后缀式包装对任意前缀免疫；
+  // 前缀式工作台须先剥块再判载荷，块原样留在还原结果里交还气泡解析。
+  const block = buildSessionMentionBlock([{ sessionId: 's-1', title: '上次会话' }]);
+  const meta = createPersonalWorkbenchMessageMeta('运动');
+  const composite = block + meta.pinvouPayloadText;
+  const expected = { scene: workbenchScene, text: `${block}运动` };
+  assert.deepEqual(splitScenePayload(composite), expected, 'no hint needed: the composite is byte-exact');
+  assert.deepEqual(splitScenePayload(composite, workbenchScene), expected);
+  // Suffix scenes tolerate the prefix already; pinned for symmetry.
+  const docMeta = createDocumentWritingMessageMeta('写一份通知');
+  assert.deepEqual(splitScenePayload(block + docMeta.pinvouPayloadText), { scene: documentScene, text: `${block}写一份通知` });
+  // Stale workbench copy behind the block: hint tier still applies inside.
+  const head = `${DEFAULT_PERSONAL_WORKBENCH_PROMPT.split('。')[0]}。`;
+  const staleComposite = block + head + '旧版本的提示词正文。\n\n用户需求：\n运动';
+  assert.deepEqual(splitScenePayload(staleComposite, workbenchScene), { scene: workbenchScene, text: `${block}运动` });
+  assert.equal(splitScenePayload(staleComposite), null, 'stale tier stays hint-gated behind the block too');
+
+  // Negative space: nothing here may strip or vanish.
+  assert.equal(splitScenePayload(block), null, 'a refs-only block is not a payload: the message stays');
+  assert.equal(splitScenePayload(block + '我自己写的话'), null, 'block + hand-typed text is not a payload');
+  assert.equal(splitScenePayload(block + meta.pinvouPayloadText.slice(0, -2)), null,
+    'block + bare wrapper (empty body): the message never vanishes');
+  // A non-canonical lookalike (broken blank-separator contract) stays whole.
+  const forged = block.slice(0, -1) + meta.pinvouPayloadText;
+  assert.equal(splitScenePayload(forged), null, 'the parser must not split on a forged block prefix');
+});
+
+test('byte-level persistence wrinkles: trailing newline and a foreign hint on an exact payload', () => {
+  const docMeta = createDocumentWritingMessageMeta('写一份通知');
+  // A trailing newline (persistence/engine artifact) misses the byte-exact
+  // suffix tier; without a record the text stays whole, with the scene on
+  // record the header anchor still recovers it.
+  assert.equal(splitScenePayload(`${docMeta.pinvouPayloadText}\n`), null);
+  assert.deepEqual(splitScenePayload(`${docMeta.pinvouPayloadText}\n`, documentScene), { scene: documentScene, text: '写一份通知' });
+  // Workbench (prefix-shaped) keeps trailing bytes as part of the body.
+  const wbMeta = createPersonalWorkbenchMessageMeta('运动');
+  assert.deepEqual(splitScenePayload(`${wbMeta.pinvouPayloadText}\n`), { scene: workbenchScene, text: '运动\n' });
+  // A byte-exact payload of scene A with scene B on record: still stripped —
+  // the recorded scene is a tie-breaker for nested wrappers, never a gate.
+  assert.deepEqual(splitScenePayload(docMeta.pinvouPayloadText, 'design:ppt'), { scene: documentScene, text: '写一份通知' });
+});
+
+test('stale-tier truncation of hand-typed text under a same-scene hint is the accepted heuristic', () => {
+  // The header anchor is a guess (~20 distinguishing chars). When the sidecar
+  // names this scene (e.g. after engine-inserted runtime messages shifted the
+  // recorded position onto a neighbouring hand-typed message), everything
+  // after the anchor is dropped from the bubble — documented in
+  // scene-payload.js and accepted per the display-only policy (persisted text
+  // and model context are untouched). Pinned so a change to the tradeoff is a
+  // conscious one.
+  const handTyped = `第一段讨论\n\n---\n${documentRoute.context.split('\n')[0]}\n我手写的后续内容`;
+  assert.deepEqual(splitScenePayload(handTyped, documentScene), { scene: documentScene, text: '第一段讨论' });
+  assert.equal(splitScenePayload(handTyped), null, 'no record, no strip');
+  assert.equal(splitScenePayload(handTyped, 'design:poster'), null, 'another scene on record does not vouch');
 });
 
 test('the module publishes the parser for the classic-script bridges', () => {

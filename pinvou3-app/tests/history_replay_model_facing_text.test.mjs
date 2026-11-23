@@ -16,10 +16,13 @@ import { fileURLToPath } from 'node:url';
 import { splitScenePayload } from '../src/features/chat/scene-payload.js';
 import {
   SUFFIX_SCENE_ROUTES,
+  createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
+  createPptDesignMessageMeta,
 } from '../src/features/chat/work-scene-routes.js';
 import { createVisualPosterMessageMeta } from '../src/features/chat/visual-poster-scene.js';
 import { createPersonalWorkbenchMessageMeta } from '../src/features/chat/personal-workbench-scene.js';
+import { buildSessionMentionBlock } from '../src/features/chat/session-mention.js';
 import { projectDeepSeekConversation, turnHasUserText } from '../src/features/conversation/deepseek-conversation.js';
 import { forkEntriesByTurnId } from '../src/features/chat/forkTurnEntries.js';
 
@@ -188,6 +191,8 @@ for (const runtime of lanes) {
     const h = createReplay(runtime, { scenePublisher: true });
     const metas = [
       createDocumentWritingMessageMeta('写一份通知'),
+      createDataVisualizationMessageMeta('画一张销量折线图'),
+      createPptDesignMessageMeta('做一份年度总结'),
       createVisualPosterMessageMeta('做一张发布会海报'),
       createPersonalWorkbenchMessageMeta('运动'),
     ];
@@ -198,10 +203,29 @@ for (const runtime of lanes) {
       plain(rows.filter(row => row.type === 'user').map(row => [row.text, row.pinvouScene])),
       [
         ['写一份通知', 'work:document-writing'],
+        ['画一张销量折线图', 'design:data-visualization'],
+        ['做一份年度总结', 'design:ppt'],
         ['做一张发布会海报', 'design:poster'],
         ['运动', 'work:personal-workbench'],
       ],
     );
+  });
+
+  test(`${runtime}: a workbench payload behind a canonical mention block keeps the block and drops the wrapper`, () => {
+    // ChatView 组装场景发送 meta 时把规范提及块拼在载荷头部（buildSessionMentionBlock
+    // + pinvouPayloadText）。气泡还原须保块剥包装——块交还 UserBubble 解析成引用
+    // 卡片，正文只剩用户原文（与后缀式复合同一形状）。
+    const h = createReplay(runtime, { scenePublisher: true });
+    const mentionBlock = buildSessionMentionBlock([{ sessionId: 's-1', title: '上次会话' }]);
+    const meta = createPersonalWorkbenchMessageMeta('运动');
+    const rows = h.replay(
+      [user(mentionBlock + meta.pinvouPayloadText), assistant({ type: 'text', text: '已生成' })],
+      [{ pos: 0, scene: meta.pinvouScene }],
+    );
+    const bubble = rows.find(row => row.type === 'user');
+    assert.equal(bubble.text, mentionBlock + '运动', 'the block survives byte-exact; only the routing wrapper is dropped');
+    assert.equal(bubble.pinvouScene, 'work:personal-workbench');
+    assert.ok(!JSON.stringify(rows).includes('用户需求：'), 'no routing copy may reach any item');
   });
 
   test(`${runtime}: an ordinary message with a horizontal rule is left alone`, () => {

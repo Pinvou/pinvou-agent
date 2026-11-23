@@ -11,6 +11,10 @@
 //   包装的首行标题自引入起未变，按标题锚定剥离。这是启发式（用户手敲同样的
 //   分隔线加标题也会命中），只在场景事件 sidecar 确认该消息是本场景发送时启用。
 //
+// 另有一类复合形态：发送路径把规范提及块（session-mention.js 的机器契约）拼在
+// 载荷头部。后缀式包装对任意前缀天然免疫；前缀式的工作台则先剥块再走同一两级
+// 判定，块原样留在还原结果里交还气泡解析（与后缀式复合同一形状）。
+//
 // 沿用 session-mention.js 的 window 全局约定发布给 classic-script 桥：桥不能反向
 // import features，解析的单一事实源留在这里。
 import {
@@ -28,6 +32,7 @@ import {
   DEFAULT_PERSONAL_WORKBENCH_PROMPT,
   PERSONAL_WORKBENCH_REQUEST_MARK,
 } from './personal-workbench-scene.js';
+import { splitSessionMentionBlock } from './session-mention.js';
 
 // 四个「原文 + 分隔线 + 路由正文 + 自检」的后缀式场景。
 const SUFFIX_ROUTES = [
@@ -47,7 +52,7 @@ function splitSuffixRoute(payload, route, allowHeaderAnchor) {
   return index > 0 ? payload.slice(0, index) : null;
 }
 
-function splitWorkbenchRoute(payload, allowHeaderAnchor) {
+function splitWorkbenchBody(payload, allowHeaderAnchor) {
   const prefix = `${DEFAULT_PERSONAL_WORKBENCH_PROMPT}${PERSONAL_WORKBENCH_REQUEST_MARK}`;
   if (payload.length > prefix.length && payload.startsWith(prefix)) {
     return payload.slice(prefix.length);
@@ -59,6 +64,19 @@ function splitWorkbenchRoute(payload, allowHeaderAnchor) {
   const index = payload.indexOf(PERSONAL_WORKBENCH_REQUEST_MARK);
   if (!payload.startsWith(head) || index < head.length) return null;
   return payload.slice(index + PERSONAL_WORKBENCH_REQUEST_MARK.length) || null;
+}
+
+function splitWorkbenchRoute(payload, allowHeaderAnchor) {
+  const body = splitWorkbenchBody(payload, allowHeaderAnchor);
+  if (body !== null) return body;
+  // 复合形态：块 + 载荷。matched 只认头部结构规范的块（解析器的容错把手写
+  // 仿品原样交还）；仅引用无正文的块（text 为空）与块后跟不出的载荷都不剥，
+  // 消息永不为空。
+  const mention = splitSessionMentionBlock(payload);
+  if (!mention.matched || !mention.text) return null;
+  const inner = splitWorkbenchBody(mention.text, allowHeaderAnchor);
+  if (inner === null) return null;
+  return payload.slice(0, payload.length - mention.text.length) + inner;
 }
 
 function splitStaleRoute(payload, sceneHint) {

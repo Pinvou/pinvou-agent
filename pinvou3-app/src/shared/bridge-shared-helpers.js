@@ -5440,6 +5440,8 @@
       if (m.role === "user") {
         // 压缩检查点：落一条与实时「压缩完成」同款的系统提示占位，绝不上屏
         // 为用户气泡。检查点只含文本块，没有 tool_result 需要回填。
+        // compactionCheckpoint 仅是历史标记（当前无渲染消费者，测试钉它）；
+        // 与实时压缩对账的隔离靠 compactId/compactPhase 缺省——对账只认 start。
         if (isCompactionCheckpoint && isCompactionCheckpoint(blocks)) {
           addChatItem({ type: "system", text: bt("compactDone"), time: "", compactionCheckpoint: true });
           continue;

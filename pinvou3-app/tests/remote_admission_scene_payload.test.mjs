@@ -13,10 +13,13 @@ import { fileURLToPath } from 'node:url';
 import { splitScenePayload } from '../src/features/chat/scene-payload.js';
 import {
   SUFFIX_SCENE_ROUTES,
+  createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
   createPptDesignMessageMeta,
 } from '../src/features/chat/work-scene-routes.js';
+import { createVisualPosterMessageMeta } from '../src/features/chat/visual-poster-scene.js';
 import { createPersonalWorkbenchMessageMeta } from '../src/features/chat/personal-workbench-scene.js';
+import { buildSessionMentionBlock } from '../src/features/chat/session-mention.js';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8');
@@ -77,7 +80,9 @@ function loadAdmission(runtime, { publisher = false } = {}) {
 // [scene, message meta, the words the user typed]
 const sceneSends = [
   ['公文写作', createDocumentWritingMessageMeta('写一份通知'), '写一份通知'],
+  ['数据可视化', createDataVisualizationMessageMeta('画一张销量折线图'), '画一张销量折线图'],
   ['PPT 设计', createPptDesignMessageMeta('做一份年度总结'), '做一份年度总结'],
+  ['视觉海报', createVisualPosterMessageMeta('做一张发布会海报'), '做一张发布会海报'],
   ['个人工作台', createPersonalWorkbenchMessageMeta('运动'), '运动'],
 ];
 
@@ -94,6 +99,24 @@ for (const runtime of ['tauri', 'web']) {
         assert.equal(bubble.runtimeContextUpdatesBefore, 0, 'the desktop admission keeps its ordinal counter field');
       }
     }
+  });
+
+  test(`${runtime}: a workbench admission behind a canonical mention block keeps the block and drops the wrapper`, () => {
+    // 另一台设备在个人工作台（默认提示词、带 @ 引用）发送时，准入事件携带
+    // 「块 + 载荷」复合全文。逐字节精确那一级在复合形态下同样生效（无需
+    // sidecar），块原样保留给气泡解析成引用卡片。
+    const h = loadAdmission(runtime, { publisher: true });
+    const mentionBlock = buildSessionMentionBlock([{ sessionId: 's-1', title: '上次会话' }]);
+    const meta = createPersonalWorkbenchMessageMeta('运动');
+    assert.equal(h.admit(mentionBlock + meta.pinvouPayloadText), true);
+    const bubble = h.lastBubble();
+    assert.equal(bubble.text, mentionBlock + '运动', 'the block survives byte-exact; only the routing wrapper is dropped');
+    assert.equal(bubble.pinvouScene, meta.pinvouScene, 'the wrapper carries the scene identity');
+    // 仅块无载荷（或块 + 手写文本）不是可识别载荷：原样上屏。
+    const plain = loadAdmission(runtime, { publisher: true });
+    plain.admit(mentionBlock + '我自己写的话');
+    assert.equal(plain.lastBubble().text, mentionBlock + '我自己写的话');
+    assert.equal(plain.lastBubble().pinvouScene, undefined);
   });
 
   test(`${runtime}: an ordinary admission is unchanged`, () => {
