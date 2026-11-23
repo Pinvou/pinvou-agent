@@ -3848,6 +3848,110 @@ async function modalWidth(page, headingText) {
   rec('⑦.6 Save 同任务双击只放行一次落库(注册表身份键控;state-only 守卫时差为 2 即红)',
     dblSaveMidFlight === dblSaveSavesBefore + 1 && dblSaveSettled === 1,
     JSON.stringify({ savesBefore: dblSaveSavesBefore, savesMidFlight: dblSaveMidFlight, settled: dblSaveSettled }));
+  // 复审 r4 P2(J 的 A,B,B 交错复现的行为钉):批量 [A,B] 卡在 A 时取消
+  // 重开弹窗(实例 ref 清零),新弹窗把 B 正常保存落库(J 复现里这一步是
+  // 放行的——当时 B 确实未保存)并经 onSaveCommitted 记入父级 justSaved;
+  // 原批次随后推进到 B:in-flight 注册表已随 B settle 出册,此时唯一挡住
+  // 第二个 ID 的是 pendingSavedKeys(committed-but-unlisted)。三源缺一
+  // 即红:去掉 pending 查,本用例的原批次会对 B 再落一笔。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setProbeEndpointListing({
+      status: 'listed',
+      models: [
+        { id: 'batch-ab-a', context_window_tokens: 2048, max_output_tokens: 256 },
+        { id: 'batch-ab-b', context_window_tokens: 2048, max_output_tokens: 256 },
+      ],
+    });
+  });
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://batch-race.example.com/v1');
+  });
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(1200));
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(300);
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="add-all-models-confirm"]');
+    const confirm = [...dialog.querySelectorAll('button')].find(button => (button.textContent || '').trim() === '全部添加');
+    confirm.click();
+  });
+  await sleep(150);
+  // A 在飞:换段短延迟,让新弹窗的 B 先于原批次抵达 B 行前落库出册。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(350));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(250);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://batch-race.example.com/v1');
+  });
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="endpoint-model-row-add"]')].find(node =>
+      (node.parentElement.textContent || '').includes('batch-ab-b'));
+    button.click();
+  });
+  await sleep(700);
+  const bSettledOnce = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().filter(item => item.model === 'batch-ab-b').length);
+  await sleep(1400);
+  const raceSettled = await page.evaluate(() => ({
+    aSaved: window.__SETTINGS_TEST__.models().filter(item => item.model === 'batch-ab-a').length,
+    bSaved: window.__SETTINGS_TEST__.models().filter(item => item.model === 'batch-ab-b').length,
+    bSaves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'batch-ab-b').length,
+    aSaves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'batch-ab-a').length,
+  }));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    if (!dialog) return;
+    const close = dialog.querySelector('[data-testid="endpoint-model-picker-close"]');
+    if (close && !close.disabled) close.click();
+  });
+  await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(250);
+  rec('⑦.6b 批量 A 卡在飞时重开弹窗保存 B:原批次推进到 B 必须命中 committed-unlisted 跳过(A,B 各恰一笔)',
+    bSettledOnce === 1
+      && raceSettled.aSaved === 1 && raceSettled.aSaves === 1
+      && raceSettled.bSaved === 1 && raceSettled.bSaves === 1,
+    JSON.stringify({ bSettledOnce, raceSettled }));
+
   // ⑦.7 保存中提示闸(M9 判别器):保存在飞时把表单模型改成本已保存的身份,
   // duplicateSaved 即刻翻真——提示必须仍隐藏(savingModel 闸)。特异性对照在
   // 全新的空闲表单上做:同一重复身份在非保存态必须显示提示。
