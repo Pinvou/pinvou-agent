@@ -59,7 +59,7 @@
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
-    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
+    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels", "modelsListLoadFailed"],
     vllm: [],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     computerUse: ["computerUse"],
@@ -3861,6 +3861,10 @@
   }
 
   // web+tauriSettings 共享
+  // modelsListLoadFailed:catch 分支吞错清列表时置位,下一次成功读取清零。
+  // 消费方(SettingsView 已保存身份守卫)据此区分「读取失败给的空列表」与
+  // 「真实空列表」——空列表不是权威结果,已确认身份不得被撤回(复审 P2:
+  // Edge 实测同身份落双 id)。
   async function loadModels() {
     const seq = ++modelsLoadSeq.value;
     try {
@@ -3868,9 +3872,11 @@
       if (seq !== modelsLoadSeq.value) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
+      state.modelsListLoadFailed = false;
     } catch {
       if (seq !== modelsLoadSeq.value) return;
       state.savedModels = []; state.activeModelId = null;
+      state.modelsListLoadFailed = true;
     }
     notify();
   }

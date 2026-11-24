@@ -91,4 +91,26 @@ test('loadModels 陈旧失败不覆盖（后发者胜同样适用于 catch 分�
   await p1.catch(function () { /* 已知 reject */ });
   assert.equal(rt.state.savedModels[0].id, 'new', '陈旧失败不得清空新列表');
   assert.equal(rt.state.activeModelId, 'new', '陈旧失败不得覆盖 activeModelId');
+  assert.notEqual(rt.state.modelsListLoadFailed, true, '陈旧失败不得置失败标记');
 });
+
+// 失败标记(复审 P2,Edge 实测同身份落双 id):catch 分支清列表的同时置
+// modelsListLoadFailed,消费方(SettingsView 已保存身份守卫)据此把「读取
+// 失败的空列表」与「真实空列表」区分开;下一次成功读取清零,真实删除后的
+// 刷新照常解冻。
+test('loadModels 失败置标记，下一次成功读取清零', async () => {
+  const rt = loadSettingsFeature();
+  assert.notEqual(rt.state.modelsListLoadFailed, true, '初始无失败标记');
+  const d1 = rt.defer('list_models');
+  const p1 = rt.api.loadModels();
+  d1.reject(new Error('fresh read failure'));        // 当次失败(序号仍最新)
+  await p1.catch(function () { /* 已知 reject */ });
+  assert.equal(rt.state.savedModels.length, 0, '失败清空列表(展示语义不变)');
+  assert.equal(rt.state.modelsListLoadFailed, true, '当次失败置失败标记');
+  const d2 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();
+  d2.resolve({ models: [{ id: 'back' }], active_model_id: 'back' });
+  await p2;
+  assert.equal(rt.state.modelsListLoadFailed, false, '成功读取清零失败标记');
+});
+
