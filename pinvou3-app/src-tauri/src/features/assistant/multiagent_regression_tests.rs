@@ -294,9 +294,36 @@ fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
 /// `spawn_subagent_from_input` 内从当轮 route.config 重建 host-config-only、
 /// prompt-only overlay。子请求能携带专家正文 sentinel，证明不是仅初始 roster 假绿，
 /// 同时底座 forkguard 负责锁住 ambient 来源与可执行配置均不能借此注入。
-#[tokio::test(flavor = "current_thread")]
+/// The harness thread mirrors the production stack floor: GUI and headless
+/// hosts both run 16MiB tokio workers (lib.rs `run()` /
+/// headless_bridge.rs `run_windowless_host` — the engine's single dispatch
+/// measurably reaches 2.25-2.5MiB in debug builds, past tokio's 2MiB
+/// default), so a real-spawn test that drives the full engine loop must
+/// run on the same explicitly supported floor. libtest's default 2MiB
+/// thread overflowed (SIGABRT, uncatchable) once the cc2adf8ef engine line
+/// joined (review round-r8 P2 of parent PR #915); the production floor is
+/// 16MiB by documented decision, not an invented cushion.
+#[test]
 #[allow(clippy::await_holding_lock)]
-async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_writes() {
+fn code_session_real_spawn_refresh_resolves_config_expert_without_project_writes() {
+    // block_on (not Builder::spawn of the future): the body holds the
+    // process-wide ENV_LOCK guard across awaits, so its future is
+    // deliberately !Send; block_on drives it on this very thread.
+    let handle = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build the current-thread runtime");
+            runtime.block_on(code_session_real_spawn_refresh_body());
+        })
+        .expect("spawn the 16MiB real-spawn harness thread");
+    handle.join().expect("the real-spawn body must not panic");
+}
+
+#[allow(clippy::await_holding_lock)]
+async fn code_session_real_spawn_refresh_body() {
     let _env_lock = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
