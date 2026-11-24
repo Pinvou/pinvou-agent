@@ -678,13 +678,21 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.listed = listed;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{\s*if \(listed\.has\(key\)\) inFlightModelCreates\.committed\.delete\(key\);\s*\}/,
-  'the SettingsView effect must refresh the live listed mirror and retire confirmed keys from the committed book — retiring on listing is what lets a deleted identity re-add (⑦.8)',
+  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{\s*if \(listed\.has\(key\)\) inFlightModelCreates\.committed\.delete\(key\);\s*\}/,
+  'the SettingsView effect must refresh the live listed mirror and retire confirmed keys from the committed book, with the failed-read freeze preceding the retirement — retiring on listing is what lets a deleted identity re-add (⑦.8)',
 );
 assert.match(
   settingsViewSource,
-  /if \(bs && bs\.modelsListLoadFailed\) return;\s*const listed = savedModelKeys\(userModels\);/,
-  'the mirror effect must freeze while the models list read is failed (review P2: the shared catch clears the list, so refreshing the mirror from that empty list retracts confirmed identities and invites a second id — the guard must precede the refresh; ⑦.9)',
+  /const failed = !!\(bs && bs\.modelsListLoadFailed\);\s*const source = failed\s*\? \(\(bs && bs\.lastConfirmedModels\) \|\| \[\]\)\.filter\(model => model && model\.id\)\s*: userModels;\s*const listed = savedModelKeys\(source\);/,
+  'the mirror effect must freeze while the models list read is failed AND seed that freeze from the shared last-confirmed snapshot (review P2: the shared catch clears the list, so refreshing the mirror from that empty list retracts confirmed identities; and a failure BEFORE the first Settings mount starts from a never-populated mirror — only the shared last-successful read can seed the first-open guards; ⑦.9/⑦.9e)',
+);
+// The shared loader must own the last-successful snapshot: success replaces
+// it (real deletion refresh keeps the deleted model re-addable) and failure
+// retains it while clearing the displayed list.
+assert.match(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+  /state\.savedModels = \(v && v\.models\) \|\| \[\];\s*state\.lastConfirmedModels = \[\.\.\.\(\(v && v\.models\) \|\| \[\]\)\];[\s\S]{0,220}state\.savedModels = \[\]; state\.activeModelId = null;\s*state\.modelsListLoadFailed = true;/,
+  'the shared loadModels must retain lastConfirmedModels across a failed read and replace it on the next successful read (review P2 pre-mount boundary; ⑦.9e)',
 );
 assert.match(
   settingsViewSource,
@@ -4736,6 +4744,133 @@ async function modalWidth(page, headingText) {
   await sleep(200);
   await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
   await sleep(200);
+
+  // ===== ⑦.9e review P2 (pre-mount boundary; two independent reviewer
+  // reproductions): the failed refresh must land BEFORE Settings has ever
+  // mounted. The main page's mirror has been populated since scenario ①,
+  // so this runs on a dedicated fresh page where the first settings open
+  // is genuinely first: boot reads the roster successfully, an armed
+  // list_models failure lands pre-mount through the production
+  // setActiveModel refresh chain, and the first-open guards must seed from
+  // the shared lastConfirmedModels snapshot — a component-owned freeze
+  // alone starts from a never-populated (empty) mirror and presents the
+  // confirmed roster identity as addable (a second record id). The closing
+  // leg re-adds through a real deletion's successful refresh, proving the
+  // snapshot replacement keeps genuinely deleted models re-addable
+  // (zhuowp's demand, snapshot edition). Isolated roster: the boot fixture
+  // local-qwen (qwen36_35b_256k @ port 8000) itself. =====
+  const page2 = await browser.newPage();
+  page2.on('pageerror', error => errors.push('⑦.9e:' + error.message));
+  page2.on('console', message => { if (message.type() === 'error') errors.push('⑦.9e console:' + message.text()); });
+  await page2.evaluateOnNewDocument(injectSource());
+  await page2.setViewport({ width: 1440, height: 1000 });
+  await page2.goto(url, { waitUntil: 'networkidle0' });
+  await page2.waitForFunction(() => window.TauriBridge && document.querySelector('[data-testid="app-root"]'), { timeout: 20000 });
+  await sleep(1000);
+  // Boot read succeeded (roster in the shared list); arm the one-shot
+  // failure and land it pre-mount through the production refresh chain —
+  // Settings has never mounted on this page.
+  await page2.evaluate(() => {
+    window.__SETTINGS_TEST__.armListModelsFailure();
+    return window.TauriBridge.models.setActiveModel('cloud-deepseek');
+  });
+  await sleep(500);
+  // FIRST settings open on this page: the mirror effect must seed the
+  // saved-identity guards from the shared snapshot despite the emptied
+  // list.
+  await page2.evaluate(() => {
+    const button = [...document.querySelectorAll('button[title="设置"]')].pop();
+    if (button) button.click();
+  });
+  await page2.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'settings', { timeout: 8000 });
+  await sleep(400);
+  await clickSettingsSection(page2, '模型');
+  await sleep(300);
+  await clickExact(page2, '添加模型');
+  await sleep(300);
+  await clickExact(page2, '本地模型');
+  await sleep(200);
+  await page2.evaluate(text => {
+    const input = document.querySelector('[data-testid="local-detect-port"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, '8000');
+  await clickExact(page2, '检测');
+  await sleep(600);
+  const premountGuard = await page2.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { dialogFound: false };
+    const savesBefore = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length;
+    const vllmButton = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('qwen36_35b_256k'));
+    if (vllmButton) vllmButton.click();
+    return {
+      dialogFound: true,
+      vllmButtonFound: !!vllmButton,
+      disabled: vllmButton ? vllmButton.disabled : null,
+      savedLabel: vllmButton ? (vllmButton.textContent || '').includes('已保存') : null,
+      savesBefore,
+      savesAfter: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    };
+  });
+  rec('⑦.9e 首开前失败仍守身份契约:pre-mount 刷新失败后首次挂载,共享快照播种的镜像让已确认身份禁用+「已保存」+点击零落库',
+    premountGuard.dialogFound && premountGuard.vllmButtonFound && premountGuard.disabled
+      && premountGuard.savedLabel && premountGuard.savesAfter === premountGuard.savesBefore,
+    JSON.stringify(premountGuard));
+  // Closing leg: a genuinely successful deletion refresh replaces the
+  // shared snapshot — delete local-qwen (the confirmed identity above),
+  // let the delete chain's refresh succeed (the armed failure is spent),
+  // and the same identity must be addable again for exactly one record.
+  await page2.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  // Recover the displayed list first (a successful read clears the failure
+  // marker and re-renders the roster — the armed failure is spent); the
+  // deletion's OWN refresh is what must replace the shared snapshot.
+  await page2.evaluate(() => window.TauriBridge.models.setActiveModel('cloud-deepseek'));
+  await sleep(500);
+  await clickRowAction(page2, 'qwen36_35b_256k', '删除');
+  await sleep(300);
+  await clickExact(page2, '删除模型');
+  await sleep(600);
+  await clickExact(page2, '添加模型');
+  await sleep(300);
+  await clickExact(page2, '本地模型');
+  await sleep(200);
+  await page2.evaluate(text => {
+    const input = document.querySelector('[data-testid="local-detect-port"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, '8000');
+  await clickExact(page2, '检测');
+  await sleep(600);
+  const premountThawRow = await page2.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('qwen36_35b_256k'));
+    return button
+      ? { found: true, disabled: button.disabled, savedLabel: (button.textContent || '').includes('已保存') }
+      : { found: false };
+  });
+  const premountReadd = await page2.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('qwen36_35b_256k'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(900);
+  const premountRelanded = await page2.evaluate(() =>
+    window.__SETTINGS_TEST__.models().some(item => item.model === 'qwen36_35b_256k' && item.base_url === 'http://127.0.0.1:8000/v1'));
+  await page2.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9e 真实删除的成功刷新替换共享快照:同身份行恢复可点且恰好再落一笔',
+    premountThawRow.found && !premountThawRow.disabled && !premountThawRow.savedLabel
+      && premountReadd.clicked && premountRelanded,
+    JSON.stringify({ row: premountThawRow, readd: premountReadd, relanded: premountRelanded }));
+  await page2.close();
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

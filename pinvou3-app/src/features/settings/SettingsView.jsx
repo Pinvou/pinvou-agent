@@ -3295,13 +3295,23 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // is NOT an authoritative result: freeze the last successfully read
       // mirror and skip the confirmed-book retirement too — otherwise a
       // confirmed identity gets retracted and the same identity can land a
-      // second new id (review P2, Edge-reproduced). The next successful
+      // second new id (review P2, Edge-reproduced). The frozen source is
+      // the shared bs.lastConfirmedModels snapshot, not merely whatever this
+      // mirror already holds: a failure landing BEFORE the first mount of
+      // this component starts from a never-populated (empty) mirror, and
+      // seeding from the shared last-successful read is what keeps the
+      // first-open guards intact there too (review P2, pre-mount boundary,
+      // two independent reviewer reproductions). The next successful
       // read — including a real deletion's refresh — thaws and refreshes
       // the snapshot.
       useEffect(() => {
-        if (bs && bs.modelsListLoadFailed) return;
-        const listed = savedModelKeys(userModels);
+        const failed = !!(bs && bs.modelsListLoadFailed);
+        const source = failed
+          ? ((bs && bs.lastConfirmedModels) || []).filter(model => model && model.id)
+          : userModels;
+        const listed = savedModelKeys(source);
         inFlightModelCreates.listed = listed;
+        if (failed) return;
         for (const key of [...inFlightModelCreates.committed]) {
           if (listed.has(key)) inFlightModelCreates.committed.delete(key);
         }

@@ -59,7 +59,7 @@
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
-    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels", "modelsListLoadFailed"],
+    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels", "modelsListLoadFailed", "lastConfirmedModels"],
     vllm: [],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     computerUse: ["computerUse"],
@@ -3868,12 +3868,23 @@
   // the empty list is not an authoritative result and confirmed identities
   // must not be retracted (review P2: Edge reproduced one identity under
   // two record ids).
+  // lastConfirmedModels: the identities of the LAST SUCCESSFUL read, owned
+  // by this shared loader rather than by any component. A failed read
+  // empties savedModels (display semantics unchanged) but leaves this
+  // snapshot intact, so the saved-identity guards can still seed their
+  // mirror when the failure lands BEFORE the consumer first mounts — the
+  // component-owned freeze alone starts from an empty mirror there and
+  // would re-open a confirmed identity for a duplicate save (review P2,
+  // pre-mount boundary, two independent reviewer reproductions). The next
+  // successful read — including a real deletion's refresh — replaces it,
+  // which is what keeps a genuinely deleted model re-addable.
   async function loadModels() {
     const seq = ++modelsLoadSeq.value;
     try {
       const v = await invoke("list_models");
       if (seq !== modelsLoadSeq.value) return;
       state.savedModels = (v && v.models) || [];
+      state.lastConfirmedModels = [...((v && v.models) || [])];
       state.activeModelId = (v && v.active_model_id) || null;
       state.modelsListLoadFailed = false;
     } catch {
