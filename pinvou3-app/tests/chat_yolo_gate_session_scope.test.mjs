@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chatPath = path.join(here, '..', 'src', 'features', 'chat', 'ChatView.jsx');
@@ -166,6 +167,8 @@ const tauriInteractionPath = path.join(here, '..', 'src', 'platform', 'tauri', '
 const webBridgePath = path.join(here, '..', 'src', 'platform', 'web', 'bridge.js');
 const tauriInteraction = fs.readFileSync(tauriInteractionPath, 'utf8');
 const webBridge = fs.readFileSync(webBridgePath, 'utf8');
+const tauriSessionsPath = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'sessions.js');
+const tauriSessions = fs.readFileSync(tauriSessionsPath, 'utf8');
 
 // ── round-r8 review P2: the mode switch must surface a failed persist ──────
 // The switch commands return { state, persist_error }: `state` is the
@@ -174,17 +177,82 @@ const webBridge = fs.readFileSync(webBridgePath, 'utf8');
 // restores the previous mode" instead of silently reporting a saved switch.
 // Pinned on both lanes: the unwrap + the modePersistFailed note (dropping
 // either turns the red), and the Rust side pins the command shape.
-for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
-  assert.match(
+// File-wide regexes pass while individual callers stay unadapted (the
+// follow-up P2's own finding), so the coverage is CALL-SITE COUNTED: every
+// invoke of the three switch commands in a lane file must be matched by an
+// unwrap expression, and the direct pass-through shape must not exist.
+// The direct pass-through shape: the invoke result bound and immediately
+// handed to applyAuthoritativeModeState with no unwrap in between (the
+// envelope would display Auto and reset the ask display). Count parity is
+// not assertable (shared-ternary invokes legitimately share one unwrap),
+// so the invariant is the negative shape plus the executed check below.
+const DIRECT_PASS_RE = /(?:const|let)\s+\w+\s*=\s*await\s+invoke\("(?:set_session_mode|set_plan_mode_next|exit_plan_to_yolo)"[^;]*;\s*applyAuthoritativeModeState\(/;
+for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge], ['tauri sessions.js', tauriSessions]]) {
+  assert.doesNotMatch(
     bridgeSrc,
-    /outcome && outcome\.state \? outcome\.state : outcome/,
-    label + ': the switch outcome must be unwrapped into the authoritative state (round-r8 P2)',
+    DIRECT_PASS_RE,
+    label + ': a switch response must not feed applyAuthoritativeModeState directly (the envelope would display Auto and reset the ask display)',
   );
   assert.match(
     bridgeSrc,
     /bt\("modePersistFailed"\)/,
     label + ': a persist failure must surface the unsaved note (round-r8 P2)',
   );
+}
+
+// Behavioral check (the follow-up P2's execution-level repro shape): the
+// web lane's setSessionMode executed with the real production function text
+// must apply the INNER state (Plan stays Plan, the ask display is not
+// reset) and surface the durability note — not the envelope, whose
+// undefined `mode` used to collapse the chip to Auto.
+function extractFunction(source, name) {
+  const start = source.indexOf(`async function ${name}(`);
+  assert.ok(start !== -1, `${name} not found in the web bridge source`);
+  let index = source.indexOf('{', start);
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockComment) { if (char === '*' && next === '/') { blockComment = false; index += 1; } continue; }
+    if (quote) {
+      if (escaped) { escaped = false; continue; }
+      if (char === '\\') { escaped = true; continue; }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') { lineComment = true; index += 1; continue; }
+    if (char === '/' && next === '*') { blockComment = true; index += 1; continue; }
+    if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
+    if (char === '{') depth += 1;
+    if (char === '}') { depth -= 1; if (depth === 0) return source.slice(start, index + 1); }
+  }
+  throw new Error(`${name}: unbalanced braces`);
+}
+{
+  const fnText = extractFunction(webBridge, 'setSessionMode');
+  const applied = [];
+  const notes = [];
+  const sandbox = {
+    state: { activeSessionId: 'session-a' },
+    invoke: async () => ({ state: { mode: 'plan', askOnGuardrail: false, multiAgent: false }, persist_error: 'persist boom' }),
+    applyAuthoritativeModeState: (sid, st) => applied.push({ sid, st }),
+    addSystemItemFor: (sid, text) => notes.push(text),
+    bt: key => key,
+    notify: () => {},
+  };
+  vm.runInNewContext(`${fnText}\nsetSessionMode(undefined, 'plan');`, sandbox);
+  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(applied.length, 1, 'the switch must apply exactly one authoritative state');
+  assert.equal(applied[0].st && applied[0].st.mode, 'plan', 'the envelope must be unwrapped: the applied mode is the inner Plan, not Auto');
+  assert.equal(applied[0].st && applied[0].st.askOnGuardrail, false, 'the ask display must not be reset to its default');
+  assert.equal(notes.length, 1, 'the durability note must surface');
+  assert.ok(notes[0].includes('modePersistFailed') && notes[0].includes('persist boom'), 'the note carries the copy key and the persist cause');
 }
 
 

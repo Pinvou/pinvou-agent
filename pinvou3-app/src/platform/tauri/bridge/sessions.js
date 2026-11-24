@@ -646,12 +646,21 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             // running the mode command against the current active session would
             // target the wrong one.
             try {
-              const stagedModeState = stagedDraftMode === "plan"
+              const stagedOutcome = stagedDraftMode === "plan"
                 ? await invoke("set_plan_mode_next", { sessionId: meta.id })
                 : stagedDraftMode === "yolo"
                 ? await invoke("exit_plan_to_yolo", { sessionId: meta.id })
                 : await invoke("set_session_mode", { sessionId: meta.id, mode: "auto" });
+              // Unwrap the switch outcome (review round-r8 follow-up P2):
+              // the envelope must not feed applyAuthoritativeModeState
+              // directly, and a persist failure surfaces the unsaved note.
+              const stagedModeState = stagedOutcome && stagedOutcome.state ? stagedOutcome.state : stagedOutcome;
               applyAuthoritativeModeState(meta.id, stagedModeState);
+              if (stagedOutcome && stagedOutcome.persist_error) {
+                runSyncOnSession(meta.id, function () {
+                  addSystemItem(bt("modePersistFailed") + stagedOutcome.persist_error);
+                });
+              }
             } catch (stagedModeError) {
               runSyncOnSession(meta.id, function () {
                 addSystemItem(bt("switchModeFailed") + stagedModeError);
@@ -672,10 +681,16 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
         // may have switched away during the awaits above, and a mode command against the current active session would target the wrong object.
         if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = laneDefault === "plan"
+            const laneOutcome = laneDefault === "plan"
               ? await invoke("set_plan_mode_next", { sessionId: meta.id })
               : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
+            const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
             applyAuthoritativeModeState(meta.id, laneModeState);
+            if (laneOutcome && laneOutcome.persist_error) {
+              runSyncOnSession(meta.id, function () {
+                addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
+              });
+            }
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
               addSystemItem(bt("switchModeFailed") + laneModeError);

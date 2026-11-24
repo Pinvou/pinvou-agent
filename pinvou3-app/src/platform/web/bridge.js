@@ -5655,8 +5655,16 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       const args = { sessionId: sid, mode };
       // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
       if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
-      const st = await invoke("set_session_mode", args);
+      // Unwrap the switch outcome (review round-r8 follow-up P2, J's
+      // execution-level repro): passing the envelope straight through fed
+      // `st.mode || 'auto'` an undefined mode — a Plan/Yolo switch displayed
+      // Auto and reset the ask display — and dropped the durability note.
+      const outcome = await invoke("set_session_mode", args);
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }
