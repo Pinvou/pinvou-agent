@@ -200,6 +200,35 @@ for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['
   );
 }
 
+// The feature-level lane joins the contract (the follow-up P2: the
+// code-lane consumers discarded the durability response entirely — the
+// negative shape scans the SINGLE-quoted invokes this file's bridge scan
+// misses). performNativeModeSwitch and persistNativeDraftControls must
+// both consult persist_error on their ternary outcomes.
+const codexViewPath = path.join(here, '..', 'src', 'features', 'codex', 'CodexAcpView.jsx');
+const codexView = fs.readFileSync(codexViewPath, 'utf8');
+const CODEX_DIRECT_PASS_RE = /(?:const|let)\s+\w+\s*=\s*await\s+invoke\('(?:set_session_mode|set_plan_mode_next|exit_plan_to_yolo)'[^;]*;\s*applyAuthoritativeModeState\(/;
+assert.doesNotMatch(
+  codexView,
+  CODEX_DIRECT_PASS_RE,
+  'CodexAcpView: a switch response must not be discarded wholesale (round-r8 follow-up P2: the code-lane consumers ignored persist_error)',
+);
+assert.match(
+  codexView,
+  /switchOutcome && switchOutcome\.persist_error/,
+  'CodexAcpView: performNativeModeSwitch must consult persist_error on the outcome (round-r8 follow-up P2)',
+);
+assert.match(
+  codexView,
+  /modeOutcome && modeOutcome\.persist_error/,
+  'CodexAcpView: persistNativeDraftControls must consult persist_error on the outcome (round-r8 follow-up P2)',
+);
+assert.match(
+  codexView,
+  /codexCopy\.modePersistFailed \+ /,
+  'CodexAcpView: a persist failure must surface the unsaved note (round-r8 follow-up P2)',
+);
+
 // Behavioral check (the follow-up P2's execution-level repro shape): the
 // web lane's setSessionMode executed with the real production function text
 // must apply the INNER state (Plan stays Plan, the ask display is not
@@ -247,7 +276,9 @@ function extractFunction(source, name) {
   };
   vm.runInNewContext(`${fnText}\nsetSessionMode(undefined, 'plan');`, sandbox);
   await Promise.resolve();
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => {
+    setImmediate(resolve);
+  });
   assert.equal(applied.length, 1, 'the switch must apply exactly one authoritative state');
   assert.equal(applied[0].st && applied[0].st.mode, 'plan', 'the envelope must be unwrapped: the applied mode is the inner Plan, not Auto');
   assert.equal(applied[0].st && applied[0].st.askOnGuardrail, false, 'the ask display must not be reset to its default');

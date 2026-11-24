@@ -43,6 +43,7 @@ const codexJa = {
   branchSwitchCommitPlaceholder:'コミットメッセージ（必須）',
   branchSwitchCommitPrompt:(branch)=>`すべての未コミットの変更を現在のブランチにコミットしてから、「${branch}」に切り替えます：`,
   branchSwitchBusyError:'Agent が実行中です。現在のタスクが完了してからブランチを切り替えてください',
+  modePersistFailed:'モードは反映されましたが未保存です——再起動すると元に戻ります: ',
   recreatePrefix:'元のプロジェクトディレクトリが存在しません。', recreate:'セッションを再作成',
   welcomeTitle:'コード Agent でコーディングタスクを処理',
   activeHint:'ツール呼び出し、思考、計画、権限リクエストは ACP 本来の意味で表示され、Pinvou の作業セッションメッセージとは分離されます。',

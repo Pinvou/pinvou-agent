@@ -43,6 +43,7 @@ const codexEn = {
   branchSwitchCommitPlaceholder:'Commit message (required)',
   branchSwitchCommitPrompt:(branch)=>`Commit all uncommitted changes on the current branch, then switch to "${branch}":`,
   branchSwitchBusyError:'The Agent is running. Wait for the current task to finish before switching branches',
+  modePersistFailed:'Mode applied but NOT saved — a restart restores the previous mode: ',
   recreatePrefix:'The original project directory no longer exists. ', recreate:'Recreate session',
   welcomeTitle:'Use a coding Agent for coding tasks',
   activeHint:'Tool calls, reasoning, plans, and permission requests are shown with their original ACP semantics, separate from Pinvou work-session messages.',

@@ -1685,12 +1685,17 @@ export function CodexAcpView({
       // All three staged mode directions must be applied: plan (global first-use / last_mode
       // memory), yolo (last_mode memory), and auto (tri-mode per-action approval mode) — applying
       // only some directions silently drops the others' staging (v3.5 added auto: the previous two branches missed the per-action approval mode).
-      if (staged.mode === 'plan') {
-        await invoke('set_plan_mode_next', { sessionId });
-      } else if (staged.mode === 'yolo') {
-        await invoke('exit_plan_to_yolo', { sessionId });
-      } else if (staged.mode === 'auto') {
-        await invoke('set_session_mode', { sessionId, mode: 'auto' });
+      // The switch commands return { state, persist_error } (review
+      // round-r8 follow-up P2): the switch IS effective, a persist_error
+      // means the sidecar write failed — surface the unsaved note instead
+      // of silently reporting a saved staging.
+      const modeOutcome = staged.mode === 'plan'
+        ? await invoke('set_plan_mode_next', { sessionId })
+        : staged.mode === 'yolo'
+        ? await invoke('exit_plan_to_yolo', { sessionId })
+        : await invoke('set_session_mode', { sessionId, mode: 'auto' });
+      if (modeOutcome && modeOutcome.persist_error) {
+        appendNativeSystemItem(getNativeLane(sessionId), codexCopy.modePersistFailed + modeOutcome.persist_error);
       }
       if (hasMultiAgentSelection) {
         await invoke('set_multi_agent_mode', {
@@ -1847,25 +1852,30 @@ export function CodexAcpView({
     const isActiveTarget = sid === activeId;
     setError('');
     try {
-      if (target === 'plan' && !isPlan) {
-        await invoke('set_plan_mode_next', { sessionId: sid });
-      } else if (target === 'yolo' && isPlan) {
-        await invoke('exit_plan_to_yolo', { sessionId: sid });
-      } else if (target === 'yolo') {
+      // Auto (tri-mode per-action approval mode): no one-time confirmation gate (the gate is yolo-only).
+      // Unified through set_session_mode.
+      // Web-face parity (same as ChatView, round-14): the web has no approval-card surface, so a native
+      // session's first send in Auto would be rejected by webAutoAdmissionGate — the Auto row is disabled on
+      // the web (the chip row is grayed in both draft and materialized states + this fallback refuses the
+      // write), avoiding routing a native session into the Auto dead-end the web face cannot serve via the
+      // code page (round-19 review M1: the draft arm previously missed the guard; both arms are now aligned).
+      if (target === 'auto' && isWeb) return;
+      // The switch commands return { state, persist_error } (review round-r8
+      // follow-up P2): the switch IS effective (the backend hot-syncs the
+      // posture and broadcasts chat:mode_changed); a persist_error means the
+      // sidecar write failed — surface the unsaved note while keeping the
+      // effective mode, instead of discarding the outcome wholesale.
+      const switchOutcome = target === 'plan' && !isPlan
+        ? await invoke('set_plan_mode_next', { sessionId: sid })
+        : target === 'yolo' && isPlan
+        ? await invoke('exit_plan_to_yolo', { sessionId: sid })
         // Auto → Yolo (v3.5: the old code missed this branch and Yolo clicks silently no-oped):
-        // unified through set_session_mode (the backend hot-syncs the safety posture and broadcasts
-        // chat:mode_changed). The confirmation gate was already applied in switchNativeMode.
-        await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' });
-      } else if (target === 'auto') {
-        // Auto (tri-mode per-action approval mode): no one-time confirmation gate (the gate is yolo-only).
-        // Unified through set_session_mode (the backend hot-syncs the safety posture and broadcasts chat:mode_changed).
-        // Web-face parity (same as ChatView, round-14): the web has no approval-card surface, so a native
-        // session's first send in Auto would be rejected by webAutoAdmissionGate — the Auto row is disabled on
-        // the web (the chip row is grayed in both draft and materialized states + this fallback refuses the
-        // write), avoiding routing a native session into the Auto dead-end the web face cannot serve via the
-        // code page (round-19 review M1: the draft arm previously missed the guard; both arms are now aligned).
-        if (isWeb) return;
-        await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
+        // unified through set_session_mode. The confirmation gate was already applied in switchNativeMode.
+        : target === 'yolo'
+        ? await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' })
+        : await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
+      if (switchOutcome && switchOutcome.persist_error) {
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error);
       }
       if (isActiveTarget) await refreshNativeControls(sid);
     } catch (err) { showError(err); }
