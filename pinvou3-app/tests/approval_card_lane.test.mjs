@@ -977,11 +977,16 @@ try {
   // 一切进入 Yolo 的切换生效。
   assert.match(codexView, /if \(target === 'yolo'\) \{\s*\n\s*const prefs = await refreshCodePermPrefs\(\);/,
     '原生车道 Yolo 确认门不再绑定 isPlan');
-  assert.match(codexView, /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,200}?\} else if \(target === 'yolo'\) \{[\s\S]{0,500}?set_session_mode', \{ sessionId: sid, mode: 'yolo' \}/,
-    'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode（sid 显式钉目标，确认门回程切会话不打 live-active）');
+  assert.match(codexView, /target === 'yolo' && isPlan\s*\?\s*await invoke\('exit_plan_to_yolo'[\s\S]{0,400}?: target === 'yolo'\s*\?\s*await invoke\('set_session_mode', \{ sessionId: sid, mode: 'yolo' \}\)/,
+    'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode（sid 显式钉目标，确认门回程切会话不打 live-active；r8-followup-2 起为条件三元）');
   // v3.5：草稿暂存 auto 也随建会话应用（旧代码只认 plan/yolo）。
-  assert.match(codexView, /staged\.mode === 'yolo'\) \{[\s\S]{0,160}?\} else if \(staged\.mode === 'auto'\) \{[\s\S]{0,200}?set_session_mode', \{ sessionId, mode: 'auto' \}/,
-    '原生车道草稿暂存 auto 落地');
+  assert.match(codexView, /staged\.mode === 'yolo'\s*\?\s*await invoke\('exit_plan_to_yolo'[\s\S]{0,200}?: staged\.mode === 'auto'\s*\?\s*await invoke\('set_session_mode', \{ sessionId, mode: 'auto' \}\)/,
+    '原生车道草稿暂存 auto 落地（r8-followup-2 起为条件三元）');
+  // r8-followup-2 P2：三元不得有兜底臂——model/collection/multiAgent-only
+  // 草稿（hasStaged 同样放行）此前不发任何模式写，catch-all 会把会话的
+  // resolved Plan/Yolo 默认覆写成 Auto（J 执行级复现三例）。
+  assert.match(codexView, /staged\.mode === 'auto'\s*\?\s*await invoke\('set_session_mode', \{ sessionId, mode: 'auto' \}\)\s*\n\s*:\s*null;/,
+    '草稿暂存三元以 null 收尾：未显式暂存 mode 的控制-only 草稿不得落任何模式写');
 
   // ChatView：auto 分支在门之前直返；YOLO 确认门对一切进入 Yolo 的切换生效
   // （v3.5：Auto→Yolo 直达同一门 + set_session_mode，不再绕道 Plan）。

@@ -352,13 +352,20 @@ try {
     );
     assert.match(
       performBody,
-      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,500}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'yolo' \}\)/,
-      'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空）',
+      /target === 'yolo' && isPlan\s*\?\s*await invoke\('exit_plan_to_yolo'[\s\S]{0,300}?: target === 'yolo'\s*\?\s*await invoke\('set_session_mode', \{ sessionId: sid, mode: 'yolo' \}\)/,
+      'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空；r8-followup-2 起为条件三元）',
     );
     assert.match(
       performBody,
-      /\} else if \(target === 'auto'\)[\s\S]{0,1000}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'auto' \}\)/,
-      'auto 目标直调 set_session_mode（后端热同步安全姿态），不弹确认门',
+      /: target === 'auto'\s*\?\s*await invoke\('set_session_mode', \{ sessionId: sid, mode: 'auto' \}\)/,
+      'auto 目标显式守卫直调 set_session_mode（后端热同步安全姿态），不弹确认门',
+    );
+    // r8-followup-2 P2：三元以 null 收尾——未识别/no-op 目标不得兜底落
+    // 模式写（catch-all 会把非 auto 目标写成 Auto）。
+    assert.match(
+      performBody,
+      /\?\s*await invoke\('set_session_mode', \{ sessionId: sid, mode: 'auto' \}\)\s*\n\s*:\s*null;/,
+      '切换三元以 null 收尾：无兜底模式写（round-r8 follow-up-2 P2）',
     );
     // round-19 评审 M1：web 草稿臂同样先拒 Auto 再暂存（草稿若放行会把
     // lane 全局默认写成 auto，未来会话全部物化进 Web 发送门之后的死路，

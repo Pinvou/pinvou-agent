@@ -1689,11 +1689,20 @@ export function CodexAcpView({
       // round-r8 follow-up P2): the switch IS effective, a persist_error
       // means the sidecar write failed — surface the unsaved note instead
       // of silently reporting a saved staging.
+      // Only an explicitly staged mode issues a mode command: hasStaged
+      // also accepts model-, collection- and multi-agent-only drafts, and
+      // those control-only drafts previously issued NO mode write — a
+      // catch-all final arm would overwrite the session's resolved
+      // Plan/Yolo default with Auto (review round-r8 follow-up-2 P2,
+      // J's execution-level repro on modelId/mountedId/multiAgent-only
+      // drafts).
       const modeOutcome = staged.mode === 'plan'
         ? await invoke('set_plan_mode_next', { sessionId })
         : staged.mode === 'yolo'
         ? await invoke('exit_plan_to_yolo', { sessionId })
-        : await invoke('set_session_mode', { sessionId, mode: 'auto' });
+        : staged.mode === 'auto'
+        ? await invoke('set_session_mode', { sessionId, mode: 'auto' })
+        : null;
       if (modeOutcome && modeOutcome.persist_error) {
         appendNativeSystemItem(getNativeLane(sessionId), codexCopy.modePersistFailed + modeOutcome.persist_error);
       }
@@ -1865,6 +1874,9 @@ export function CodexAcpView({
       // posture and broadcasts chat:mode_changed); a persist_error means the
       // sidecar write failed — surface the unsaved note while keeping the
       // effective mode, instead of discarding the outcome wholesale.
+      // Explicit 'auto' guard: an unrecognized/no-op target must not fall
+      // through into a mode write (review round-r8 follow-up-2 P2 — the
+      // same catch-all hazard as the draft staging path).
       const switchOutcome = target === 'plan' && !isPlan
         ? await invoke('set_plan_mode_next', { sessionId: sid })
         : target === 'yolo' && isPlan
@@ -1873,7 +1885,9 @@ export function CodexAcpView({
         // unified through set_session_mode. The confirmation gate was already applied in switchNativeMode.
         : target === 'yolo'
         ? await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' })
-        : await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
+        : target === 'auto'
+        ? await invoke('set_session_mode', { sessionId: sid, mode: 'auto' })
+        : null;
       if (switchOutcome && switchOutcome.persist_error) {
         appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error);
       }
