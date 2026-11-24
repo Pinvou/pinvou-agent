@@ -42,17 +42,18 @@ assert.match(
   /setDocsPaging\(\{ gen: generation, collId, offset: docsPaging\.offset \+ page\.length, hasMore: page\.length >= KB_DOCS_PAGE_SIZE, loading: false \}\);/,
   'the landed continuation page must re-stamp the collection id',
 );
-// The completion poll's stale-collection hazard is closed at the source:
-// latest-ref alone does NOT cover an in-flight invocation — the callback
-// re-syncs only BETWEEN invocations, and the status await can span a
-// collection switch (review-verified A→B→A request order: the stale
-// continuation then takes a generation later than the new collection's
-// and its rows overwrite the live selection while the paging state still
-// belongs to the stale one). The poll must therefore capture the
-// selection at call time and re-check the live ref after the await;
-// the gated kb_smoke case ⑫ pins the behavior end to end.
+// The completion poll must refresh the REAL current selection (review
+// r6): index status is a global task — with B importing, the user can
+// switch to B while A's status request is pending; B's switch-path load
+// lands only the incomplete first batch, and when the final status
+// returns, polling stops, so B would keep an incomplete list with no
+// pagination footer unless THIS poll refreshes it. The live ref (read
+// after the await) is the authority — a switched-away collection is
+// never the current selection, so the r5 stale write-back stays closed.
+// Both directions are pinned on the same clock by the gated kb_smoke
+// case ⑫ (currentRefreshed for B, staleReloaded false for A).
 assert.match(
   source,
-  /const selectedId = activeColl && activeColl\.id;[\s\S]{0,600}if \(selectedId && activeCollRef\.current\?\.id === selectedId\) loadDocs\(selectedId\);/,
-  'the completion poll must capture the selection at call time and re-check the live ref after the await',
+  /const currentId = activeCollRef\.current\?\.id;\s*if \(currentId\) loadDocs\(currentId\);/,
+  'the completion poll must refresh whatever the real current selection is after the await (never the tick-captured stale one)',
 );
