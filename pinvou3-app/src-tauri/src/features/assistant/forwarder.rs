@@ -1893,9 +1893,11 @@ pub(crate) fn spawn_event_forwarder(
                     // engine retries the throttled request itself and reports
                     // each autonomous recovery step. The turn stays alive and
                     // the terminal events keep flowing, so this only surfaces
-                    // as an operational log line here (the parity face maps
-                    // it to a Status message the same way); a dedicated UI
-                    // surface would be a follow-up product decision.
+                    // as an operational log line here, mirroring the engine's
+                    // parity face field-for-field (its Status message drops
+                    // the identity fields too); a dedicated UI surface that
+                    // also carries agent_id/turn_id would be a follow-up
+                    // product decision.
                     log::info!(
                         "[pinvou3][chat] model recovery sid={}: {} attempt {}/{} next_retry_at_ms={:?}",
                         session_id,

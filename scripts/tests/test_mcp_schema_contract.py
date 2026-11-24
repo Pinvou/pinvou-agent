@@ -1200,12 +1200,12 @@ class SchemaContractWalkerTest(unittest.TestCase):
             "the pinned engine's anyOf cap changed — reconcile the mirror "
             "constants with the new pinned face and update this tripwire")
         self.assertIn(
-            "fn strip_mfjs_advisory_keywords", source,
+            "fn strip_mfjs_advisory_keywords(", source,
             "the pinned engine lost the T11 advisory strip — reconcile the "
             "mirror constants with the new pinned face and update this "
             "tripwire")
         self.assertIn(
-            "fn remove_empty_mfjs_items_schemas", source,
+            "fn remove_empty_mfjs_items_schemas(", source,
             "the pinned engine lost the empty-items repair — reconcile the "
             "mirror constants with the new pinned face and update this "
             "tripwire")
@@ -1222,9 +1222,11 @@ class SchemaContractWalkerTest(unittest.TestCase):
             "the sanitizer walk — reconcile the mirror with the new pinned "
             "face and update this tripwire")
         # Scalar const→enum face: the detection helper and the fail-closed
-        # variant for non-scalar consts (bool/null/object/array).
+        # variant for non-scalar consts (bool/null/object/array). The fn
+        # needles end in "(" so a suffix-preserving rename
+        # (…_renamed) cannot ride the substring tolerance.
         self.assertIn(
-            "fn is_mfjs_scalar_const", source,
+            "fn is_mfjs_scalar_const(", source,
             "the pinned engine lost the scalar const→enum detection — "
             "reconcile the mirror constants with the new pinned face and "
             "update this tripwire")
