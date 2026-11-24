@@ -616,8 +616,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const duplicateSaved = formSavedKeys\.has\(formIdentityKey\) \|\| pendingSavedKeys\.has\(formIdentityKey\);/,
-  'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd)',
+  /const duplicateSaved = formSavedKeys\.has\(formIdentityKey\) \|\| pendingSavedKeys\.has\(formIdentityKey\)\s*\n\s*\|\| \(formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed\.has\(formIdentityKey\)\);/,
+  'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd) and fold the read-failure frozen mirror (review P2: an emptied list must not retract confirmed identities; the edit-mode own key stays excluded)',
 );
 assert.match(
   settingsViewSource,
@@ -680,6 +680,11 @@ assert.match(
   settingsViewSource,
   /inFlightModelCreates\.listed = listed;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{\s*if \(listed\.has\(key\)\) inFlightModelCreates\.committed\.delete\(key\);\s*\}/,
   'the SettingsView effect must refresh the live listed mirror and retire confirmed keys from the committed book — retiring on listing is what lets a deleted identity re-add (⑦.8)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(bs && bs\.modelsListLoadFailed\) return;\s*const listed = savedModelKeys\(userModels\);/,
+  'the mirror effect must freeze while the models list read is failed (review P2: the shared catch clears the list, so refreshing the mirror from that empty list retracts confirmed identities and invites a second id — the guard must precede the refresh; ⑦.9)',
 );
 assert.match(
   settingsViewSource,
@@ -1565,6 +1570,29 @@ function injectSource() {
               models: ['refresh-twin-7c'],
               max_model_len: 8192,
             }],
+            // ⑦.9 复审 P2(读取失败冻结)的隔离档:两个候选互不相干,A 用于
+            // 先落库并经列表确认,B 用于触发下一次 list_models 失败。仅在
+            // ⑦.9 使用,不与既有场景互染。
+            8240: [
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8240/v1',
+                status: 'ready',
+                model: 'freeze-twin-a',
+                models: ['freeze-twin-a'],
+                max_model_len: 8192,
+              },
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8240/v1',
+                status: 'ready',
+                model: 'freeze-twin-b',
+                models: ['freeze-twin-b'],
+                max_model_len: 8192,
+              },
+            ],
           };
           const customPort = args && args.request && args.request.customPort;
           return Promise.resolve({ candidates: alternates[customPort] || [
@@ -4406,6 +4434,165 @@ async function modalWidth(page, headingText) {
     midSaveHintGate.hintHiddenWhileSaving && midSaveHintGate.saveDisabledWhileSaving
       && idleHintControl.hintVisibleIdle,
     JSON.stringify({ mid: midSaveHintGate, idle: idleHintControl }));
+
+  // ===== ⑦.9 复审 P2(读取失败冻结,Edge 实测同身份落双 id):已确认身份在
+  // 读取失败窗口内不得复活。与 ⑦.4 的判别:⑦.4 的身份刚落库**未确认**
+  // (committed 簿拦截);这里 A 已被列表确认出册(committed 清空),B 的刷新
+  // 失败后唯一活源是冻结镜像——缺镜像即双 id。真实删除后的可重加行为
+  // (zhuowp 同条要求)在收尾腿验证。隔离档 8240。=====
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8240');
+  await clickExact(page, '检测');
+  await sleep(600);
+  // A:添加 → 落库 → 刷新成功 → 列表确认出册(A 从此只靠 listed 镜像)。
+  const freezeAddA = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('freeze-twin-a'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(900);
+  // B:注入下一次 list_models 失败再添加——落库成功,但刷新链吞错清列表并
+  // 置失败标记;镜像冻结,A 的身份不得被空列表撤回。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.armListModelsFailure();
+    window.__SETTINGS_TEST__.setSaveModelDelay(400);
+  });
+  const freezeAddB = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('freeze-twin-b'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(1300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  const freezeLanded = await page.evaluate(() => {
+    const saved = window.__SETTINGS_TEST__.models();
+    return {
+      aSaved: saved.some(item => item.model === 'freeze-twin-a' && item.base_url === 'http://127.0.0.1:8240/v1'),
+      bSaved: saved.some(item => item.model === 'freeze-twin-b' && item.base_url === 'http://127.0.0.1:8240/v1'),
+    };
+  });
+  // 冻结断言:重开检测,空列表下 A 行仍禁用+已保存(镜像冻结),且点击零落库。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8240');
+  await clickExact(page, '检测');
+  await sleep(600);
+  const freezeRowsFrozen = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const rowButton = needle => {
+      const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+        (button.parentElement.textContent || '').includes(needle));
+      return button
+        ? { found: true, disabled: button.disabled, savedLabel: (button.textContent || '').includes('已保存') }
+        : { found: false };
+    };
+    return { a: rowButton('freeze-twin-a'), b: rowButton('freeze-twin-b') };
+  });
+  const freezeSavesBefore = await callCount(page, 'save_model');
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('freeze-twin-a'));
+    if (button) button.click();
+  });
+  await sleep(300);
+  const freezeSavesAfter = await callCount(page, 'save_model');
+  // 表单侧同口径:读取失败窗口内手填 A 的身份 → 保存禁用+提示可见
+  // (duplicateSaved 并入冻结镜像)。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await clickExact(page, '手动添加本地模型');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'http://127.0.0.1:8240/v1');
+    const modelInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === '本地模型 ID').nextElementSibling;
+    typeInto(modelInput, 'freeze-twin-a');
+  });
+  await sleep(250);
+  const freezeFormGate = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root && root.querySelector('[data-testid="model-form-save"]');
+    const hint = root && root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    return { saveDisabled: !!save && save.disabled, hintShown: !!hint };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
+  await sleep(200);
+  rec('⑦.9 读取失败窗口内已确认身份不复活:空列表下 A 行禁用+已保存、点击零落库、表单侧保存禁用+提示(B 的刷新失败不撤回 A)',
+    freezeAddA.clicked && freezeAddB.clicked && freezeLanded.aSaved && freezeLanded.bSaved
+      && freezeRowsFrozen.a.found && freezeRowsFrozen.a.disabled && freezeRowsFrozen.a.savedLabel
+      && freezeSavesAfter === freezeSavesBefore
+      && freezeFormGate.saveDisabled && freezeFormGate.hintShown,
+    JSON.stringify({ addA: freezeAddA, addB: freezeAddB, landed: freezeLanded, rows: freezeRowsFrozen, savesBefore: freezeSavesBefore, savesAfter: freezeSavesAfter, form: freezeFormGate }));
+  // 收尾腿(同条要求的另一面):下一次成功读取解冻——真实删除 A 后同身份
+  // 必须恢复可添加。setActiveModel 链桥内重载(⑦.4 同款旋钮),失败标记
+  // 清零、镜像刷新。
+  await page.evaluate(() => window.TauriBridge.models
+    .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
+  await sleep(500);
+  const thawedListRecovered = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return text.includes('freeze-twin-a') && text.includes('freeze-twin-b');
+  });
+  await clickRowAction(page, 'freeze-twin-a', '删除');
+  await sleep(300);
+  await clickExact(page, '删除模型');
+  await sleep(500);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8240');
+  await clickExact(page, '检测');
+  await sleep(600);
+  const thawedReaddable = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('freeze-twin-a'));
+    return button
+      ? { found: true, disabled: button.disabled, savedLabel: (button.textContent || '').includes('已保存') }
+      : { found: false };
+  });
+  const thawedSave = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('freeze-twin-a'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(900);
+  const thawedRelanded = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().some(item => item.model === 'freeze-twin-a' && item.base_url === 'http://127.0.0.1:8240/v1'));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9b 成功读取解冻+真实删除可重加:列表恢复后删除 A,同身份行恢复可点并能再落一笔',
+    thawedListRecovered && thawedReaddable.found && !thawedReaddable.disabled && !thawedReaddable.savedLabel
+      && thawedSave.clicked && thawedRelanded,
+    JSON.stringify({ recovered: thawedListRecovered, readdable: thawedReaddable, save: thawedSave, relanded: thawedRelanded }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

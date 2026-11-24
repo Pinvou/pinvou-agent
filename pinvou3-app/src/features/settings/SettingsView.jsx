@@ -956,6 +956,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // 即使刷新失败(.listed 与冻结快照都看不见)也绝不进批。
         for (const key of inFlightModelCreates.committed) batchSavedKeys.add(key);
         for (const key of pendingSavedKeys) batchSavedKeys.add(key);
+        // 冻结镜像同样入快照(复审 P2):列表读取失败时 endpointSavedKeys 空、
+        // .listed 冻结在上次成功读取——已确认身份不得在确认弹窗里显示为可
+        // 添加(确认循环查册本会跳过,弹窗计数也须一致)。
+        for (const key of inFlightModelCreates.listed) batchSavedKeys.add(key);
         const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), batchSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
         // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
@@ -1733,7 +1737,14 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // rebuilding the key set is sub-millisecond).
       const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
       const formIdentityKey = modelDuplicationKey(model.trim(), baseUrl.trim());
-      const duplicateSaved = formSavedKeys.has(formIdentityKey) || pendingSavedKeys.has(formIdentityKey);
+      // 列表读取失败冻结(复审 P2):空列表不撤回已确认身份——上层 effect 跳过
+      // 镜像刷新,这里把冻结镜像并进表单级查册,读取失败窗口内同身份不得再落
+      // 一个新 id。编辑态排除被编辑记录自身的身份键(直查部分按 id 排除,冻结
+      // 镜像只有键,用 initial 的身份键排除);新建态 initial.id 为空,无排除。
+      const editingSavedKey = initial && initial.id ? modelDuplicationKey(initial.model, initial.base_url) : null;
+      const frozenListed = inFlightModelCreates.listed;
+      const duplicateSaved = formSavedKeys.has(formIdentityKey) || pendingSavedKeys.has(formIdentityKey)
+        || (formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed.has(formIdentityKey));
       // 按钮态与 doSave 的守卫同口径(r4 复审 MINOR):同身份在途(注册表,
       // 跨弹窗重开存活)或本地行添加挂起时守卫会静默吞掉点击——按钮不得在
       // 这些窗口里看起来可点。
@@ -3260,7 +3271,12 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // modal 内的 effect 随弹窗实例死亡;旧批次的闭包正是旧实例,新弹窗
       // 在其等待期间落库的身份只有这一层能同时记账与出簿。Set 突变,
       // 无 setState——本组件渲染链实测脆弱(不做 setState-in-effect)。
+      // 列表读取失败(桥 loadModels catch 置 bs.modelsListLoadFailed 并清空
+      // 列表)时空列表**不是权威结果**:冻结上次成功读取的镜像、确认出册一并
+      // 跳过——否则已确认身份会被撤回,同身份可再落一个新 id(复审 P2,Edge
+      // 实测)。下一次成功读取(含真实删除后的刷新)解冻并刷新快照。
       useEffect(() => {
+        if (bs && bs.modelsListLoadFailed) return;
         const listed = savedModelKeys(userModels);
         inFlightModelCreates.listed = listed;
         for (const key of [...inFlightModelCreates.committed]) {
