@@ -443,7 +443,7 @@ const expectedProtocolHashes = {
   // cumulative-input dirty guard); the extracted call set is unchanged
   // (98 invoke/listen entries both sides) — no new command or event
   // surface.
-  webWireSurface: '2b801a2f31834a9c828dcd2bbad56a4d5272863b5f9532149511df230fe85169',};
+  webWireSurface: '2eb67eb81f3f0ef224cfa9f5f233cbd1112eda9c033ec9c2285bfbc9780ea6f6',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

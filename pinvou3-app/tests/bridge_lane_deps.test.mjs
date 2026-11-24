@@ -224,13 +224,12 @@ const EXPECTED_SURFACE = {
   // cronWsTrim (#900 review P3 round 2: the Unicode White_Space trim the
   // fence's key/value/EXPR parsing needs) is pure as well and resolves as
   // a base-local declaration inside the same fence — count only.
-  // scenePayloadSplitter (model-facing text kept out of the user's bubbles:
-  // history replay inverts the scene routing wrapper) reads only the
-  // window.__PINVOU_SCENE_PAYLOAD__ features global, like the
-  // window.PinvouBridgeMessages readers above; its sole caller
-  // rerenderFromMessagesCore resolves it as a base-local declaration —
-  // count only.
-  sharedFnCount: 330,
+  // handleModeSwitchFailure / editResendSyncBlocked / markModeSwitchSettled
+  // (#809 review P2, receipt-equals-effective) read invoke / bt /
+  // addSystemItemFor / applyAuthoritativeModeState / state — every dep the
+  // consuming clusters (web, tauriInteraction) already pass for
+  // setPlanModeNext; no cluster literal gains a dep — count only.
+  sharedFnCount: 323,
 };
 
 assert.equal(

@@ -3695,6 +3695,25 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         assert!(write_at < publish_at, "{label}: write must precede publish");
     }
 
+    // review P2（receipt-equals-effective）：ask 半边失败随 outcome 走——
+    // publish 之后再 return Err 会让 UI 报「切换失败」，而模式已生效且
+    // 广播已把各面收敛到新模式（回执与生效状态相矛盾的字面反例）。
+    let session_body = source
+        .split("pub async fn set_session_mode(")
+        .nth(1)
+        .expect("set_session_mode body missing")
+        .split("pub async fn set_ask_on_guardrail(")
+        .next()
+        .expect("set_session_mode body terminator missing");
+    assert!(
+        session_body.contains("ask_error,"),
+        "set_session_mode: the ask half must ride the SessionModeSwitchOutcome (ask_error field)"
+    );
+    assert!(
+        !session_body.contains("if let Some(error) = ask_error"),
+        "set_session_mode: the ask failure must not be re-lifted into the Err lane after the publish"
+    );
+
     // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo /
     // set_session_mode / set_ask_on_guardrail 过同一目标会话存在性门，且门
     // 在写库之前——这些命令远程可达，缺门即可为任意 id 铸 mode 条目 +

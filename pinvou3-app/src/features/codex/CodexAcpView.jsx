@@ -1891,8 +1891,23 @@ export function CodexAcpView({
       if (switchOutcome && switchOutcome.persist_error) {
         appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error);
       }
+      if (switchOutcome && switchOutcome.ask_error) {
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeAskPersistFailed + switchOutcome.ask_error);
+      }
       if (isActiveTarget) await refreshNativeControls(sid);
-    } catch (err) { showError(err); }
+    } catch (err) {
+      // Convergence (review P2, receipt-equals-effective): the switch
+      // command rejects on the engine hot-sync failure AFTER the in-memory
+      // mode landed — re-read the authoritative state and converge the
+      // native controls, and say "effective but sync failed" instead of the
+      // bare error. When even the re-read fails (session gone / bridge
+      // down) keep the plain error surface.
+      try {
+        await invoke('get_mode_state', { sessionId: sid });
+        if (isActiveTarget) await refreshNativeControls(sid);
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeSyncFailedEffective + err);
+      } catch { showError(err); }
+    }
   }
 
   /// Session-level ask-on-guardrail toggle (tri-mode): optimistic flip →

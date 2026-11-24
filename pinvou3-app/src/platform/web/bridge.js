@@ -446,7 +446,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ", modePersistFailed: "⚠️ Mode applied but NOT saved — a restart restores the previous mode: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ", modePersistFailed: "⚠️ Mode applied but NOT saved — a restart restores the previous mode: ",modeAskPersistFailed: "The switch is effective, but the ask-on-guardrail setting failed to save: ", modeSyncFailedEffective: "The switch is effective, but the live engine sync failed; toggle the mode again to repair it: ", editResendSyncPending: "The last mode switch failed its live engine sync, so the edit resend is not accepted — toggle the mode again and retry", webPostureUnknown: "⚠️ Could not determine this session's approval posture — the request was not accepted, please retry", 
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -582,7 +582,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ", modePersistFailed: "⚠️ モードは反映されましたが未保存です——再起動すると元に戻ります: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ", modePersistFailed: "⚠️ モードは反映されましたが未保存です——再起動すると元に戻ります: ",modeAskPersistFailed: "モードは有効になりましたが、ask-on-guardrail 設定の保存に失敗しました: ", modeSyncFailedEffective: "モードは有効になりましたが、エンジンとの即時同期に失敗しました。再度切り替えると修復できます: ", editResendSyncPending: "前回のモード切り替えでエンジンとの同期に失敗したため、編集の再送は受理されません。もう一度モードを切り替えてから再試行してください", webPostureUnknown: "⚠️ このセッションの承認モードを確認できなかったため、リクエストは受理されませんでした。再試行してください", 
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -718,7 +718,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ", modePersistFailed: "⚠️ 模式已生效但未保存——重启后将恢复旧模式： ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ", modePersistFailed: "⚠️ 模式已生效但未保存——重启后将恢复旧模式： ",modeAskPersistFailed: "模式已生效，但 ask-on-guardrail 设置未保存： ", modeSyncFailedEffective: "模式已生效，但引擎实时同步失败；重新切换一次可修复： ", editResendSyncPending: "上一次模式切换与引擎实时同步失败，编辑重发暂不受理——请重新切换一次模式后再试", webPostureUnknown: "⚠️ 未能确定该会话的审批档位，本次未受理——请重试", 
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -1977,10 +1977,13 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
                 addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
               });
             }
+            pinvouSharedweb().markModeSwitchSettled(meta.id);
           } catch (laneModeError) {
-            runSyncOnSession(meta.id, function () {
-              addSystemItem(bt("switchModeFailed") + laneModeError);
-            });
+            // Convergence (review P2, receipt-equals-effective): the same
+            // failed-hot-sync shape as every other switch surface — re-read
+            // the authoritative state so the receipt tracks the effective
+            // mode and mark the session for the edit-resend guard.
+            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"));
           }
         }
         await syncActivePersona();
@@ -2814,7 +2817,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // Auto posture is explicitly refused; the notice lands before the refusal: through runSyncOnSession it
   // lands in sid's own buffer, so background retries annotate the right session; the throw keeps flowing
   // through the caller's existing failure surface (the aux panel renders the localized sendFailed copy).
-  // get_mode_state failure is fail-open (the post-hoc notice remains the race backstop).
+  // get_mode_state failure fails CLOSED (webPostureUnknown, retryable — review P2); the post-hoc notice remains the race backstop for acceptance-time flips.
   // opts.requireExecutablePostAccept (zhuowp 5780927743, third point): the admission surface must also
   // verify **the mode that will actually execute** — after accept_plan opens the turn it restores
   // pre_plan_mode (falling back to Auto when absent; a restarted Plan session falls back the same way);
@@ -2831,12 +2834,36 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     });
     throw new Error(bt("webAutoSendBlocked"));
   }
+  // Posture-lookup failure: refuse BEFORE admission with a retryable result
+  // (review P2, receipt-equals-effective). Deliberately NOT routed through
+  // the webAutoSendNoticeSids dedup — a retryable refusal must be able to
+  // say itself again on every attempt, and the "unknown posture" refusal is
+  // the user's signal to retry the request, not a one-shot notice.
+  function webPostureUnknownAndThrow(sid) {
+    runSyncOnSession(sid, function () {
+      addSystemItem(bt("webPostureUnknown"));
+    });
+    throw new Error(bt("webPostureUnknown"));
+  }
   async function webAutoAdmissionGate(sid, admitted, opts) {
-    const modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
-    if (modeState && modeState.mode === "auto") {
+    // Fail CLOSED on a posture-lookup failure (review P2): the old fail-open
+    // branch admitted requests whose approval posture could not be
+    // determined — a session actually in Auto (or landing in Auto
+    // post-accept) would surface approval cards the web facade cannot
+    // decide, and the only backstop ran AFTER acceptance with no retryable
+    // result. One immediate retry first: a transient remote-RPC failure is
+    // the common case (this lookup is a cross-process call on the web lane).
+    let modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
+    if (!modeState) {
+      modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
+    }
+    if (!modeState) {
+      webPostureUnknownAndThrow(sid);
+    }
+    if (modeState.mode === "auto") {
       webAutoNoticeAndThrow(sid);
     }
-    if (modeState && opts && opts.requireExecutablePostAccept && modeState.post_accept_mode === "auto") {
+    if (opts && opts.requireExecutablePostAccept && modeState.post_accept_mode === "auto") {
       webAutoNoticeAndThrow(sid);
     }
     return admitted();
@@ -5631,7 +5658,8 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
+      pinvouSharedweb().markModeSwitchSettled(sid);
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); }
     notify();
   }
   // tri-mode unified mode switch (review P2: the web face's Auto→Yolo escape used to be a dead button —
@@ -5665,7 +5693,15 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+      // The ask half rides the outcome (review P2, receipt-equals-effective):
+      // an ask-write failure used to turn the whole command into Err after
+      // the broadcast — the UI said "failed" while the mode was effective
+      // and every chip had converged. It is an unsaved-setting note.
+      if (outcome && outcome.ask_error) {
+        addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
+      }
+      pinvouSharedweb().markModeSwitchSettled(sid);
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed")); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -5702,9 +5738,10 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
+      pinvouSharedweb().markModeSwitchSettled(sid);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
@@ -5736,6 +5773,16 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     newText = (newText || "").trim();
     if (!newText) return;
     const sid = state.activeSessionId;
+    // Edit resend waits for the effective mode (review P2, receipt-equals-
+    // effective): this session's LAST switch failed its engine hot-sync —
+    // the resend turn would execute under a live posture the engine never
+    // confirmed. Refuse with a retryable note until a successful re-switch
+    // clears the mark (see the shared handleModeSwitchFailure contract).
+    if (pinvouSharedweb().editResendSyncBlocked(sid)) {
+      addSystemItemFor(sid, bt("editResendSyncPending"));
+      notify();
+      return;
+    }
     // Posture gate (same as doSendFor, the review P2 gap fix): edit_last_turn admits a new execution rerun
     // turn (the multi-agent deny-send list also classifies it as execution) and must not start an ungated turn
     // in Auto — resolve the posture before admission, explicitly refuse Auto (sharing the notice-dedup surface;

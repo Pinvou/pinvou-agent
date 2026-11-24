@@ -273,6 +273,13 @@ function extractFunction(source, name) {
     addSystemItemFor: (sid, text) => notes.push(text),
     bt: key => key,
     notify: () => {},
+    // The shared per-lane closure accessor (handleModeSwitchFailure /
+    // markModeSwitchSettled live there): the sandbox stubs the two members
+    // the success path touches.
+    pinvouSharedweb: () => ({
+      markModeSwitchSettled() {},
+      handleModeSwitchFailure: async () => {},
+    }),
   };
   vm.runInNewContext(`${fnText}\nsetSessionMode(undefined, 'plan');`, sandbox);
   await Promise.resolve();

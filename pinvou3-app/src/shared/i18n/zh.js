@@ -45,6 +45,8 @@ const codexZh = {
   branchSwitchCommitPrompt:(branch)=>`将全部未提交更改提交到当前分支，然后切换到「${branch}」：`,
   branchSwitchBusyError:'Agent 正在运行，请等待当前任务完成后再切换分支',
   modePersistFailed:'模式已生效但未保存——重启后将恢复旧模式： ',
+  modeAskPersistFailed:'模式已生效，但 ask-on-guardrail 设置未保存： ',
+  modeSyncFailedEffective:'模式已生效，但引擎实时同步失败；重新切换一次可修复： ',
   recreatePrefix:'原项目目录已不存在，', recreate:'重新创建会话',
   welcomeTitle:'使用代码 Agent 处理代码任务',
   activeHint:'工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有工作会话消息框架。',

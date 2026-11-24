@@ -1341,11 +1341,23 @@ try {
     assert.match(web, /webApprovalNoticeIds\.size > WEB_APPROVAL_NOTICE_CAP/,
       'web 审批通告去重必须有界（无 resolve 收敛事件可清除）');
     // 受理前姿态门：Auto 档在受理前显式拒绝该不受支持的执行路径——
-    // 事后通告不是完成态；姿态命令失败不拦发送（fail-open，通告兜底）。
+    // 事后通告不是完成态；姿态命令查找失败 fail-closed（可重试拒绝，
+    // review P2：旧 fail-open 会在 posture 未知时受理，受理后才暴露
+    // Web 端无法完成的流程）。
     assert.match(web, /invoke\("get_mode_state", \{ sessionId: sid \}\)/,
       'web 发送受理前必须解析会话姿态');
-    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,200}webAutoNoticeAndThrow\(sid\);/,
+    assert.match(web, /let modeState = await invoke\("get_mode_state", \{ sessionId: sid \}\)\.catch\(function \(\) \{ return null; \}\);\s*\n\s*if \(!modeState\) \{\s*\n\s*modeState = await invoke\("get_mode_state"/,
+      '姿态查找失败必须先即时重试一次（瞬态远程 RPC 失败是常态）');
+    assert.match(web, /if \(!modeState\) \{\s*\n\s*webPostureUnknownAndThrow\(sid\);\s*\n\s*\}\s*\n\s*if \(modeState\.mode === "auto"\)/,
+      '重试后仍未知必须受理前 fail-closed 拒绝（webPostureUnknown 可重试文案），Auto 门检在非空 modeState 上进行');
+    assert.match(web, /modeState\.mode === "auto"[\s\S]{0,120}webAutoNoticeAndThrow\(sid\);/,
       'Auto 姿态必须在受理前显式拒绝（经共享拒绝助手，webAutoSendBlocked 三语文案）');
+    assert.match(web, /function webPostureUnknownAndThrow\(sid\) \{[\s\S]{0,400}?addSystemItem\(bt\("webPostureUnknown"\)\);[\s\S]{0,200}?throw new Error\(bt\("webPostureUnknown"\)\);/,
+      'posture 未知拒绝必须先落系统通告再 throw（用户面在受理前）');
+    const postureHits = (web.match(/webPostureUnknown:/g) || []).length;
+    assert.ok(postureHits >= 3, `webPostureUnknown 文案必须三语齐备（实得 ${postureHits} 处）`);
+    assert.ok(!/webAutoSendNoticeSids\.set[\s\S]{0,400}webPostureUnknown/.test(web) && !/webPostureUnknownAndThrow[\s\S]{0,200}webAutoSendNoticeSids\.has/.test(web),
+      'posture 未知拒绝不得复用 Auto 通告去重（可重试拒绝每次都要能重说）');
     const blockedHits = (web.match(/webAutoSendBlocked:/g) || []).length;
     assert.ok(blockedHits >= 3, `webAutoSendBlocked 文案必须三语齐备（实得 ${blockedHits} 处）`);
     assert.match(web, /function doSendForAdmitted\(/,
@@ -1357,7 +1369,7 @@ try {
     // flush 重试也标注正确会话）。
     assert.match(web, /function webAutoNoticeAndThrow\(sid\) \{[\s\S]{0,500}?runSyncOnSession\(sid, function \(\) \{[\s\S]{0,400}?addSystemItem\(bt\("webAutoSendBlocked"\)\);[\s\S]{0,200}?throw new Error\(bt\("webAutoSendBlocked"\)\);/,
       '姿态门拒绝必须经共享助手先 runSyncOnSession 落系统通告再 throw（按 sid 路由,后台 flush 重试也标注正确会话）');
-    assert.match(web, /if \(modeState && modeState\.mode === "auto"\) \{\s*\n\s*webAutoNoticeAndThrow\(sid\);/,
+    assert.match(web, /if \(modeState\.mode === "auto"\) \{\s*\n\s*webAutoNoticeAndThrow\(sid\);/,
       '当前档 Auto 门检必须走共享拒绝助手');
     // zhuowp 5780927743 第三条：acceptPlan 受理前还须校验将生效的执行模式
     // （pre_plan_mode 回退，含重启过的 Plan 会话的 Auto 缺省）——从 Auto 进入
@@ -1374,6 +1386,43 @@ try {
       'Auto 拦截通告去重必须有界（512 最旧逐出,同 webApprovalNoticeIds 口径）');
     assert.match(web, /if \(p\.mode !== "auto"\) \{\s*webAutoSendNoticeSids\.delete\(String\(p\.session_id\)\);[\s\S]{0,500}?flushQueued\(String\(p\.session_id\)\);/,
       '会话离开 Auto（chat:mode_changed）必须清除该 sid 的拦截通告去重并冲队首（round-13：被拒队首在可发时立即重试）');
+    // ===== review P2（receipt-equals-effective，回执=生效状态）=====
+    // 切换命令在引擎热同步失败上 reject 时，内存模式已生效——回执必须
+    // 收敛到生效状态而非停在点击前的旧档；未解决的失败必须扣住编辑重发
+    // （重发回合会按引擎从未确认的 live posture 执行）。
+    const sharedBase = read('src', 'shared', 'bridge-shared-helpers.js');
+    const tauriInteraction = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
+    assert.match(sharedBase, /const modeSyncUnresolvedSids = new Set\(\);[\s\S]{0,200}?async function handleModeSwitchFailure\(sid, error, failCopy\) \{[\s\S]{0,400}?applyAuthoritativeModeState\(sid, currentMode\);\s*\n\s*modeSyncUnresolvedSids\.add\(sid\);\s*\n\s*addSystemItemFor\(sid, bt\("modeSyncFailedEffective"\) \+ error\);/,
+      '同步失败收敛必须回读权威状态、置未解决标记并给「已生效但同步失败」文案');
+    assert.match(sharedBase, /\} catch \{[\s\S]{0,300}?addSystemItemFor\(sid, failCopy \+ error\);/,
+      '回读也失败（会话已删/桥断）必须保持朴素失败文案——不得伪称已生效');
+    assert.match(sharedBase, /markModeSwitchSettled\(sid\);\s*\n\s*\} catch \(e\) \{ await handleModeSwitchFailure\(sid, e, bt\("switchModeFailed"\)\); \}/,
+      '共享 setPlanModeNext 成功臂清标、失败臂经收敛助手');
+    for (const [laneName, laneSource] of [
+      ['tauri', tauriInteraction],
+      ['web', web],
+    ]) {
+      assert.match(laneSource, /if \(outcome && outcome\.ask_error\) \{\s*\n\s*addSystemItemFor\(sid, bt\("modeAskPersistFailed"\) \+ outcome\.ask_error\);\s*\n\s*\}/,
+        `${laneName} setSessionMode 必须把 ask 半边作为未保存注记（ask_error 进 outcome 而非 Err 回执）`);
+      assert.match(laneSource, /\.markModeSwitchSettled\(sid\);[\s\S]{0,120}\} catch \(e\) \{ await (pinvouSharedtauriInteraction|pinvouSharedweb)\(\)\.handleModeSwitchFailure\(sid, e, bt\("switchModeFailed"\)\); \}/,
+        `${laneName} setSessionMode 成功清标、失败臂经收敛助手（回执=生效状态）`);
+      assert.match(laneSource, /editResendSyncBlocked\(sid\)\) \{[\s\S]{0,200}?addSystemItemFor\(sid, bt\("editResendSyncPending"\)\);[\s\S]{0,100}?notify\(\);\s*\n\s*return;/,
+        `${laneName} editLastTurn 必须在未解决同步失败上拒收编辑重发（可重试文案）`);
+    }
+    assert.match(web, /\} catch \(laneModeError\) \{[\s\S]{0,400}?await pinvouSharedweb\(\)\.handleModeSwitchFailure\(meta\.id, laneModeError, bt\("switchModeFailed"\)\);/,
+      'web lane-default 物化的切换失败臂同样必须收敛');
+    const syncEffHits = (web.match(/modeSyncFailedEffective:/g) || []).length;
+    assert.ok(syncEffHits >= 3, `modeSyncFailedEffective 文案必须三语齐备（实得 ${syncEffHits} 处）`);
+    const askHits = (web.match(/modeAskPersistFailed:/g) || []).length;
+    assert.ok(askHits >= 3, `modeAskPersistFailed 文案必须三语齐备（实得 ${askHits} 处）`);
+    const resendHits = (web.match(/editResendSyncPending:/g) || []).length;
+    assert.ok(resendHits >= 3, `editResendSyncPending 文案必须三语齐备（实得 ${resendHits} 处）`);
+    // codex 道：切换 reject 必须先回读收敛原生控件再给「已生效但同步失败」注记。
+    const codexSource = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+    assert.match(codexSource, /\} catch \(err\) \{[\s\S]{0,460}?try \{\s*\n\s*await invoke\('get_mode_state', \{ sessionId: sid \}\);[\s\S]{0,300}?codexCopy\.modeSyncFailedEffective \+ err\);[\s\S]{0,120}?\} catch \{ showError\(err\); \}/,
+      'codex 道切换失败必须先回读权威状态收敛控件，再给「已生效但同步失败」注记；回读也失败才落素错误面');
+    assert.match(codexSource, /codexCopy\.modeAskPersistFailed \+ switchOutcome\.ask_error/,
+      'codex 道必须把 ask 半边作为未保存注记');
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；
     // 列表非空 ⇒ 有 turn 在等审批,用 markRemoteTurn 复原 busy 面让停止键

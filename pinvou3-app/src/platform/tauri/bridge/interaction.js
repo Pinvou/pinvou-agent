@@ -364,7 +364,8 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedtauriInt
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
+      pinvouSharedtauriInteraction().markModeSwitchSettled(sid);
+    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -478,9 +479,10 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
+      pinvouSharedtauriInteraction().markModeSwitchSettled(sid);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
@@ -523,10 +525,14 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
         // mode while a reopen would restore the previous one.
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
+      if (outcome && outcome.ask_error) {
+        addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
+      }
+      pinvouSharedtauriInteraction().markModeSwitchSettled(sid);
       patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return;
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed")); notify(); return;
     }
     try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
     catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
@@ -554,7 +560,15 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+      // The ask half rides the outcome (review P2, receipt-equals-effective):
+      // an ask-write failure used to turn the whole command into Err after
+      // the broadcast — the UI said "failed" while the mode was effective
+      // and every chip had converged. It is an unsaved-setting note.
+      if (outcome && outcome.ask_error) {
+        addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
+      }
+      pinvouSharedtauriInteraction().markModeSwitchSettled(sid);
+    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed")); }
     notify();
   }
   // Per-session "ask on guardrail hit" toggle: optimistic flip (the backend hot-syncs the engine's
@@ -691,6 +705,16 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     newText = (newText || "").trim();
     if (!newText) return;
     const sid = state.activeSessionId;
+    // Edit resend waits for the effective mode (review P2, receipt-equals-
+    // effective): this session's LAST switch failed its engine hot-sync —
+    // the resend turn would execute under a live posture the engine never
+    // confirmed. Refuse with a retryable note until a successful re-switch
+    // clears the mark (see the shared handleModeSwitchFailure contract).
+    if (pinvouSharedtauriInteraction().editResendSyncBlocked(sid)) {
+      addSystemItemFor(sid, bt("editResendSyncPending"));
+      notify();
+      return;
+    }
     const editBuffer = getBuffer(sid);
     // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
     // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。

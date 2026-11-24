@@ -136,6 +136,8 @@ pub struct SessionModeSwitchOutcome {
     pub state: SessionModeState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_error: Option<String>,
 }
 
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
@@ -172,6 +174,9 @@ pub async fn set_plan_mode_next(
     Ok(SessionModeSwitchOutcome {
         state,
         persist_error,
+        // No ask half on this command (the ask toggle is a set_session_mode
+        // parameter only).
+        ask_error: None,
     })
 }
 
@@ -206,6 +211,9 @@ pub async fn exit_plan_to_yolo(
     Ok(SessionModeSwitchOutcome {
         state,
         persist_error,
+        // No ask half on this command (the ask toggle is a set_session_mode
+        // parameter only).
+        ask_error: None,
     })
 }
 
@@ -885,7 +893,8 @@ pub async fn set_session_mode(
     .err();
     // An ask-half failure must not swallow the mode half: the mode is already persisted and effective, and the
     // publication sequence still runs (the broadcast carries the authoritative state so other surfaces/windows
-    // converge to the effective mode); the ask error is logged loudly and returned — on a half-applied failure the frontend
+    // converge to the effective mode); the ask error is logged loudly and rides the outcome's `ask_error`
+    // field (not the Err lane — see the comment at the return) — on a half-applied failure the frontend
     // converges the chip from the broadcast instead of rolling back an actually persisted mode.
     let mut ask_error = None;
     if let Some(enabled) = ask_on_guardrail {
@@ -909,12 +918,16 @@ pub async fn set_session_mode(
         }
     }
     let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
-    if let Some(error) = ask_error {
-        return Err(error);
-    }
+    // The ask-half failure rides the outcome instead of the Err lane (review
+    // P2, receipt-equals-effective): returning Err after the broadcast made
+    // the UI report "switch failed" while the mode was already effective and
+    // every surface had converged to it via the broadcast. The mode is the
+    // operative half — an ask-only failure is an unsaved-setting note with
+    // the same shape as `persist_error`, not a failed switch.
     Ok(SessionModeSwitchOutcome {
         state,
         persist_error: mode_persist_error,
+        ask_error,
     })
 }
 
