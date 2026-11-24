@@ -1209,6 +1209,30 @@ class SchemaContractWalkerTest(unittest.TestCase):
             "the pinned engine lost the empty-items repair — reconcile the "
             "mirror constants with the new pinned face and update this "
             "tripwire")
+        # Wiring needles: the repairs must stay called in the sanitizer
+        # walk, not merely defined — a bare fn name survives unwiring.
+        self.assertIn(
+            "strip_mfjs_advisory_keywords(parameters);", source,
+            "the pinned engine no longer wires the advisory strip into the "
+            "sanitizer walk — reconcile the mirror with the new pinned "
+            "face and update this tripwire")
+        self.assertIn(
+            "remove_empty_mfjs_items_schemas(parameters);", source,
+            "the pinned engine no longer wires the empty-items repair into "
+            "the sanitizer walk — reconcile the mirror with the new pinned "
+            "face and update this tripwire")
+        # Scalar const→enum face: the detection helper and the fail-closed
+        # variant for non-scalar consts (bool/null/object/array).
+        self.assertIn(
+            "fn is_mfjs_scalar_const", source,
+            "the pinned engine lost the scalar const→enum detection — "
+            "reconcile the mirror constants with the new pinned face and "
+            "update this tripwire")
+        self.assertIn(
+            "UnsupportedConstLiteral", source,
+            "the pinned engine lost the fail-closed const variant — "
+            "reconcile the mirror constants with the new pinned face and "
+            "update this tripwire")
 
     @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
     def test_real_pptx_schema_is_green(self):
