@@ -197,10 +197,9 @@ const SCHEDULED_TASK_TOOL_OPS = {
   [SCHEDULED_TASK_DELETE_TOOL]: 'deleted',
 };
 // The result card and its parser live in the lazy scheduled-task chunk
-// (startup-budget policy in vite.config.mjs: new entry work is split or
-// lazy-loaded; the budget gate plus the dynamic-import route pin below are
-// what hold the split in place). The entry keeps only the op-name
-// dispatch.
+// (only a done tool item on the timeline renders either of them). The
+// dynamic-import route pin below is what holds the split in place; the
+// entry keeps only the op-name dispatch.
 const ScheduledTaskToolResult = lazy(() =>
   import('./scheduled-task-card.jsx').then(m => ({ default: m.ScheduledTaskToolResult })));
 
@@ -213,9 +212,9 @@ const ToolOutput = ({ item, t }) => {
       if (item.success === false) return <OutputError text={out} />;
       // app-automations result card: take over only on a parse hit; any
       // structural drift falls back to the default raw view. The card and
-      // the parser load from the lazy scheduled-task chunk (startup-budget
-      // policy); the unwrap-before-parse order (round-9 BLOCKER 1) lives in
-      // the card module's ScheduledTaskToolResult.
+      // the parser load from the lazy scheduled-task chunk; the
+      // unwrap-before-parse order (round-9 BLOCKER 1) lives in the card
+      // module's ScheduledTaskToolResult.
       const scheduledTaskOp = SCHEDULED_TASK_TOOL_OPS[item.name];
       if (scheduledTaskOp && item.state === 'done') {
         return (

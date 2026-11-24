@@ -138,22 +138,21 @@ assert.match(
 );
 // Round-4 B5' pin: the sender card render + its i18n copy are wired —
 // deleting the render (or drifting the copy key) turns this red. Round-18:
-// the card is lazy-loaded (entry budget), so the pin follows the lazy
-// component through its Suspense slot.
+// the card is lazy-loaded, so the pin follows the lazy component through
+// its Suspense slot.
 assert.match(
   chatViewSource,
   /\{messageSplit\.sender && \([^]*?<React\.Suspense fallback=\{null\}>\s*<LazySessionMessageCard\s+sender=\{messageSplit\.sender\}\s+knownSessionIds=\{knownSessionMentionIds\}\s+onOpenSession=\{onOpenSessionMention\}/,
   'UserBubble must render the lazy SessionMessageCard for delivered messages, WITH the jump wiring — dropping knownSessionIds/onOpenSession silently degrades every card to its non-interactive arm while "attributed, jumpable sender card" stays claimed (round-19 MAJOR-4, mutation-verified)',
 );
-// Round-19 minor 17: the card is deferred out of the main entry so the relay
-// web build stays under its enforced entry budget (the per-mode ceilings in
-// vite.config.mjs) — a future static re-import would only fail at build time
-// (CI), never in this suite; the tripwire keeps the lazy loader honest
+// Round-19 minor 17: the card is deferred out of the main entry to keep the
+// startup entry lean — a static re-import would silently undo that split
+// without failing anything, so this tripwire keeps the lazy loader honest
 // locally.
 assert.doesNotMatch(
   chatViewSource,
   /import\s*\{[^}]*SessionMessageCard[^}]*\}\s*from\s*'\.\/SessionMessageCard\.jsx'/,
-  'SessionMessageCard must stay lazily loaded (entry-budget policy), not statically imported',
+  'SessionMessageCard must stay lazily loaded, not statically imported',
 );
 assert.match(
   chatViewSource,

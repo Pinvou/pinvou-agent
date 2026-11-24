@@ -219,10 +219,10 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   assert.match(renderers, /\[SCHEDULED_TASK_CREATE_TOOL\]: 'created',/, 'the create op value drives the created arm');
   assert.match(renderers, /\[SCHEDULED_TASK_UPDATE_TOOL\]: 'updated',/, 'the update op value drives the updated arm');
   assert.match(renderers, /\[SCHEDULED_TASK_DELETE_TOOL\]: 'deleted',/, 'the delete op value drives the deletedNote arm');
-  // Startup-budget lazy route: the card and its parser live in the lazy
-  // scheduled-task chunk, and the entry routes done items through the
-  // dynamic import below (re-inlining the card re-trips the main-entry
-  // budget; this pin catches the route disappearing).
+  // Lazy route: the card and its parser live in the lazy scheduled-task
+  // chunk, and the entry routes done items through the dynamic import
+  // below (a static re-inline would silently undo the split; this pin
+  // catches the route disappearing).
   assert.match(
     renderers,
     /import\('\.\/scheduled-task-card\.jsx'\)/,

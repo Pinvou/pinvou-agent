@@ -130,9 +130,8 @@ const CHAT_PANEL_LOADERS = Object.freeze({
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
   auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
   // Round-18: the sender card is deferred out of the main entry — its static
-  // copy pushed the web main entry past the then-500 kB budget (the enforced
-  // gate is the per-mode entry ceiling in vite.config.mjs), and entry policy
-  // requires new entry work to be split or lazy-loaded.
+  // copy pushed the web main entry past the then-500 kB budget, and the lazy
+  // split keeps the startup entry lean.
   // Prefetched on mount below, so delivered messages render without a
   // visible delay.
   sessionMessageCard: () => import('./SessionMessageCard.jsx'),
@@ -977,7 +976,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, []);
       // Warm the deferred sender-card chunk at view entry: delivered messages
       // render it above the body, and the mount-time prefetch keeps the lazy
-      // split (entry-budget policy) free of visible first-render delay.
+      // split free of visible first-render delay.
       useEffect(() => {
         prefetchChatPanel('sessionMessageCard');
       }, []);
