@@ -77,7 +77,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 encoding_rs = { version = "0.8", optional = true }
 parking_lot = { version = "0.12", optional = true }
 rand = "0.10"
-rusqlite = { version = "0.41.0", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43.0", features = ["bundled"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 sha2 = "0.11"

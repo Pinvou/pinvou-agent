@@ -68,12 +68,12 @@
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-11-15）
+## 0. 当前状态（2026-11-24）
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`cc2adf8ef927fff072e9493734a0a32f3a044996`（2026-11-24）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。2026-11-24 批合入 #127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/#164/#165/#166/#167/#168/#169/#170/#171 共 21 个提交，其中 T11 的 Moonshot 面（#143）与 provider 面（#144/#145/#146）随父仓 close-out re-pin 一并落地，父仓 gitlink 随之跟随（见 §3 表首）。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 121 个提交，r1 `1fafee7e2` 之上 106 个；118 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：583 files, +150708/-54594，净增 96114；384 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -121,6 +121,27 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `cc2adf8ef` | T2修复 | T11 收口：Moonshot 工具 schema 按已发布 MFJS 文档精确重写——advisory 关键字剥离（`strip_mfjs_advisory_keywords`）、空 items 修复（`remove_empty_mfjs_items_schemas`）、scalar const→enum 转换（string/number/integer 含类型推断；bool/null/object/array 仍失败关闭）、预算对齐 walle conf.go 默认值（anyOf 10→500 等），嵌套多分支 allOf 保持失败关闭（`UnsupportedNestedAllOf`）；pptx schema fixture 与 engine 测试随附。父仓同 PR 完成 close-out re-pin：guard 登记头/census、镜像与单元测试注记、gitlink 钉一并翻转至已发布面；#147（DeepSeek 面）仍上游开放，不在本镜像范围 (#143) |
+| `e14f25733` | T2修复 | Anthropic 输入 schema 原样下发（verbatim），Anthropic wire 不再经 Moonshot 面改写；provider 面收尾之一 (#146) |
+| `d39ebb862` | deps | rusqlite 0.43.0（soundness fixes 线；rust-version 1.89 地板同步）；父仓同 PR 抬 pinvou3-app/pinvou-knowledge 声明并重锁（bundled libsqlite3-sys 带 links 键，双 major 不能共存）(#170) |
+| `78e7b7227` | deps | #165/#167 之后的依赖卫生收尾 (#168) |
+| `9ef9e7d26` | perf | session 元数据回退缓冲复用（session_manager 内部，省重复分配）(#127) |
+| `a665e7296` | T1/T2 | 宿主模型 HTTP 策略：引擎 Config 增 `model_http_policy`/`vision_model_http_policy`，以 in-memory trusted capabilities 在配置快照重载后存活回放；引擎内部接线，宿主结构体无新必填字段，父仓无适配 (#151) |
+| `582b3adb5` | T9修复 | MiniMax `reasoning_details` 仅在网关 wire 镜像 (#145) |
+| `d2ab9650b` | T2修复 | shell stdin EOF：无 payload 的前台与 sync 运行正确收流（shell.rs 扩展 + 大量回归）(#139) |
+| `e0ba28a8e` | deps | web linting 迁至 eslint 10 (#169) |
+| `4712e8a91` | T2修复 | xAI：object 分支的根 union 直通（根组合扁平化对 typed object 分支放行）(#144) |
+| `062840b27` | T9修复 | vendor routes 识别 kimi k3.1 家族（agent/config/provider 判定面）(#137) |
+| `d309dcc3e` | T2修复 | 统一 MCP 只读分类器名单：dispatch/tool_preparation 等多处名单收敛单源，只读判定不再漂移 (#160) |
+| `6f7ef960e` | CI同步 | Unix 超时夹具子进程泄漏修复（hooks/executor、mcp stdio_client；测试稳定性）(#158) |
+| `6ca7ed618` | T1/T2 | 路线输出预算组合共享并钉住输入（context/route_budget/client；#150 宿主暴露面的内部收口）(#155) |
+| `e352de6e6` | T4修复 | idle 引擎退役不丢工作（`idle_shutdown` 新模块；subagent/shell 协同面与回归扩展）(#149) |
+| `1998eec4b` | 文档 | contributing 指向 fork 贡献分支 pinvou3-clean (#166) |
+| `69a00277e` | T2fix | 嵌套 if 收拢与 rustdoc 链接修复（等价改写无行为变化）(#164) |
+| `77d411d06` | deps | 清理 dependabot 遗留安全通告 (#171) |
+| `809f88b8c` | deps | 维护线 node 卫生与范围内升级 (#167) |
+| `4656c0a21` | T6新增 | 有界模型限流恢复：client 重试/退避与 `core/capacity` 新模块（T6 launch gate `DynamicGate` 自 governor.rs 迁入此处，guard T6 指纹随之迁移）；config.example.toml 增限流恢复段；新增 `Event::ModelRecovery` 事件（含 `RecoveryReceipt`），父仓 assistant forwarder 穷尽 match 同 PR 补臂（info 日志，对齐 parity 的 Status 面；UI 面留作后续产品决策） (#141) |
+| `534d1f47e` | deps | 依赖分节如实化与 MSRV 门控锁清扫 (#165) |
 | `687358f7e` | T2 | 一方 session-reader 只读读取面分类修复：`mcp_session-reader_read_session` 与 `mcp_session-reader_list_sessions` 加入引擎只读辅助名单——服务端契约（游标分页、仅已完成回合、逐条截断、跨 session 前缀拒绝）使其真只读，此前被误分类为需审批的网络工具，Plan 钉死的 aux lane 唯一工具即此读取时在执行前即死锁；名单精确匹配使前缀伪装（`mcp_session-reader_read_session_export`）仍留在需审批侧。registry/tests.rs 以数据条目扩展既有只读面测试（无新增 `forkguard_*` 行为名，登记数仍 301）；父仓无镜像分类，透明 (#157) |
 | `8e8d52fdb` | T2 | rustc/clippy 1.100 stable（2026-11-09）新 lint 适配五处，等价改写无行为变化：terminal 探针测试的 `map_err(|err| io::Error::other(err.to_string()))` 对 `Infallible`（ratatui 0.30 `with_options` 返回 `B::Error`、`TestBackend::Error` 为 uninhabited）调用 `to_string()` 被稳定 never 类型后的 `unreachable_code` 证明为死代码，改为 `map_err(io::Error::other)` 直传（转换 load-bearing 保留）；`fleet/manager.rs` needless_bool 化简为 `Ok(started)`；subagent coord ledger 与 `tui/auto_review.rs` needless_bool 收尾表达式化；`tui/transcript/tests.rs` ×2 needless_range_loop 改 `per_cell[..3].iter().enumerate()`。对照纯净 `6f7a3a748` 以 1.99.1 复跑同款命令确认五处恰为 1.100 新增；all-targets 严格面遗留 2 处 collapsible_if 与 `cargo doc -Dwarnings` 的 4 处 rustdoc 私有链接错误在 1.99.1 下同样存在（既有债务，未触碰，留待后续）。首次由父仓 Windows 回归腿（codewhale-tui lib test 编译）暴露 (#156) |
 | `6f7a3a748` | deps | 升级 rusqlite 0.41.1 / libsqlite3-sys 0.39.1（捆绑 SQLite 3.54.1，关 RUSTSEC-2026-0459）、rmcp 3.9.0（关 RUSTSEC-2026-0462）、rio-vt 0.5.29（关 RUSTSEC-2026-0430）；子模块 MSRV 声明抬至 rust-version 1.89（低于父仓 1.90 下限，父仓无需动作）(#152) |
@@ -735,3 +756,38 @@ the immutable r1 closure are unchanged ancestors, and the public-head
 transition contract stays gitlink == branch head with the r3 tag pinned
 at its closure (61cb769be). The parent carries no mirrored
 classification and no other source change in this follow.
+
+## CodeWhale baseline follow to cc2adf8ef (2026-11-24)
+
+The submodule gitlink follows pinvou3-clean to cc2adf8ef, a 21-commit
+batch (#127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/
+#164/#165/#166/#167/#168/#169/#170/#171): the T11 close-out faces (the
+document-precise Moonshot sanitizer #143 with the provider faces
+#144/#145/#146), engine features (bounded model rate-limit recovery
+#141 whose new core/capacity module now hosts the T6 DynamicGate, host
+model HTTP policies #151, idle engine retirement #149, shared route
+output budget composition #155), provider/wire fixes (kimi k3.1 family
+#137, shell stdin EOF #139, MiniMax reasoning_details mirroring #145,
+unified MCP read-only classifier lists #160), a session metadata perf
+follow (#127), the rusqlite 0.43 line (#170), and the maintenance-line
+deps/docs/chore commits (#164/#165/#166/#167/#168/#169/#171 plus the
+Unix fixture leak test fix #158). All 21 carry DCO sign-offs, so the
+documented unsigned set stays at three commits (see §0). The parent
+side carries the coupled updates in the same PR: the rusqlite 0.41→0.43
+follow (pinvou3-app and pinvou-knowledge declarations plus lock
+regeneration; a single rusqlite major is mandatory because bundled
+libsqlite3-sys carries a links key), the assistant-forwarder arm for
+the new Event::ModelRecovery event (the app's engine-event match is
+exhaustive by design, so #141's new event required conscious adoption;
+the arm logs the recovery receipt, mirroring the parity Status face),
+and the T11 close-out re-pin the
+schema-contract tripwire was designed for (guard head/census/T6
+fingerprint relocation, mirror notes flipped from the interim window to
+the shipped face, the gitlink pin re-blessed to cc2adf8ef; the DeepSeek
+face #147 remains open upstream and outside that mirror's scope).
+fork-guard re-registers the review head (cc2adf8ef) and the
+commits-above-v0.9.12 census (121); the maintenance base (11cba403d),
+the official v0.9.12 root (dcd4c200) and the immutable r1 closure are
+unchanged ancestors, and the public-head transition contract stays
+gitlink == branch head with the r3 tag pinned at its closure
+(61cb769be).

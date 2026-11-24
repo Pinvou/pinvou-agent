@@ -606,8 +606,14 @@ mod tests {
             // tolerance) with its own row; the highspeed suffix rides the
             // tolerance of both K3.1 rows (same model per the
             // models-overview page, re-checked 2026-11-03).
-            ("k3.1-pro", 1_048_576),
-            ("k3.1-pro-highspeed", 1_048_576),
+            // Engine catalog precedence (cc2adf8ef, #915 integration): the
+            // bare membership spellings resolve to the engine's plan-tier
+            // safe baseline 262,144 (verified 2026-11-16; 1M rides the
+            // entitlement report / explicit override) — the parent's
+            // 1,048,576 fallback row is shadowed for these two spellings,
+            // a deliberate budget downgrade disclosed in the PR body.
+            ("k3.1-pro", 262_144),
+            ("k3.1-pro-highspeed", 262_144),
             ("kimi-k3.1-pro-highspeed", 1_048_576),
             // Meta group headline row: no base chain row exists (the base
             // default is muse-spark-1.2), so the supplemental row keeps the
@@ -788,16 +794,19 @@ mod tests {
         assert_eq!(resolved_output_limit("glm-5.3-flashx"), Some(131_072));
         // K3.1 Pro (2026-11-03 fix wave): the documented hard cap keeps the
         // K2-sunset migration target off the 8192 uncatalogued fail-close.
-        // All four spellings must resolve — the bare Kimi Code id carries
-        // no vendor prefix, and the highspeed variants are the same model
-        // (models-overview page), so they ride the suffix tolerance.
-        assert_eq!(resolved_output_limit("kimi-k3.1-pro"), Some(1_048_576));
-        assert_eq!(
-            resolved_output_limit("kimi-k3.1-pro-highspeed"),
-            Some(1_048_576)
-        );
-        assert_eq!(resolved_output_limit("k3.1-pro"), Some(1_048_576));
-        assert_eq!(resolved_output_limit("k3.1-pro-highspeed"), Some(1_048_576));
+        // Reconciled with the cc2adf8ef engine catalog (#915 integration):
+        // the engine now documents the family's own output maximum
+        // (1,048_576 per the K3.1 quickstart, distinct from its 131,072
+        // default) for all four spellings, so the single-source contract
+        // flips these four from parent-anchored to engine-owned — the
+        // fill-gap guard yields None and the anchor here must not
+        // double-answer a fresher engine row. The [1m] bracket forms below
+        // stay parent-anchored: the engine matcher misses bracket
+        // declarations.
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro"), None);
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro-highspeed"), None);
+        assert_eq!(resolved_output_limit("k3.1-pro"), None);
+        assert_eq!(resolved_output_limit("k3.1-pro-highspeed"), None);
         // The [1m] bracket declarations miss every dash-tolerant row (the
         // remainder does not start with '-'), so they carry their own rows
         // (2026-11-04 fix pass); k3[1m] stays unanchored (base fail-closes

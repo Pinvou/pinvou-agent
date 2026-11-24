@@ -3064,23 +3064,22 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // checked 2026-10-14); listed here so the settings-page row is
             // covered by this charter too.
             (ModelPreset::Gemini, "gemini-4-argon", 1_048_576),
-            // The Kimi Code K3.1 spellings (2026-11-03 refresh; the Kimi
-            // Coding Plan rides the openai_compatible preset) resolve 1M via
-            // the PINVOU_KNOWN supplemental rows, and their `[1m]` composites
-            // via the 1M
-            // hint — listed here so the settings-page/ACP-datalist rows
-            // stay covered by this charter (2026-11-05 review). The two
-            // bare preset rows were deferred from the catalog on
-            // 2026-11-05 until the pinned child carries the bare-K3.1
-            // replay repair (upstream #137), but the ids stay reachable
-            // through the ACP kimi-code preset and the custom entry, so
-            // the resolution anchors keep their charter coverage.
-            (ModelPreset::OpenaiCompatible, "k3.1-pro", 1_048_576),
-            (
-                ModelPreset::OpenaiCompatible,
-                "k3.1-pro-highspeed",
-                1_048_576,
-            ),
+            // The Kimi Code K3.1 spellings (the Kimi Coding Plan rides the
+            // openai_compatible preset): since the 2026-11-24 sync
+            // (upstream #137 landed) the base `context_window_for_model`
+            // rows own this family — the bare membership spellings carry the
+            // plan-tier 262,144 baseline ("membership spellings are
+            // plan-tier dependent", engine verified 2026-11-16; 1M via the
+            // entitlement report / explicit override), the prefixed
+            // spellings stay 1M, and the `[1m]` composites resolve via the
+            // 1M hint — listed here so the settings-page/ACP-datalist rows
+            // stay covered by this charter (2026-11-05 review; the bare
+            // preset rows were deferred from the catalog on 2026-11-05, but
+            // the ids stay reachable through the ACP kimi-code preset and
+            // the custom entry, so the resolution anchors keep their
+            // charter coverage).
+            (ModelPreset::OpenaiCompatible, "k3.1-pro", 262_144),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro-highspeed", 262_144),
             (ModelPreset::OpenaiCompatible, "k3.1-pro[1m]", 1_048_576),
             (
                 ModelPreset::OpenaiCompatible,

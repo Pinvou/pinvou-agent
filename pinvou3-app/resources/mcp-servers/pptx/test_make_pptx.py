@@ -319,16 +319,12 @@ def test_slides_schema_items_pin():
     branches = items.get("anyOf")
     assert isinstance(branches, list) and branches, "items must be an anyOf union, got %r" % branches
     # One branch per layout. The count is the layout set, NOT a budget
-    # boundary on the TARGET face: the constrained-route resource budgets
-    # are aligned to the walle conf.go source defaults since 2026-11-05
-    # (anyOf ≤ 500 branches, ≤ 3000 properties, depth ≤ 30), but that is
-    # the T11 target budget. The currently pinned pre-T11 engine still
-    # caps anyOf at 10, so these 10 branches sit exactly AT the shipped
-    # limit — adding a layout before the close-out re-pin hits the
-    # 10-branch cap, and the pinned engine's sanitizer then omits the
-    # make_pptx tool from that request with a warning (the build keeps the
-    # remaining tools and fails outright only when an explicit tool_choice
-    # forces the omitted tool).
+    # boundary: the constrained-route resource budgets are aligned to the
+    # walle conf.go source defaults since 2026-11-05 (anyOf ≤ 500
+    # branches, ≤ 3000 properties, depth ≤ 30) and are the shipped caps
+    # since the 2026-11-24 close-out re-pin landed the T11 engine batch
+    # (CodeWhale #143–#146) on the parent gitlink — adding a layout is an
+    # ordinary branch addition.
     assert len(branches) == len(server.LAYOUTS), \
         "one branch per layout (%d), got %d" % (len(server.LAYOUTS), len(branches))
     # Per-branch required = exactly the fields the renderer reads and draws
