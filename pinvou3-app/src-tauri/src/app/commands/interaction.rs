@@ -123,6 +123,21 @@ pub async fn set_mode_default(
 
 // ===================== 卡片池: 专家面具 =====================
 
+/// The response of the explicit session mode-switch commands
+/// ([`set_session_mode`] / [`set_plan_mode_next`] / [`exit_plan_to_yolo`]):
+/// the refreshed authoritative state plus the durability outcome of the
+/// mode write. `persist_error` is `Some` when the mode is EFFECTIVE but its
+/// sidecar persistence failed — the consumer must surface "unsaved: a
+/// reopen restores the previous mode" instead of reporting the switch as
+/// fully saved (review round-r8 P2: the previous lenient shape let every
+/// surface treat a failed persist as saved).
+#[derive(Serialize)]
+pub struct SessionModeSwitchOutcome {
+    pub state: SessionModeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_error: Option<String>,
+}
+
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
 /// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 /// Funneled through the same path as `set_session_mode`: after the write, both go through the same
@@ -135,21 +150,29 @@ pub async fn set_plan_mode_next(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     app: AppHandle,
-) -> Result<SessionModeState, String> {
+) -> Result<SessionModeSwitchOutcome, String> {
     ensure_mode_target_session("set_plan_mode_next", &session_id, &store)?;
     let store = store.inner().clone();
     // The mode write RMWs the sidecar files (fsync-heavy) under a std Mutex
     // — join it on a blocking worker instead of parking this runtime
-    // worker, like accept_plan's commit and the settings family.
+    // worker, like accept_plan's commit and the settings family. The
+    // reported lane keeps the lenient semantics (memory switches
+    // unconditionally) while a persist failure rides `persist_error`
+    // (review round-r8 P2).
     let sid = session_id.clone();
     let worker_store = store.clone();
-    super::settings::join_blocking("set_plan_mode_next", move || {
+    let persist_error = super::settings::join_blocking("set_plan_mode_next", move || {
         worker_store
-            .set_mode(&sid, SerializableMode::Plan)
+            .set_mode_reported(&sid, SerializableMode::Plan)
             .map_err(|error| format!("set_plan_mode_next({sid}): {error:#}"))
     })
-    .await?;
-    publish_session_mode_change(&session_id, &store, &pool, &app).await
+    .await
+    .err();
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    Ok(SessionModeSwitchOutcome {
+        state,
+        persist_error,
+    })
 }
 
 /// The user picks Yolo in the composer chip (falling back from Plan): the mode switches to Yolo (effective
@@ -163,20 +186,27 @@ pub async fn exit_plan_to_yolo(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     app: AppHandle,
-) -> Result<SessionModeState, String> {
+) -> Result<SessionModeSwitchOutcome, String> {
     ensure_mode_target_session("exit_plan_to_yolo", &session_id, &store)?;
     let store = store.inner().clone();
     // Same blocking-worker join as set_plan_mode_next: the sidecar RMW is
     // file I/O under a std Mutex and need not park this runtime worker.
+    // Reported lane (see set_plan_mode_next): persist failures ride
+    // `persist_error` instead of vanishing (review round-r8 P2).
     let sid = session_id.clone();
     let worker_store = store.clone();
-    super::settings::join_blocking("exit_plan_to_yolo", move || {
+    let persist_error = super::settings::join_blocking("exit_plan_to_yolo", move || {
         worker_store
-            .set_mode(&sid, SerializableMode::Yolo)
+            .set_mode_reported(&sid, SerializableMode::Yolo)
             .map_err(|error| format!("exit_plan_to_yolo({sid}): {error:#}"))
     })
-    .await?;
-    publish_session_mode_change(&session_id, &store, &pool, &app).await
+    .await
+    .err();
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    Ok(SessionModeSwitchOutcome {
+        state,
+        persist_error,
+    })
 }
 
 // ===================== 多智能体模式开关（ADR-0006） =====================
@@ -829,28 +859,30 @@ pub async fn set_session_mode(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     app: AppHandle,
-) -> Result<SessionModeState, String> {
+) -> Result<SessionModeSwitchOutcome, String> {
     ensure_mode_target_session("set_session_mode", &session_id, &store)?;
     let store = store.inner().clone();
     // The mode + ask writes each RMW the sidecar files (fsync-heavy) under
     // a std Mutex — join them on a blocking worker instead of parking this
     // runtime worker, like accept_plan's commit and the settings family.
     let sid = session_id.clone();
-    // The map_err here is `Ok` by construction: `set_mode` is the lenient
-    // lane (persist failures are logged inside the store, never propagated —
-    // the real failure surface of this command is the ask half below). The
-    // error mapping exists so the shape matches the ask half and a future
-    // strict lane cannot silently drop its error (round-20 review minor).
-    super::settings::join_blocking("set_session_mode", {
+    // The reported lane keeps the lenient semantics (the in-memory switch in
+    // `set_mode_reported` is unconditional) while the durability outcome
+    // travels to the caller: `persist_error` rides the response so the UI
+    // can say "effective now, not saved" instead of silently reporting a
+    // saved switch (review round-r8 P2). The store's error is sid-free; the
+    // sid is wrapped here, the caller's own display surface.
+    let mode_persist_error = super::settings::join_blocking("set_session_mode", {
         let store = store.clone();
         let sid = sid.clone();
         move || {
             store
-                .set_mode(&sid, mode)
+                .set_mode_reported(&sid, mode)
                 .map_err(|error| format!("set_session_mode({sid}): {error:#}"))
         }
     })
-    .await?;
+    .await
+    .err();
     // An ask-half failure must not swallow the mode half: the mode is already persisted and effective, and the
     // publication sequence still runs (the broadcast carries the authoritative state so other surfaces/windows
     // converge to the effective mode); the ask error is logged loudly and returned — on a half-applied failure the frontend
@@ -880,7 +912,10 @@ pub async fn set_session_mode(
     if let Some(error) = ask_error {
         return Err(error);
     }
-    Ok(state)
+    Ok(SessionModeSwitchOutcome {
+        state,
+        persist_error: mode_persist_error,
+    })
 }
 
 /// Toggles the session's ask-on-guardrail on its own (whether a guardrail hit raises a card or hard-denies in

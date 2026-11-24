@@ -4361,8 +4361,14 @@
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     try {
-      const st = await invoke("set_plan_mode_next", { sessionId: sid });
+      const outcome = await invoke("set_plan_mode_next", { sessionId: sid });
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        // Durability signal (review round-r8 P2): effective now, not
+        // persisted — an unsaved note, not a failure.
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }

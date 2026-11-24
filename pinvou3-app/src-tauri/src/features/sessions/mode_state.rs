@@ -495,19 +495,31 @@ impl SessionStore {
     /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
     /// ——内存切换已生效，落盘只做尽力持久化。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        // The session id is deliberately kept out of the message, matching
+        // persist_accepted_yolo_mode below: boot logs persist to disk and
+        // the CodeQL cleartext-logging gate flags ids on stderr.
+        if let Err(error) = self.set_mode_reported(id, mode) {
+            eprintln!("[sessions] persist mode failed: {error:#}");
+        }
+        Ok(())
+    }
+
+    /// [`Self::set_mode`] with the durability outcome surfaced: the
+    /// in-memory switch has already taken effect when `Err` is returned
+    /// (same critical section as [`Self::set_mode`], memory half first), so
+    /// `Err` means "effective now, not persisted — a reopen restores the
+    /// previous mode" (review round-r8 P2: a silent best-effort persist let
+    /// every surface report the new mode as saved). The error is sid-free
+    /// (same cleartext discipline as [`Self::set_mode`]'s log line); the
+    /// caller wraps it with the sid for its own display surface.
+    pub fn set_mode_reported(&self, id: &str, mode: SerializableMode) -> Result<(), String> {
         // One critical section for the in-memory switch and the durable RMW,
         // same as set_multi_agent (a concurrent purge or headless Plan
         // persist must not interleave its file RMW with this one).
         let _io = self.session_mode_states_io.lock();
         self.set_mode_in_memory(id, mode.clone());
-        if let Err(error) = Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
-        {
-            // The session id is deliberately kept out of the message, matching
-            // persist_accepted_yolo_mode below: boot logs persist to disk and
-            // the CodeQL cleartext-logging gate flags ids on stderr.
-            eprintln!("[sessions] persist mode failed: {error:#}");
-        }
-        Ok(())
+        Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
+            .map_err(|error| format!("{error:#}"))
     }
 
     /// In-memory half of [`Self::set_mode`]: switches the session's live

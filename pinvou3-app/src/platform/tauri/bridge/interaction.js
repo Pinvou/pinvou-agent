@@ -297,10 +297,76 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedtauriInt
     }
     notify();
   }
-  // discardPlan / exitPlanToYolo payload 统一在 shared/bridge-shared-helpers.js
-  // （web 车道同段逐字一致）；lane 只保留转发壳。
-  async function discardPlan(itemId, planId) { return pinvouSharedtauriInteraction().discardPlan(itemId, planId); }
-  async function exitPlanToYolo(targetSessionId) { return pinvouSharedtauriInteraction().exitPlanToYolo(targetSessionId); }
+  async function discardPlan(itemId, planId) {
+    const sid = state.activeSessionId;
+    const planTicket = String(planId || "").trim();
+    if (!sid || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    patchItemByIdFor(sid, itemId, {
+      cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true,
+      planResolutionConfirmed: false,
+    });
+    notify();
+    try {
+      const st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
+      applyAuthoritativeModeState(sid, st);
+      patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
+    } catch (e) {
+      const errorText = String(e && e.message ? e.message : e || "");
+      const planNotActive = errorText.includes("plan_not_active");
+      runOnSession(sid, function () {
+        const card = state.chatItems.find(function (item) {
+          return item && item.id === itemId && item.type === "plan_card" &&
+            String(item.planId || "") === planTicket;
+        });
+        if (!card) return;
+        if (planNotActive) {
+          card.cardState = "frozen";
+          card.resolved = true;
+          card.statusLabel = bt("planHistorical");
+        } else if (!card.planResolutionConfirmed) {
+          card.cardState = "active";
+          card.resolved = false;
+          card.statusLabel = "";
+        }
+      });
+      if (planNotActive) {
+        try {
+          const currentMode = await invoke("get_mode_state", { sessionId: sid });
+          applyAuthoritativeModeState(sid, currentMode);
+        } catch { /* status re-read failure must not mask the original error */ }
+      }
+      addSystemItemFor(sid, bt("discardPlanFailed") + e);
+    }
+    notify();
+  }
+  async function exitPlanToYolo(targetSessionId) {
+    // The caller may pin the target session explicitly: the YOLO confirmation
+    // gate issues the switch only after several await round-trips, by which
+    // time the user may have switched away and the live active session is no
+    // longer the ruling one (same precedent as sessions.js passing meta.id on
+    // its materialization path). No-argument calls keep the original semantics:
+    // act on the live active session at invocation time (bulb / plan-stuck
+    // card).
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics).
+    if (!sid) { await setDraftMode("yolo"); return; }
+    try {
+      // The invoke targets sid directly at issue time; after the await, the
+      // result is written back to the same sid (the protocol fingerprint is
+      // computed from the call text; parameterizing it requires recomputing the
+      // interaction-feature digest in step).
+      const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const st = outcome && outcome.state ? outcome.state : outcome;
+      applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
+    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
+    notify();
+  }
   // 灯泡 toggle：plan ↔ yolo
 async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlanModeNext(); }
   // 多智能体开关（ADR-0006）：模型列表下方的会话级开关。后端做名册装配
@@ -406,8 +472,12 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       // wrapper swallows failures internally (exitPlanFailed system item),
       // so a rejected switch is undetectable through it — commit-marking
       // needs the rejection to keep the card actionable.
-      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
       addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
@@ -443,8 +513,16 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     if (stuck && (stuck.submitting || stuck.resolved)) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      const outcome = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        // Durability note (review round-r8 P2): the switch IS effective
+        // (the broadcast converged every surface); what failed is the
+        // sidecar persist, so the follow-up turn still runs under the new
+        // mode while a reopen would restore the previous one.
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
       patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
@@ -466,8 +544,16 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       const args = { sessionId: sid, mode };
       // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
       if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
-      const st = await invoke("set_session_mode", args);
+      // The switch outcome folds the durability signal (review round-r8 P2):
+      // `state` is the authoritative post-switch mode; `persist_error` means
+      // the mode is EFFECTIVE but not persisted — an "unsaved" note, not a
+      // failure (the chip stays on the new mode; a reopen restores the old).
+      const outcome = await invoke("set_session_mode", args);
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }

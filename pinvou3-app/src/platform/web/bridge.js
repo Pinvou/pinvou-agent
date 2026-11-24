@@ -446,7 +446,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ", modePersistFailed: "⚠️ Mode applied but NOT saved — a restart restores the previous mode: ",
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -582,7 +582,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ", modePersistFailed: "⚠️ モードは反映されましたが未保存です——再起動すると元に戻ります: ",
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -718,7 +718,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ", modePersistFailed: "⚠️ 模式已生效但未保存——重启后将恢复旧模式： ",
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -1967,10 +1967,16 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         // switched away during the awaits above, and a mode command against the current active session would target the wrong object.
         if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = laneDefault === "plan"
+            const laneOutcome = laneDefault === "plan"
               ? await invoke("set_plan_mode_next", { sessionId: meta.id })
               : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
+            const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
             applyAuthoritativeModeState(meta.id, laneModeState);
+            if (laneOutcome && laneOutcome.persist_error) {
+              runSyncOnSession(meta.id, function () {
+                addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
+              });
+            }
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
               addSystemItem(bt("switchModeFailed") + laneModeError);
@@ -5619,8 +5625,12 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     try {
       // The invoke targets sid directly at issue time; after the await, the
       // result is written back to the same sid and modeSyncSeq is bumped.
-      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
@@ -5678,8 +5688,12 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
     if (stuck && stuck.submitting) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
+      if (outcome && outcome.persist_error) {
+        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
+      }
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
       addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();

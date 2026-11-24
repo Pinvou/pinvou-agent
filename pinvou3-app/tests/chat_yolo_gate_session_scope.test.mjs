@@ -152,6 +152,7 @@ assert.match(
   'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
 );
 
+
 console.log('chat_yolo_gate_session_scope: ok');
 
 // ── R9 MAJOR 1: the plan-stuck card's Go must pass the same one-time gate ─────────
@@ -165,6 +166,27 @@ const tauriInteractionPath = path.join(here, '..', 'src', 'platform', 'tauri', '
 const webBridgePath = path.join(here, '..', 'src', 'platform', 'web', 'bridge.js');
 const tauriInteraction = fs.readFileSync(tauriInteractionPath, 'utf8');
 const webBridge = fs.readFileSync(webBridgePath, 'utf8');
+
+// ── round-r8 review P2: the mode switch must surface a failed persist ──────
+// The switch commands return { state, persist_error }: `state` is the
+// authoritative post-switch mode (the switch IS effective), `persist_error`
+// means the sidecar write failed — the surface must show "unsaved: a reopen
+// restores the previous mode" instead of silently reporting a saved switch.
+// Pinned on both lanes: the unwrap + the modePersistFailed note (dropping
+// either turns the red), and the Rust side pins the command shape.
+for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
+  assert.match(
+    bridgeSrc,
+    /outcome && outcome\.state \? outcome\.state : outcome/,
+    label + ': the switch outcome must be unwrapped into the authoritative state (round-r8 P2)',
+  );
+  assert.match(
+    bridgeSrc,
+    /bt\("modePersistFailed"\)/,
+    label + ': a persist failure must surface the unsaved note (round-r8 P2)',
+  );
+}
+
 
 // The bridge layer must not retain any argument-less exitPlanToYolo call (void or await).
 for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {

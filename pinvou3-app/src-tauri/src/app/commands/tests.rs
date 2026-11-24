@@ -3557,6 +3557,75 @@ fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
     });
 }
 
+// ── Tri-mode: mode 持久化失败必须可报告（round-r8 评审 P2） ─────────────
+
+/// `set_mode_reported`（三条显式切换命令的写入通道）在落盘失败时必须返回
+/// `Err`，而内存切换已经生效——`Err` 的语义是「已生效、未保存」，不是「未
+/// 生效」。侧车目录只读（Unix 语义）注入失败：读方据此在 UI 呈现「重启后
+/// 恢复旧模式」，而 lenient 的 `set_mode` 仍返回 `Ok`（既有 GUI 语义不变，
+/// 只是命令层不再把失败吞成完全成功）。恢复目录权限后再退出，避免污染
+/// temp home 清理。chmod 语义仅 Unix，其余平台无条件跳过（#154 同款门）。
+#[test]
+#[cfg(unix)]
+fn set_mode_reported_surfaces_persist_failure_while_memory_switch_lands() {
+    use std::os::unix::fs::PermissionsExt;
+    crate::platform::test_support::with_temp_home("mode-persist-reported", || {
+        let store = SessionStore::boot().expect("boot");
+        let chat = store
+            .create_new(
+                "mode-persist-durability".to_string(),
+                None,
+                std::env::temp_dir(),
+            )
+            .expect("create chat session");
+        let sid = chat.metadata.id;
+
+        // 基线：正常落盘成功。
+        store
+            .set_mode_reported(&sid, SerializableMode::Plan)
+            .expect("the baseline persist lands");
+        assert_eq!(store.mode_state(&sid).mode, SerializableMode::Plan);
+        assert_eq!(
+            store.mode_state(&sid).mode,
+            store.mode_state(&sid).mode,
+            "baseline read is stable"
+        );
+
+        // 注入：共享 mode 表所在目录只读，原子 RMW 的临时写无法创建。
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let before = std::fs::metadata(&sessions_dir)
+            .expect("stat sessions dir")
+            .permissions();
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod sessions dir read-only");
+        // 权限必须恢复（with_temp_home 的清理写不回来）。
+        struct Restore<'a>(&'a std::path::Path, std::fs::Permissions);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, self.1.clone());
+            }
+        }
+        let _restore = Restore(&sessions_dir, before);
+
+        // 报告道：Err 且内存已生效（Plan 已切）。
+        let error = store
+            .set_mode_reported(&sid, SerializableMode::Yolo)
+            .expect_err("a failed persist must be reported");
+        assert!(!error.is_empty(), "the reported error carries the cause");
+        assert_eq!(
+            store.mode_state(&sid).mode,
+            SerializableMode::Yolo,
+            "the in-memory switch landed even though the persist failed"
+        );
+
+        // lenient 道语义不变：吞掉失败返回 Ok。
+        store
+            .set_mode(&sid, SerializableMode::Auto)
+            .expect("the lenient lane stays infallible");
+        assert_eq!(store.mode_state(&sid).mode, SerializableMode::Auto);
+    });
+}
+
 // ── Tri-mode: 会话 mode 写路径的统一发布序列（publish_session_mode_change）──
 
 /// mode 写命令的发布序列收敛：`set_plan_mode_next` / `exit_plan_to_yolo` 的
@@ -3602,10 +3671,24 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
             .split(signature)
             .nth(1)
             .unwrap_or_else(|| panic!("{label}: command body missing"));
+        // The three explicit switches use the reported lane
+        // (`.set_mode_reported(`, review round-r8 P2: a persist failure
+        // must ride the response, not vanish); the ask command keeps its
+        // own write.
         let write_at = body
-            .find(".set_mode(")
+            .find(".set_mode_reported(")
+            .or_else(|| body.find(".set_mode("))
             .or_else(|| body.find(".set_ask_on_guardrail("))
             .unwrap_or_else(|| panic!("{label}: store write missing"));
+        // The outcome wrapper must carry the durability signal for the
+        // three switches (reverting the response shape back to the bare
+        // state would silently drop the persist outcome again).
+        if signature != "pub async fn set_ask_on_guardrail(" {
+            assert!(
+                body.contains("SessionModeSwitchOutcome"),
+                "{label}: response must be SessionModeSwitchOutcome (persist failures ride the response)"
+            );
+        }
         let publish_at = body
             .find("publish_session_mode_change(")
             .unwrap_or_else(|| panic!("{label}: publish call missing"));
@@ -3620,9 +3703,9 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
     // 各命令自己的持久化写锚点：set_ask_on_guardrail 写 ask 侧车而非 mode
     // 条目（round-10 评审扩展本循环时按命令族取锚）。
     for (signature, write_anchor) in [
-        ("pub async fn set_plan_mode_next(", ".set_mode("),
-        ("pub async fn exit_plan_to_yolo(", ".set_mode("),
-        ("pub async fn set_session_mode(", ".set_mode("),
+        ("pub async fn set_plan_mode_next(", ".set_mode_reported("),
+        ("pub async fn exit_plan_to_yolo(", ".set_mode_reported("),
+        ("pub async fn set_session_mode(", ".set_mode_reported("),
         (
             "pub async fn set_ask_on_guardrail(",
             ".set_ask_on_guardrail(",
