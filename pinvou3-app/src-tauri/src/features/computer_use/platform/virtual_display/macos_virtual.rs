@@ -502,8 +502,10 @@ fn activation_timeout_detail() -> String {
 /// Poll cadence for display activation and pid discovery.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Channel wait for the main-thread dispatch (covers the ≤5 s in-closure
-/// poll plus queue hop latency; the total worst case stays under the
-/// design's 8 s budget).
+/// poll plus queue hop latency). The total worst case is no longer the
+/// design's 8 s budget: with the activation grace an unanswered Screen
+/// Mirroring alert stretches a failed creation to ~30 s, as the body
+/// discloses; this wait only bounds the main-thread leg.
 const MAIN_DISPATCH_WAIT: Duration = Duration::from_secs(7);
 /// Main-thread grace for the post-build display-id read: normally the id is
 /// assigned within a poll tick or two of `applySettings`, so the closure
@@ -588,9 +590,13 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
     // class through responds_to. Arguments are encoded primitives, CGSize,
     // CGPoint, or Obj-C objects.
     unsafe {
-        // NSUInteger parameters: the explicit `as usize` keeps the ABI
-        // zero-extension intent visible instead of resting on u32 register
-        // writes (R9 review nit — untyped msg_send! does no encoding check).
+        // Integer parameters: the explicit `as usize` keeps the ABI width
+        // intent visible instead of resting on u32 register zero-extension
+        // (R9 review nit — untyped msg_send! does no encoding check). The
+        // public dumps declare these fields `unsigned int`; the cast is the
+        // explicit hypothesis, held because this exact class demonstrably
+        // churns between releases and a width change would silently garble
+        // the values on Intel.
         let _: () = msg_send![&*descriptor, setMaxPixelsWide: VD_WIDTH_PX as usize];
         let _: () = msg_send![&*descriptor, setMaxPixelsHigh: VD_HEIGHT_PX as usize];
         let _: () = msg_send![&*descriptor, setSizeInMillimeters: VD_SIZE_MM];
@@ -599,15 +605,17 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
         // per-session value would make every session a new display to
         // macOS. Two app instances would collide on it — the second
         // creation answers nil and reports an explicit error rather than
-        // silently sharing one display.
+        // silently sharing one display. Same `as usize` hypothesis as the
+        // pixel setters above: both dumps declare the identity fields
+        // `unsigned int` today.
         if options.vendor_id {
-            let _: () = msg_send![&*descriptor, setVendorID: display_vendor_id()];
+            let _: () = msg_send![&*descriptor, setVendorID: display_vendor_id() as usize];
         }
         if options.product_id {
-            let _: () = msg_send![&*descriptor, setProductID: display_product_id()];
+            let _: () = msg_send![&*descriptor, setProductID: display_product_id() as usize];
         }
         if options.serial_num {
-            let _: () = msg_send![&*descriptor, setSerialNum: serial_number()];
+            let _: () = msg_send![&*descriptor, setSerialNum: serial_number() as usize];
         }
 
         let product = NSString::from_str(PRODUCT_NAME);
@@ -3945,6 +3953,34 @@ mod tests {
                 "the {field} send must be guarded by its own option"
             );
         }
+
+        // The name-send arms are the one guarded send that the per-field
+        // guard above cannot see (dispatched through `match name_setter`,
+        // not `if options.…`). A mutation replacing the match with an
+        // unconditional `setProductName:` send would reintroduce the exact
+        // crash class this module exists to fix (the selector is absent on
+        // macOS 27.3 → Obj-C exception → abort) and only the ignored live
+        // run would witness it — pin the dispatch shape itself: both name
+        // sends must live inside the match block, and the removed selector
+        // must be sent from exactly one place.
+        let match_start = prod
+            .find("match name_setter {")
+            .expect("build_descriptor must dispatch the name setter through match name_setter");
+        let block_end = prod[match_start..]
+            .find("if options.serial_string")
+            .expect("the serial_string send must follow the name dispatch");
+        let name_block = &prod[match_start..match_start + block_end];
+        assert!(
+            name_block.contains("setProductName: &*product")
+                && name_block.contains("setName: &*product"),
+            "both name-setter sends must stay inside the guarded match arms"
+        );
+        assert_eq!(
+            prod.matches("msg_send![&*descriptor, setProductName")
+                .count(),
+            1,
+            "setProductName must be sent from exactly one place (the guarded match arm)"
+        );
     }
 
     /// The identity macOS 14+ insists on: both ids non-zero and 16-bit (the
