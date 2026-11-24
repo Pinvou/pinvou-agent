@@ -1053,19 +1053,23 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 取最新 replaceIndexState/loadColls/loadDocs/activeColl)。
       useIntervalWhen(async () => {
         // 发起时先钉住本次轮询的集:await 会跨越用户切集,闭包捕获的
-        // activeColl 在落地时已是旧集。
-        const selectedId = activeColl && activeColl.id;
         try {
           const s = await invokeTauri('kb_index_status'); replaceIndexState(s);
           if (!s.running) {
             loadColls();
-            // 复审 P2:落地后核对当前选择。A 库的状态请求待定期间切到 B,
-            // A 的迟到「索引完成」若仍以闭包里的旧集调 loadDocs(A),该请求
-            // 拿到的 generation 晚于 B——A 的内容盖掉 B,新增分页的页状态
-            // 却属于 A:续页被身份校验拒发,B 的后续页不可达,行操作引用
-            // A 的文档。仍是发起时的集才代劳刷新;已切集的场景由切换路径
-            // 自己加载,这里绝不能碰。
-            if (selectedId && activeCollRef.current?.id === selectedId) loadDocs(selectedId);
+            // 复审 P2×2 的合流语义:轮询是全局任务,唯一正确的刷新目标是
+            // **真实当前选中集**(落地后经 ref 读),与状态请求发起时在哪个
+            // 集无关——
+            // ①迟到不回写(上一轮 P2):A 的状态请求待定期间切到 B,A 的迟到
+            //   「索引完成」绝不能以闭包旧集调 loadDocs(A):该请求拿到的
+            //   generation 晚于 B,A 的内容会盖掉 B,页状态却属于 A。
+            // ②当前集的导入完成必须补全(本轮 P2):B 导入中时切到 B,切换
+            //   加载等到的只是不完整首批;最后一次状态返回若按「发起时是 A」
+            //   跳过,B 将带着不完整列表迎接轮询停止(无续页按钮)。
+            //   loadDocs 自身递增 generation 且只把结果写进自己的集,对真实
+            //   当前集刷新恒安全。
+            const currentId = activeCollRef.current?.id;
+            if (currentId) loadDocs(currentId);
           }
         } catch { /* silently degrade */ }
       }, 1000, indexing);

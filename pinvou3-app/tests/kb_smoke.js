@@ -1629,9 +1629,13 @@ async function chooseRemoteUploadSource(page, testId) {
   await sleep(800);
   const docsAfterRelease = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_documents').map(c => c.args && c.args.collectionId));
   const staleReloaded = docsAfterRelease.slice(docsAtSwitch.length).includes(1);
-  rec('⑫ 索引完成轮询落地后核对当前选择(切集后旧集不得回写)',
-    gateHeld && docsAtSwitch.includes(2) && !staleReloaded,
-    JSON.stringify({ gateHeld, docsAtSwitch, docsAfterRelease }));
+  // zhuowp r5 合流语义的第二半:释放后轮询必须针对**真实当前集**(B,id=2)
+  // 补一次刷新——切换加载等到的是导入中的不完整首批,轮询停止后只有这条
+  // 迟到的「索引完成」能把 B 刷完整;绝不允许回写旧 A(cid=1)。
+  const currentRefreshed = docsAfterRelease.slice(docsAtSwitch.length).includes(2);
+  rec('⑫ 索引完成轮询落地后刷新真实当前集(当前 B 补全刷新,旧 A 不得回写)',
+    gateHeld && docsAtSwitch.includes(2) && currentRefreshed && !staleReloaded,
+    JSON.stringify({ gateHeld, docsAtSwitch, docsAfterRelease, currentRefreshed, staleReloaded }));
 
   const localRowsBeforeDelete = await page.$$eval('[data-testid="kb-remove-document"]', buttons => buttons.length);
   await page.evaluate(() => { window.__KB_DEFER_REMOVE_DOCUMENT__ = true; });
