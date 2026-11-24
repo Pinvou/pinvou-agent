@@ -94,11 +94,12 @@ test('loadModels 陈旧失败不覆盖（后发者胜同样适用于 catch 分�
   assert.notEqual(rt.state.modelsListLoadFailed, true, '陈旧失败不得置失败标记');
 });
 
-// 失败标记(复审 P2,Edge 实测同身份落双 id):catch 分支清列表的同时置
-// modelsListLoadFailed,消费方(SettingsView 已保存身份守卫)据此把「读取
-// 失败的空列表」与「真实空列表」区分开;下一次成功读取清零,真实删除后的
-// 刷新照常解冻。
-test('loadModels 失败置标记，下一次成功读取清零', async () => {
+// Failure marker (review P2, Edge reproduced one identity under two ids):
+// the catch arm sets modelsListLoadFailed while clearing the list, so the
+// SettingsView saved-identity guards can tell the empty list handed over by
+// a failed read from a genuinely empty one; the next successful read clears
+// it and a real deletion's refresh thaws the guards as usual.
+test('loadModels sets the failure marker, the next successful read clears it', async () => {
   const rt = loadSettingsFeature();
   assert.notEqual(rt.state.modelsListLoadFailed, true, '初始无失败标记');
   const d1 = rt.defer('list_models');
@@ -113,4 +114,3 @@ test('loadModels 失败置标记，下一次成功读取清零', async () => {
   await p2;
   assert.equal(rt.state.modelsListLoadFailed, false, '成功读取清零失败标记');
 });
-

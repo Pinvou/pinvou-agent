@@ -688,6 +688,21 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
+  /for \(const k of pendingSavedKeys\) keys\.add\(k\);[\s\S]{0,600}for \(const k of inFlightModelCreates\.listed\) keys\.add\(k\);\s*return keys;/,
+  'the endpoint picker savedKeys must fold the frozen confirmed identities (review P2 r7: a failed read empties endpointSavedKeys while the mirror keeps the confirmed set — the rows must not show a confirmed identity as addable; ⑦.9c)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(inFlightModelCreates\.listed\.has\(pickIdentity\)\) return;/,
+  'the endpoint pick entry must mirror the row view on the write side (review P2 r7: the belt rejects frozen confirmed identities so a stale dispatch cannot mint a second id behind the disabled row; ⑦.9c)',
+);
+assert.match(
+  settingsViewSource,
+  /for \(const key of inFlightModelCreates\.listed\) batchSavedKeys\.add\(key\);/,
+  'the add-all snapshot must fold the frozen mirror so the confirm dialog count agrees with the loop book (review P2 r7; ⑦.9c)',
+);
+assert.match(
+  settingsViewSource,
   /const pendingSavedKeys = new Set\(\[\.\.\.inFlightModelCreates\.committed\]\.filter\(key => !endpointSavedKeys\.has\(key\)\)\);/,
   'just-committed identities must fold from the LIVE module book (the effect retires confirmed keys) — deriving from an add-only state Set resurrects deleted identities as pending forever (r5 review P2-2, live-proven: save→confirm→delete→re-add stayed blocked with a false already-exists hint)',
 );
@@ -758,7 +773,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /for \(const k of pendingSavedKeys\) keys\.add\(k\);[\s\S]{0,120}return keys;/,
+  /for \(const k of pendingSavedKeys\) keys\.add\(k\);[\s\S]{0,600}return keys;/,
   'the endpoint picker saved-tag set must fold committed-but-unlisted identities — the endpoint row of a settled-but-unlisted identity must not look addable',
 );
 assert.match(
@@ -4435,11 +4450,14 @@ async function modalWidth(page, headingText) {
       && idleHintControl.hintVisibleIdle,
     JSON.stringify({ mid: midSaveHintGate, idle: idleHintControl }));
 
-  // ===== ⑦.9 复审 P2(读取失败冻结,Edge 实测同身份落双 id):已确认身份在
-  // 读取失败窗口内不得复活。与 ⑦.4 的判别:⑦.4 的身份刚落库**未确认**
-  // (committed 簿拦截);这里 A 已被列表确认出册(committed 清空),B 的刷新
-  // 失败后唯一活源是冻结镜像——缺镜像即双 id。真实删除后的可重加行为
-  // (zhuowp 同条要求)在收尾腿验证。隔离档 8240。=====
+  // ===== ⑦.9 review P2 (read-failure freeze; Edge reproduced one identity
+  // under two record ids): a confirmed identity must not revive inside the
+  // failed-read window. Discriminator vs ⑦.4: there the identity had just
+  // landed but was NOT yet confirmed (the committed book intercepts); here
+  // A was confirmed by the list (retired from committed), so after B's
+  // refresh fails the frozen mirror is the only live source — without it,
+  // two ids. The real-delete re-add behavior (zhuowp's same-comment demand)
+  // is covered by the closing leg. Isolated roster 8240.=====
   await clickExact(page, '添加模型');
   await sleep(300);
   await clickExact(page, '本地模型');
@@ -4447,7 +4465,8 @@ async function modalWidth(page, headingText) {
   await setPortDraft('8240');
   await clickExact(page, '检测');
   await sleep(600);
-  // A:添加 → 落库 → 刷新成功 → 列表确认出册(A 从此只靠 listed 镜像)。
+  // A: add -> lands -> refresh succeeds -> confirmed by the list (from
+  // now on A is held by the listed mirror alone).
   const freezeAddA = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="model-form-dialog"]');
     const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
@@ -4457,8 +4476,9 @@ async function modalWidth(page, headingText) {
     return { clicked: true };
   });
   await sleep(900);
-  // B:注入下一次 list_models 失败再添加——落库成功,但刷新链吞错清列表并
-  // 置失败标记;镜像冻结,A 的身份不得被空列表撤回。
+  // B: arm the next list_models failure, then add — the save lands, but
+  // the refresh chain swallows the failure, empties the list and sets the
+  // marker; the mirror freezes and the empty list must not retract A.
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.armListModelsFailure();
     window.__SETTINGS_TEST__.setSaveModelDelay(400);
@@ -4480,7 +4500,9 @@ async function modalWidth(page, headingText) {
       bSaved: saved.some(item => item.model === 'freeze-twin-b' && item.base_url === 'http://127.0.0.1:8240/v1'),
     };
   });
-  // 冻结断言:重开检测,空列表下 A 行仍禁用+已保存(镜像冻结),且点击零落库。
+  // Freeze assertions: reopen detect — on the emptied list A's row stays
+  // disabled with the Saved label (frozen mirror) and clicking lands
+  // nothing.
   await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
   await sleep(200);
   await clickExact(page, '添加模型');
@@ -4510,8 +4532,9 @@ async function modalWidth(page, headingText) {
   });
   await sleep(300);
   const freezeSavesAfter = await callCount(page, 'save_model');
-  // 表单侧同口径:读取失败窗口内手填 A 的身份 → 保存禁用+提示可见
-  // (duplicateSaved 并入冻结镜像)。
+  // Form side, same contract: typing A's identity inside the failed-read
+  // window keeps Save disabled with the hint (duplicateSaved folds the
+  // frozen mirror).
   await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]').click());
   await sleep(200);
   await clickExact(page, '添加模型');
@@ -4547,9 +4570,70 @@ async function modalWidth(page, headingText) {
       && freezeSavesAfter === freezeSavesBefore
       && freezeFormGate.saveDisabled && freezeFormGate.hintShown,
     JSON.stringify({ addA: freezeAddA, addB: freezeAddB, landed: freezeLanded, rows: freezeRowsFrozen, savesBefore: freezeSavesBefore, savesAfter: freezeSavesAfter, form: freezeFormGate }));
-  // 收尾腿(同条要求的另一面):下一次成功读取解冻——真实删除 A 后同身份
-  // 必须恢复可添加。setActiveModel 链桥内重载(⑦.4 同款旋钮),失败标记
-  // 清零、镜像刷新。
+  // ⑦.9c (review P2, both reviewers, Edge-reproduced): the ENDPOINT
+  // picker's single-row path joins the same freeze. Probing the same
+  // endpoint while the marker is still on must show A's row with the Saved
+  // tag and a disabled add button (the row view folds the frozen mirror)
+  // and clicking it must land nothing (the pick entry mirrors the same
+  // set). B's row is tagged through the committed book.
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const input = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(input, 'http://127.0.0.1:8240/v1');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed',
+    models: [{ id: 'freeze-twin-a' }, { id: 'freeze-twin-b' }],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  const endpointFreezeSavesBefore = await callCount(page, 'save_model');
+  const endpointFreezeRows = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const rowOf = needle => {
+      const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes(needle));
+      if (!row) return { found: false };
+      const button = row.querySelector('[data-testid="endpoint-model-row-add"]');
+      return {
+        found: true,
+        savedTag: !!row.querySelector('[data-testid="endpoint-model-saved-tag"]'),
+        disabled: !!button && button.disabled,
+      };
+    };
+    return { a: rowOf('freeze-twin-a'), b: rowOf('freeze-twin-b') };
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('freeze-twin-a'));
+    const button = row && row.querySelector('[data-testid="endpoint-model-row-add"]');
+    if (button) button.click();
+  });
+  await sleep(300);
+  const endpointFreezeSavesAfter = await callCount(page, 'save_model');
+  rec('⑦.9c 读取失败窗口内端点单行同口径:A 行已保存标签+按钮禁用、点击零落库(B 行经 committed 簿同样禁用)',
+    endpointFreezeRows.a.found && endpointFreezeRows.a.savedTag && endpointFreezeRows.a.disabled
+      && endpointFreezeRows.b.found && endpointFreezeRows.b.savedTag && endpointFreezeRows.b.disabled
+      && endpointFreezeSavesAfter === endpointFreezeSavesBefore,
+    JSON.stringify({ rows: endpointFreezeRows, savesBefore: endpointFreezeSavesBefore, savesAfter: endpointFreezeSavesAfter }));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({ status: 'listed', models: [] }));
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-picker-close"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  // Closing leg (the other side of the same demand): the next successful
+  // read thaws the mirror — after really deleting A the same identity must
+  // become addable again. setActiveModel chains the bridge reload (⑦.4's
+  // knob), clearing the marker and refreshing the mirror.
   await page.evaluate(() => window.TauriBridge.models
     .setActiveModel(window.__SETTINGS_TEST__.activeModelId()));
   await sleep(500);
@@ -4593,6 +4677,65 @@ async function modalWidth(page, headingText) {
     thawedListRecovered && thawedReaddable.found && !thawedReaddable.disabled && !thawedReaddable.savedLabel
       && thawedSave.clicked && thawedRelanded,
     JSON.stringify({ recovered: thawedListRecovered, readdable: thawedReaddable, save: thawedSave, relanded: thawedRelanded }));
+
+  // ⑦.9d (zhuowp's demanded coverage, endpoint side): a real deletion thaws
+  // the mirror through its own successful refresh — after deleting A once
+  // more, the endpoint row is addable again and the pick lands exactly one
+  // record.
+  await clickRowAction(page, 'freeze-twin-a', '删除');
+  await sleep(300);
+  await clickExact(page, '删除模型');
+  await sleep(500);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const input = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(input, 'http://127.0.0.1:8240/v1');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed',
+    models: [{ id: 'freeze-twin-a' }],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(700);
+  const endpointThawSavesBefore = await callCount(page, 'save_model');
+  const endpointThawRow = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('freeze-twin-a'));
+    if (!row) return { found: false };
+    const button = row.querySelector('[data-testid="endpoint-model-row-add"]');
+    return {
+      found: true,
+      savedTag: !!row.querySelector('[data-testid="endpoint-model-saved-tag"]'),
+      disabled: !!button && button.disabled,
+    };
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('freeze-twin-a'));
+    const button = row && row.querySelector('[data-testid="endpoint-model-row-add"]');
+    if (button && !button.disabled) button.click();
+  });
+  await sleep(900);
+  const endpointThawSavesAfter = await callCount(page, 'save_model');
+  const endpointThawLanded = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().some(item => item.model === 'freeze-twin-a' && item.base_url === 'http://127.0.0.1:8240/v1'));
+  rec('⑦.9d 成功读取解冻后端点单行恢复可添加:删除 A 后行可点且恰好落一笔',
+    endpointThawRow.found && !endpointThawRow.savedTag && !endpointThawRow.disabled
+      && endpointThawSavesAfter === endpointThawSavesBefore + 1 && endpointThawLanded,
+    JSON.stringify({ row: endpointThawRow, savesBefore: endpointThawSavesBefore, savesAfter: endpointThawSavesAfter, landed: endpointThawLanded }));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({ status: 'listed', models: [] }));
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-picker-close"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

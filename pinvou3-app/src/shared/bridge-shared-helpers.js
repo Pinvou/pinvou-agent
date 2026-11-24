@@ -3861,10 +3861,13 @@
   }
 
   // web+tauriSettings 共享
-  // modelsListLoadFailed:catch 分支吞错清列表时置位,下一次成功读取清零。
-  // 消费方(SettingsView 已保存身份守卫)据此区分「读取失败给的空列表」与
-  // 「真实空列表」——空列表不是权威结果,已确认身份不得被撤回(复审 P2:
-  // Edge 实测同身份落双 id)。
+  // modelsListLoadFailed: set when the catch arm swallows a list_models
+  // failure and clears the list, cleared on the next successful read.
+  // Consumers (the SettingsView saved-identity guards) use it to tell the
+  // empty list handed over by a failed read from a genuinely empty list —
+  // the empty list is not an authoritative result and confirmed identities
+  // must not be retracted (review P2: Edge reproduced one identity under
+  // two record ids).
   async function loadModels() {
     const seq = ++modelsLoadSeq.value;
     try {
