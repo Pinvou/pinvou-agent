@@ -1635,9 +1635,11 @@ mod tests {
         let expected = "A-root".to_string();
         let error = capture_workspace_identity(&session, &expected, || "B-root".to_string())
             .expect_err("持续漂移必须耗尽重试并 Err（fail-closed 拒绝 spawn）");
+        // 报错文本内嵌 session_id，不得回显进 panic 文案（CodeQL
+        // cleartext-logging）；裸 assert! 自带条件文本，诊断已足够。
         assert!(
             error.contains("rebind is in flight"),
-            "报错必须说明重绑进行中无法一致捕获身份：{error}"
+            "报错必须说明重绑进行中无法一致捕获身份"
         );
         clear_session(&session);
     }
@@ -1681,7 +1683,7 @@ mod tests {
             .expect_err("持续 roots 漂移必须耗尽重试并 Err");
         assert!(
             error.contains("rebind is in flight"),
-            "耗尽报错与代撕裂同口径：{error}"
+            "耗尽报错与代撕裂同口径"
         );
         clear_session(&session);
     }

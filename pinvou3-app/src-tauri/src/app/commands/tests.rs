@@ -3527,15 +3527,17 @@ fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
         let mode_map = store.shared_mode_map_file();
         let mode_map_before = std::fs::read_to_string(&mode_map).ok();
 
-        // 非法 id 形状（路径逃逸字符）。
+        // 非法 id 形状（路径逃逸字符）。报错文本内嵌了会话 id，不得回显进
+        // panic 文案（CodeQL cleartext-logging；裸 assert! 自带条件文本，
+        // 诊断信息已足够）。
         let error = ensure_mode_target_session("set_session_mode", "../escape", &store)
             .expect_err("a bad id shape must be rejected");
-        assert!(error.contains("Invalid session id"), "{error}");
+        assert!(error.contains("Invalid session id"));
 
         // 合法形状但不存在的会话。
         let error = ensure_mode_target_session("set_ask_on_guardrail", "ghost-session", &store)
             .expect_err("a nonexistent session must be rejected");
-        assert!(error.contains("会话不存在"), "{error}");
+        assert!(error.contains("会话不存在"));
 
         // 两次失败都不得留下持久化痕迹。
         let mode_map_after = std::fs::read_to_string(&mode_map).ok();
