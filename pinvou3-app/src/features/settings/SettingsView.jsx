@@ -466,6 +466,13 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         if (outcome && outcome.refresh === 'ok' && outcome.models
           && !savedModelKeys(outcome.models).has(key)) return;
         onSaveCommitted(key, {
+          // 缺席地板只给裁定 ok/failed(链跑过刷新尾);superseded(r10 复审
+          // P2)与 deferred/旧桥一样 present-only——**地板授予 superseded 被
+          // 活体证伪**:被作废窗口内镜像本身就是 upsert 前的旧世界,booking
+          // 后的首次 effect pass 就会拿「缺席+地板」把新鲜预订自我退休
+          // (⑦.9h 首跑即红,独立探针实证),present-only 的保护缺口只余
+          // 「预订期间被真删」一种交错,其代价与评审「未知证据保留保护」
+          // 的处方一致,由应用重载兜底。
           absentRetirable: !!(outcome && (outcome.refresh === 'ok' || outcome.refresh === 'failed')),
         });
       };
@@ -3327,6 +3334,22 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // two independent reviewer reproductions). The next successful
       // read — including a real deletion's refresh — thaws and refreshes
       // the snapshot.
+      // (model id + base_url) identity keys of saves that COMMITTED but are
+      // not yet confirmed by the models list. Complements the module-level
+      // in-flight registry: the registry holds identities until the save
+      // settles, and on success the bridge's refresh chain normally hands
+      // the identity over to the saved-keys guard — but loadModels swallows
+      // a list_models failure by clearing the list, and then the settled
+      // identity would be re-addable again (refresh-failure branch, review
+      // r3 lane G). Keys clear derivatively on a successful list — when it
+      // contains the identity (confirmation, r3) or, for keys carrying the
+      // absence floor, when it lacks it (the record was deleted, review P2×2
+      // late-completion; see the mirror effect above). Nothing is registered
+      // on a thrown save, so retries stay possible.
+      // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
+      // 把落库后的禁用态刷进同一次提交。
+      const [, setJustSavedKeys] = useState(() => new Set());
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖清单人工审阅:effect 消费 bs/userModels 派生 listed,并在有键退休时补一次渲染驱动(有界:退休后不再 setState,链路终止);补全依赖会造成渲染循环
       useEffect(() => {
         const failed = !!(bs && bs.modelsListLoadFailed);
         const source = failed
@@ -3335,6 +3358,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         const listed = savedModelKeys(source);
         inFlightModelCreates.listed = listed;
         if (failed) return;
+        let retired = false;
         for (const key of [...inFlightModelCreates.committed]) {
           // Two exits on a successful list (review P2×2): present retires as
           // before (the list confirmed the identity); absent also retires a
@@ -3351,23 +3375,17 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           if (!listed.has(key) && !inFlightModelCreates.absentRetirable.has(key)) continue;
           inFlightModelCreates.committed.delete(key);
           inFlightModelCreates.absentRetirable.delete(key);
+          retired = true;
         }
+        // 退休本身发生在本次提交的 effect 里——本次渲染派生的
+        // pendingSavedKeys 还带着退休前的簿,不清一次渲染驱动,消费行会
+        // 永久停在禁用态(absent+floor 路径首次触达即红,r10 诊断实证;
+        // present 路径此前总能搭上 notify 渲染,故未暴露)。值不被读取,
+        // 只求一次重渲。
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 有界退休冲刷:本次提交派生的 pendingSavedKeys 仍带退休前的簿,确有键退休时补一次重渲;后续 pass 不再退休,链路终止
+        if (retired) setJustSavedKeys(prev => new Set(prev));
       });
-      // (model id + base_url) identity keys of saves that COMMITTED but are
-      // not yet confirmed by the models list. Complements the module-level
-      // in-flight registry: the registry holds identities until the save
-      // settles, and on success the bridge's refresh chain normally hands
-      // the identity over to the saved-keys guard — but loadModels swallows
-      // a list_models failure by clearing the list, and then the settled
-      // identity would be re-addable again (refresh-failure branch, review
-      // r3 lane G). Keys clear derivatively on a successful list — when it
-      // contains the identity (confirmation, r3) or, for keys carrying the
-      // absence floor, when it lacks it (the record was deleted, review P2×2
-      // late-completion; see the mirror effect above). Nothing is registered
-      // on a thrown save, so retries stay possible.
-      // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
-      // 把落库后的禁用态刷进同一次提交。
-      const [, setJustSavedKeys] = useState(() => new Set());
+
       const markSaveCommitted = (key, opts) => {
         // 模块簿是唯一活源(r5 复审补线,commit-only 版):批量循环逐行直读
         // committed——刷新失败(loadModels 吞错清列表)时实时镜像与冻结快照

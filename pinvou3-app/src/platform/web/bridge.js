@@ -4645,19 +4645,25 @@ async function loadModels() { return pinvouSharedweb().loadModels(); }
    // save-then-refresh chain single-row callers rely on.
    await invoke("save_model", { model });
    if (options && options.deferRefresh) return { refresh: 'deferred' };
-   await loadModels();
    // Chain-end verdict, same contract as the tauri lane (review P2, late
-   // compound-save completion): the reload tail's list is a post-upsert read
-   // under last-write-wins, so a successful tail list lacking the saved
-   // identity means the record was deleted inside the refresh tail and the
-   // caller must not book it (the reservation could never be confirmed and
-   // would block the legitimate re-add until reload). A failed read still
-   // books (protect the genuinely committed but unlisted save, r3 lane G)
-   // and still grants the absence floor: later successful lists reflect
-   // reads that started after this chain's loadModels, i.e. after the upsert.
-   const listFailed = state.modelsListLoadFailed === true;
+   // compound-save completion): an ACCEPTED reload-tail response is a
+   // confirmed post-upsert observation — a successful accepted list lacking
+   // the saved identity means the record was deleted inside the refresh tail
+   // and the caller must not book it; a failed accepted read still books
+   // (r3 lane G) with the absence floor (later accepted successful lists
+   // reflect reads that started after this chain's loadModels, i.e. after
+   // the upsert). A SUPERSEDED read (round 10 P2: a concurrent newer
+   // loadModels started before ours resolved and last-write-wins discarded
+   // our response without publishing) publishes nothing — chain-end state
+   // can still be the pre-upsert accepted write, so absence there is NOT
+   // deletion: the verdict degrades to 'superseded' and the caller books
+   // present-only. The reload tail runs in full either way.
+   const tail = await loadModels();
+   const superseded = !tail || !tail.accepted;
+   const listFailed = !superseded && tail.failed === true;
    await loadEffectiveModelConfig();
-   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: state.savedModels };
+   if (superseded) return { refresh: 'superseded' };
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // the web save chain reloads models + effective config, so the batch refresh

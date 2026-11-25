@@ -3882,17 +3882,24 @@
     const seq = ++modelsLoadSeq.value;
     try {
       const v = await invoke("list_models");
-      if (seq !== modelsLoadSeq.value) return;
+      if (seq !== modelsLoadSeq.value) return { accepted: false };
       state.savedModels = (v && v.models) || [];
       state.lastConfirmedModels = [...((v && v.models) || [])];
       state.activeModelId = (v && v.active_model_id) || null;
       state.modelsListLoadFailed = false;
+      notify();
+      // 受理状态随返回值外显(r10 复审 P2):被并发更新请求作废的读取
+      // (accepted:false)没有发布任何东西——链尾 state 仍反映 upsert 之前
+      // 的世界,调用方不得把它当"落库后的确认观察"用(saveModel 的裁定
+      // 与缺席退休地板都以此为前提)。
+      return { accepted: true, models: state.savedModels };
     } catch {
-      if (seq !== modelsLoadSeq.value) return;
+      if (seq !== modelsLoadSeq.value) return { accepted: false };
       state.savedModels = []; state.activeModelId = null;
       state.modelsListLoadFailed = true;
+      notify();
+      return { accepted: true, failed: true };
     }
-    notify();
   }
 
   // web+tauriSettings 共享

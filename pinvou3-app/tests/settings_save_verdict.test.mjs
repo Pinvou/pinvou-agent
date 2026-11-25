@@ -114,6 +114,27 @@ test('tauri saveModel deferred: no reload tail runs and the outcome carries no l
   assert.deepEqual(rt.calls.invoke, ['save_model'], 'deferred 只发 save_model,三个 reload 一个都不跑');
 });
 
+test('tauri saveModel superseded: a read discarded by a newer pending request degrades the verdict (r10 P2)', async () => {
+  const rt = loadTauriSettings(makeState());
+  const d1 = rt.defer('list_models');              // 先挂 N 的 defer(链 invoke 时捕获)
+  const p = rt.api.saveModel(SAVED_RECORD);
+  // 推进到链自己的 list_models invoke(微任务清空),确保 N 已链上 d1——
+  // 之后 defer 同名替换只影响后续调用。
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');              // 并发更新请求 N+1(仍 pending)
+  const p2 = rt.api.loadModels();
+  // N 携带含 A 的列表后解析——但 N+1 已领取更大序号,N 被后发者胜作废,
+  // 不发布任何东西;链尾 state 仍是 upsert 之前的旧世界。
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'superseded', '被作废的读取不得当确认观察——裁定退化为 superseded');
+  assert.equal(outcome.models, undefined, 'superseded 无列表证据——调用方照常入簿(缺席地板,后继受理观察退休)');
+  // 清尾:N+1 最终受理(无论 payload),不留挂起句柄。
+  d2.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  await p2;
+  assert.equal(rt.state.savedModels.length, 1, '后继受理读取正常写入');
+});
+
 // ── web lane:整体装载(platform/web/bridge.js + domain-adapter)────────
 
 function bootWebBridge() {
@@ -209,4 +230,22 @@ test('web saveModel ok/failed/deferred mirror the tauri verdict contract', async
   const deferredOutcome = await rt.flat.saveModel(SAVED_RECORD, { deferRefresh: true });
   assert.equal(deferredOutcome.refresh, 'deferred', 'web lane 批量同样给 deferred 裁定');
   assert.equal(deferredOutcome.models, undefined, 'deferred 无列表证据');
+});
+
+test('web saveModel mirrors the superseded verdict (r10 P2)', async () => {
+  const rt = bootWebBridge();
+  const d1 = rt.defer('list_models');              // 先挂 N 的 defer(链 invoke 时捕获)
+  const p = rt.flat.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');              // 并发更新请求 N+1(仍 pending)
+  // flat 不暴露 loadModels——用 deleteModel(带 loadModels 链,facade 有)触发。
+  const p2 = rt.flat.deleteModel('trigger-n1');
+  // deleteModel 链到它自己的 list_models invoke 还差一跳,先推进再作废 N。
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' }); // N 后解析→作废
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'superseded', 'web lane 同样退化 superseded');
+  assert.equal(outcome.models, undefined, 'superseded 无列表证据');
+  d2.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  await p2;
 });

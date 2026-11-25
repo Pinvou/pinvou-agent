@@ -683,8 +683,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{[\s\S]{0,1100}if \(!listed\.has\(key\) && !inFlightModelCreates\.absentRetirable\.has\(key\)\) continue;\s*inFlightModelCreates\.committed\.delete\(key\);\s*inFlightModelCreates\.absentRetirable\.delete\(key\);\s*\}/,
-  'the SettingsView effect must refresh the live listed mirror and retire committed keys on a successful list — present (confirmed, ⑦.8) or absent with the floor (deleted mid-tail, review P2×2: the save chain refresh is a post-upsert read under last-write-wins, so a later successful list lacking the identity means deletion; a stranded reservation would block the legitimate re-add until reload) — with the failed-read freeze preceding both',
+  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*let retired = false;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{[\s\S]{0,1100}if \(!listed\.has\(key\) && !inFlightModelCreates\.absentRetirable\.has\(key\)\) continue;\s*inFlightModelCreates\.committed\.delete\(key\);\s*inFlightModelCreates\.absentRetirable\.delete\(key\);\s*retired = true;\s*\}[\s\S]{0,700}if \(retired\) setJustSavedKeys\(prev => new Set\(prev\)\);\s*\}\);/,
+  'the SettingsView effect must refresh the live listed mirror and retire committed keys on a successful list — present (confirmed, ⑦.8) or absent with the floor (deleted mid-tail, review P2×2: the save chain refresh is a post-upsert read under last-write-wins, so a later successful list lacking the identity means deletion; a stranded reservation would block the legitimate re-add until reload) — with the failed-read freeze preceding both; a retirement must flush one bounded re-render (the retiring commit\'s derived pendingSavedKeys still carries the pre-retirement book, so without the flush the consuming rows stay disabled forever — the r10 absent+floor path proved this live)',
 );
 assert.match(
   settingsViewSource,
@@ -696,7 +696,7 @@ assert.match(
 // retains it while clearing the displayed list.
 assert.match(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
-  /state\.savedModels = \(v && v\.models\) \|\| \[\];\s*state\.lastConfirmedModels = \[\.\.\.\(\(v && v\.models\) \|\| \[\]\)\];[\s\S]{0,220}state\.savedModels = \[\]; state\.activeModelId = null;\s*state\.modelsListLoadFailed = true;/,
+  /state\.savedModels = \(v && v\.models\) \|\| \[\];\s*state\.lastConfirmedModels = \[\.\.\.\(\(v && v\.models\) \|\| \[\]\)\];[\s\S]{0,560}state\.savedModels = \[\]; state\.activeModelId = null;\s*state\.modelsListLoadFailed = true;/,
   'the shared loadModels must retain lastConfirmedModels across a failed read and replace it on the next successful read (review P2 pre-mount boundary; ⑦.9e)',
 );
 assert.match(
@@ -781,22 +781,28 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{\s*absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),\s*\}\);\s*\};/,
-  'the verdict gate must skip booking exactly when the successful tail list lacks the identity (deleted mid-tail) and grant the absence floor only for chains that ran the reload tail (ok/failed) — deferred batches and verdict-less legacy bridges book present-only',
+  /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{[\s\S]{0,700}absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),\s*\}\);\s*\};/,
+  'the verdict gate must skip booking exactly when the successful accepted tail list lacks the identity (deleted mid-tail) and grant the absence floor for every chain that ran the reload tail including superseded ones — the chain read handed its seq after the upsert completed, so any later accepted read reflects a post-upsert world and absence there is deletion; only deferred batches and verdict-less legacy bridges book present-only',
 );
-// Bridge-side chain-end verdict (review P2×2): the reload tail list is a
-// post-upsert read under last-write-wins, so saveModel must hand the settled
-// outcome back to the caller — ok (with the list), failed (book without
-// evidence), deferred (batch, no tail).
-assert.match(
-  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8'),
-  /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,1800}return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: state\.savedModels \};/,
-  'the tauri saveModel must return the chain-end verdict — deferred / failed (book without evidence) / ok with the post-upsert list (a delete dispatched mid-tail lands its own newer-seq loadModels before the verdict is read)',
+// Bridge-side chain-end verdict (review P2×2 + r10 P2): the verdict is a
+// four-arm contract over the save chain's own loadModels ACCEPTANCE — ok
+// (accepted response carries the confirmed post-upsert list), failed
+// (accepted failure, book without evidence), superseded (a newer pending
+// loadModels discarded our response — last-write-wins publishes nothing, so
+// chain-end state can still be the pre-upsert accepted write and absence
+// there is NOT deletion), and deferred (batch, no tail). The accepted
+// evidence must come from the read's own response (tail.models), never from
+// the mutable state at chain end.
+const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,2600}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) return \{ refresh: 'superseded' \};\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
+assert.equal(
+  verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8')),
+  true,
+  'the tauri saveModel must return the four-arm chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded (a newer pending loadModels discarded our read: no evidence, present-only booking — absence in chain-end state there is a pre-upsert world, not a deletion)',
 );
-assert.match(
-  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
-  /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,1800}return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: state\.savedModels \};/,
-  'the web saveModel must return the same chain-end verdict contract as the tauri lane',
+assert.equal(
+  verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8')),
+  true,
+  'the web saveModel must return the same four-arm chain-end verdict contract as the tauri lane',
 );
 // Canonical identity fold (review P2: full-URL → canonical list → delete →
 // re-add): the Rust persistence arm strips the /chat/completions suffix before
@@ -1457,6 +1463,10 @@ function injectSource() {
     // resolve/reject,拉长单行保存在飞窗口,供「全部添加」禁用断言驱动时序。
     var saveModelDelay = 0;
     var listModelsFailure = false;
+    // ⑦.9h 时序旋钮:挂起接下来 N 次 list_models(序号已领取、响应未到),
+    // releaseHeldListModels 用当前世界统一放行。
+    var listModelsHoldCount = 0;
+    var heldListModels = [];
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
@@ -1564,6 +1574,13 @@ function injectSource() {
           // in-flight registry releases on settle; without the book the
           // settled identity is re-addable over an empty list).
           if (listModelsFailure) { listModelsFailure = false; return Promise.reject(new Error('⑦.4 list_models 注入失败')); }
+          // ⑦.9f/⑦.9h 时序旋钮:挂起接下来的 N 次 list_models,让保存链
+          // 的刷新尾读取停在在飞(序号已领取),供并发读取抢占序号或窗口
+          // 内插入删除。
+          if (listModelsHoldCount > 0) {
+            listModelsHoldCount -= 1;
+            return new Promise(function (resolve) { heldListModels.push(resolve); });
+          }
           return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
@@ -1692,6 +1709,27 @@ function injectSource() {
                 max_model_len: 8192,
               },
             ],
+            // ⑦.9h 被作废读取场景的隔离名册:仅在 ⑦.9h 使用。
+            8270: [
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8270/v1',
+                status: 'ready',
+                model: 'stale-twin-a',
+                models: ['stale-twin-a'],
+                max_model_len: 8192,
+              },
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8270/v1',
+                status: 'ready',
+                model: 'stale-twin-b',
+                models: ['stale-twin-b'],
+                max_model_len: 8192,
+              },
+            ],
           };
           const customPort = args && args.request && args.request.customPort;
           return Promise.resolve({ candidates: alternates[customPort] || [
@@ -1789,6 +1827,14 @@ function injectSource() {
         queued.forEach(function (resolve) { resolve(settings); });
       },
       armListModelsFailure: function () { listModelsFailure = true; },
+      armListModelsHold: function (count) { listModelsHoldCount = Number(count) || 0; },
+      heldListModelsCount: function () { return heldListModels.length; },
+      releaseHeldListModels: function () {
+        // FIFO 单个放行:先解最老的在飞读取(⑦.9h 需要只放 N、让 N+1 继续
+        // pending),payload 用放行时刻的当前世界。
+        var resolve = heldListModels.shift();
+        if (resolve) resolve({ models: models.slice(), active_model_id: activeModelId });
+      },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
       },
@@ -5101,6 +5147,82 @@ async function modalWidth(page, headingText) {
       && canonicalReadd.found && canonicalReadd.enabled
       && canonicalRelanded.landed && canonicalRelanded.count === 1,
     JSON.stringify({ landed: canonicalLanded, dup: canonicalDup, readd: canonicalReadd, relanded: canonicalRelanded }));
+
+  // ===== ⑦.9h review round-10 P2 (superseded save-owned read): the save
+  // chain's own list request N can be discarded by a newer concurrent
+  // request N+1 that is still pending — last-write-wins publishes nothing,
+  // so the chain ends with the PRE-upsert accepted world and the verdict
+  // must degrade to 'superseded' (book present-only, never treat absence as
+  // deletion). The old shape read the mutable chain-end state and produced
+  // {ok, models:[B]} for a save nobody deleted, skipped the booking, and let
+  // a same-identity re-add land a duplicate while N+1 was pending.
+  // Schedule: hold N, race N+1 via a production setActiveModel reload chain,
+  // resolve N with the post-upsert list (discarded), assert the identity is
+  // still blocked, then let N+1 land and prove no duplicate was created.
+  // Isolated roster 8270.
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8270');
+  await clickExact(page, '检测');
+  await sleep(600);
+  // 计数按身份过滤(与 blocked/afterAck 的口径一致,勿混总量)。
+  const staleSavesBefore = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'stale-twin-a').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armListModelsHold(2));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('stale-twin-a'));
+    if (button) button.click();
+  });
+  await sleep(600); // save_model ✓ → loadModels N 挂起(序号已领取)
+  // 并发更新请求 N+1:走生产 setActiveModel 重载链(行内其它场景同款旋钮)。
+  // 不 await——链会停在第二格挂起上,evaluate 等它落定会吊死 CDP。
+  await page.evaluate(() => {
+    window.TauriBridge.models.setActiveModel(window.__SETTINGS_TEST__.activeModelId());
+  });
+  await sleep(600); // N+1 链推进到它自己的 list_models(第二格挂起)
+  // N+1 到站轮询(确定性调度):它的链差一跳才到 list_models,等 held 涨到 2
+  // (N、N+1 双双在飞)——超时说明链根本没起,场景自身要红而不是静默走样。
+  let staleHeldSeen = false;
+  for (let i = 0; i < 30; i += 1) {
+    const held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (held === 2) { staleHeldSeen = true; break; }
+    await sleep(100);
+  }
+  if (!staleHeldSeen) throw new Error('⑦.9h N+1 未到站:setActiveModel 链未抵达挂起的 list_models');
+  // N 携带含 A 的列表后解析——被 N+1 作废,不发布:裁定必须退化 superseded,
+  // 入簿 present-only(旧形态在此读链尾 state 得到 {ok,[B]} 跳过入簿)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(600);
+  const staleBlocked = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('stale-twin-a'));
+    const saves = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'stale-twin-a').length;
+    return button
+      ? { found: true, disabled: button.disabled, savedLabel: (button.textContent || '').includes('已保存'), saves }
+      : { found: false };
+  });
+  // N+1 落地(放行第二格)→ 受理观察 [B,A] → present 退休,守卫自然移交列表。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(600);
+  const staleAfterAck = await page.evaluate(() => ({
+    saves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'stale-twin-a').length,
+    landed: window.__SETTINGS_TEST__.models().filter(item => item.model === 'stale-twin-a').length,
+  }));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9h 被作废的保存链读取:裁定退化 superseded,窗口内重加仍被簿拦截(零重复落库),后继受理后守卫移交列表且恰好一笔',
+    staleSavesBefore >= 0
+      && staleBlocked.found && staleBlocked.disabled && staleBlocked.savedLabel && staleBlocked.saves === staleSavesBefore + 1
+      && staleAfterAck.saves === staleSavesBefore + 1 && staleAfterAck.landed === 1,
+    JSON.stringify({ before: staleSavesBefore, blocked: staleBlocked, afterAck: staleAfterAck }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

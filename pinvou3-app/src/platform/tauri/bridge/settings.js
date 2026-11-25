@@ -104,26 +104,34 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
    // every single-row caller relies on.
    await invoke("save_model", { model });
    if (options && options.deferRefresh) return { refresh: 'deferred' };
-   await loadModels();
    // Chain-end verdict (review P2, late compound-save completion): loadModels
-   // starts AFTER the upsert resolves and its seq discipline is last-write-
-   // wins, so whatever sits in state at the end of the reload tail reflects a
-   // world at or after the upsert. A successful list there that lacks the
+   // starts AFTER the upsert resolves, so an ACCEPTED response is a confirmed
+   // post-upsert observation. A successful accepted list that lacks the
    // saved identity means the record was deleted inside the refresh tail —
    // the caller must not book that identity into its settled-but-unlisted
    // registry, because no later successful list can ever contain it and the
-   // reservation would block a legitimate re-add until reload. The list is
-   // read after the whole tail for exactly that reason: a delete dispatched
-   // mid-tail lands its own newer-seq loadModels before this point. A failed
-   // list read keeps the caller booking (protect the genuinely committed but
-   // unlisted save, r3 lane G) while still granting the absence floor: any
-   // later successful list reflects a read that started after this chain's
-   // loadModels started, i.e. after the upsert, so an absent identity there
-   // is a deleted one.
-   const listFailed = state.modelsListLoadFailed === true;
+   // reservation would block a legitimate re-add until reload. A failed
+   // accepted read keeps the caller booking (protect the genuinely committed
+   // but unlisted save, r3 lane G) while granting the absence floor: any
+   // later accepted successful list reflects a read that started after this
+   // chain's loadModels started, i.e. after the upsert, so an absent
+   // identity there is a deleted one.
+   // A SUPERSEDED read (review round 10 P2: a concurrent newer loadModels
+   // started before ours resolved — last-write-wins discards our response
+   // without publishing anything) publishes nothing: the state at chain end
+   // can still be the PRE-upsert accepted write, so absence there is NOT
+   // deletion. The verdict degrades to 'superseded' — the caller books
+   // present-only (protection retained for the committed-but-unlisted save)
+   // and the identity resolves through the next accepted list either way.
+   // The reload tail still runs in full: the settings/effective refresh is
+   // the save chain's own duty regardless of which verdict arm is taken.
+   const tail = await loadModels();
+   const superseded = !tail || !tail.accepted;
+   const listFailed = !superseded && tail.failed === true;
    await loadSettings();
    await loadEffectiveModelConfig();
-   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: state.savedModels };
+   if (superseded) return { refresh: 'superseded' };
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // exactly the three loaders the save chain runs, executed once for the whole
