@@ -61,6 +61,10 @@ const browserPaths = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'platform', 'paths.rs'),
   'utf8',
 );
+const browserDownloads = readFileSync(
+  path.join(projectRoot, 'src-tauri', 'src', 'features', 'browser', 'downloads.rs'),
+  'utf8',
+);
 const browserCommands = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'app', 'commands', 'browser.rs'),
   'utf8',
@@ -1072,15 +1076,129 @@ test('one global native surface prevents background Agent activation stealing th
   assert.match(nativeHost, /session_owns_visible_surface && workspace_visible/);
 });
 
-test('remote pages lack global clipboard access and downloads fail closed without path leakage', () => {
+test('remote pages lack global clipboard-read access', () => {
   assert.doesNotMatch(nativeHost, /enable_clipboard_access/);
-  assert.match(nativeHost, /\.on_download\(/);
-  assert.match(nativeHost, /"browser:download-blocked"/);
-  assert.match(nativeHost, /"sessionId": download_session_id/);
-  assert.match(nativeHost, /"tab": download_tab_token/);
-  assert.match(nativeHost, /let source = match \(url\.scheme\(\), url\.host_str\(\)\)/);
-  assert.doesNotMatch(nativeHost, /"destination"|"path": destination/);
+});
+
+test('embedded downloads stage privately and ask the user through a deferred OS dialog', () => {
+  // The engine callback answers at once: it only routes both events to the
+  // coordinator and never opens a dialog or touches a file on its stack.
+  assert.match(nativeHost, /\.on_download\(move \|webview, event\|/);
+  assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)/);
+  const downloadCallback = nativeHost.match(
+    /\.on_download\(move \|webview, event\| \{([\s\S]*?)\n {8}\}\)\n {8}\.on_navigation\(/,
+  );
+  assert.ok(downloadCallback, 'host wires on_download to the coordinator');
+  assert.doesNotMatch(
+    downloadCallback[1],
+    /dialog\(|save_file\(|create_dir|remove_dir|fs::/,
+  );
+  assert.match(
+    nativeHost,
+    /DownloadEvent::Requested \{[\s\S]{0,80}\} => downloads\.requested\([\s\S]{0,220}session_id: download_session_id\.clone\(\),\s*tab: download_tab_token\.clone\(\),[\s\S]{0,60}&url,\s*destination,\s*\),/,
+  );
+  assert.match(
+    nativeHost,
+    /DownloadEvent::Finished \{ url, path, success \} => \{\s*downloads\.finished\(app, &url, path\.as_deref\(\), success\);/,
+  );
+
+  // Without a staging file the download is still denied, and the notice
+  // exposes the origin of a URL that may carry one-time tokens.
+  assert.match(browserDownloads, /const EVENT_BLOCKED: &str = "browser:download-blocked";/);
+  assert.match(
+    browserDownloads,
+    /if let Err\(error\) = std::fs::create_dir_all\(&staging_dir\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*\}\),\s*\);\s*return false;/,
+  );
+  assert.match(browserDownloads, /\(scheme, Some\(host\)\) => format!\("\{scheme\}:\/\/\{host\}"\)/);
+
+  // The engine streams into a fresh private directory under the staging root.
+  assert.match(
+    browserDownloads,
+    /let id = new_download_id\(\);\s*let staging_dir = self\.staging_root\.join\(&id\);/,
+  );
+  assert.match(browserDownloads, /let file_name = sanitize_file_name\(destination\.file_name\(\)\);/);
+  assert.match(browserDownloads, /\*destination = staged_file\.clone\(\);/);
+
+  // A blocking dialog must not run on the UI thread, so the prompt is
+  // deferred and non-blocking.
+  assert.match(
+    browserDownloads,
+    /tauri::async_runtime::spawn\(async move \{\s*app\.state::<BrowserDownloads>\(\)\s*\.prompt\(&app, &notice\.id, &notice\.file_name\);/,
+  );
+  assert.match(browserDownloads, /\.save_file\(move \|picked\|/);
+  assert.doesNotMatch(browserDownloads, /blocking_save_file|blocking_show/);
+
+  // Placement and cleanup never block the UI thread.
+  assert.match(
+    browserDownloads,
+    /spawn_blocking\(move \|\| \{\s*let placed = place_staged_file\(&staged_file, &destination\)\.is_ok\(\);/,
+  );
+  assert.match(
+    browserDownloads,
+    /spawn_blocking\(move \|\| discard_directory\(&staging_dir\)\);/,
+  );
+
+  // An earlier process cannot leave staging behind, and the coordinator is
+  // created before any browser WebView exists.
+  assert.match(
+    browserDownloads,
+    /pub\(crate\) fn new\(staging_root: PathBuf\) -> Self \{\s*discard_directory\(&staging_root\);/,
+  );
+  assert.match(
+    browserPaths,
+    /pub fn browser_download_staging_dir\(\) -> PathBuf \{\s*browser_home\(\)\.join\("downloads"\)/,
+  );
+  assert.match(
+    tauriApp,
+    /app\.manage\(features::browser::BrowserDownloads::new\(\s*crate::platform::paths::browser_download_staging_dir\(\),\s*\)\);/,
+  );
+  assert.match(
+    tauriApp,
+    /commands::browser::browser_download_save_as,\s*commands::startup::report_frontend_startup,/,
+  );
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_save_as\(/,
+  );
+});
+
+test('download events and notices carry names and outcomes but no URL or local path', () => {
+  assert.match(
+    browserDownloads,
+    /"downloadId": self\.id,\s*"fileName": self\.file_name,/,
+  );
+  assert.match(browserDownloads, /fields\.insert\("outcome"\.into\(\), json!\(outcome\.as_str\(\)\)\);/);
+  assert.doesNotMatch(browserDownloads, /"(destination|path|url)": /);
+  // The retry only re-opens the dialog for a transfer that is still staged,
+  // and a repeated request never queues a second dialog.
+  const askAgain = browserDownloads.match(/fn ask_again\([^]*?\n {4}\}/);
+  assert.ok(askAgain, 'the coordinator implements the retry');
+  assert.match(
+    askAgain[0],
+    /download\.transfer != Transfer::Succeeded \|\| download\.intent != Intent::Unsaved \{\s*return Err\("download_not_retryable"\);/,
+  );
+  assert.match(
+    askAgain[0],
+    /matches!\(download\.intent, Intent::Asking \{ again: true \}\) \{\s*return Ok\(Vec::new\(\)\);/,
+  );
+  assert.match(
+    askAgain[0],
+    /download\.intent = Intent::Asking \{ again: true \};\s*self\.waiting\.push_back\(id\.to_string\(\)\);/,
+  );
+
   assert.match(browserView, /listenTauri\('browser:download-blocked'/);
-  assert.match(browserView, /if \(payload\.sessionId !== sessionId\) return;/);
   assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
+  assert.match(browserView, /listenTauri\('browser:download-started', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice: downloadStartedNotice\(t, payload\) \}\);/);
+  assert.match(browserView, /listenTauri\('browser:download-finished', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice \}\);/);
+  assert.match(
+    browserView,
+    /invokeTauri\('browser_download_save_as', \{ downloadId: downloadNotice\.downloadId \}\)/,
+  );
+  assert.match(browserView, /downloadNoticeCanSaveAs\(downloadNotice\) && \(/);
+  assert.match(browserView, /data-testid="browser-download-notice"[\s\S]{0,60}role="status"/);
+  // A stopped browser drops its notices with the rest of its UI state.
+  assert.match(
+    browserView,
+    /dispatchPersistenceWarning\(\{ type: 'clear' \}\);\s*dispatchDownloadNotice\(\{ type: 'reset' \}\);/,
+  );
 });

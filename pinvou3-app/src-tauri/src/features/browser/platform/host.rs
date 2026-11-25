@@ -3175,7 +3175,6 @@ fn build_webview<P: PlatformWebviewConfig>(
     let popup_tab_token = tab_token.to_string();
     let popup_control = Arc::clone(&control);
     let popup_publication = Arc::clone(&publication);
-    let download_app = app.clone();
     let download_session_id = session_id.to_string();
     let download_tab_token = tab_token.to_string();
     let cdp_tab_token = platform
@@ -3205,25 +3204,30 @@ fn build_webview<P: PlatformWebviewConfig>(
         // script exposes DOM-only helpers; native input remains behind the
         // task lease in Rust and is never callable by page JavaScript.
         .initialization_script_for_all_frames(init_script)
-        .on_download(move |_webview, event| {
-            if let DownloadEvent::Requested { url, .. } = event {
-                // URLs may contain one-time tokens or query parameters. Expose
-                // only the origin to UI and never record a local destination.
-                // Embedded downloads are denied; users can use a system browser.
-                let source = match (url.scheme(), url.host_str()) {
-                    (scheme, Some(host)) => format!("{scheme}://{host}"),
-                    (scheme, None) => format!("{scheme}:"),
-                };
-                let _ = download_app.emit(
-                    "browser:download-blocked",
-                    json!({
-                        "sessionId": download_session_id,
-                        "tab": download_tab_token,
-                        "source": source,
-                    }),
-                );
+        .on_download(move |webview, event| {
+            // Both events arrive on the native UI thread. The coordinator
+            // answers at once and keeps the OS save dialog off this stack.
+            let app = webview.app_handle();
+            let downloads = app.state::<super::super::BrowserDownloads>();
+            match event {
+                DownloadEvent::Requested {
+                    url,
+                    destination,
+                } => downloads.requested(
+                    app,
+                    super::super::DownloadPage {
+                        session_id: download_session_id.clone(),
+                        tab: download_tab_token.clone(),
+                    },
+                    &url,
+                    destination,
+                ),
+                DownloadEvent::Finished { url, path, success } => {
+                    downloads.finished(app, &url, path.as_deref(), success);
+                    false
+                }
+                _ => false,
             }
-            false
         })
         .on_navigation(move |url| {
             if let Some(signal_nonce) = location_change_signal_nonce(url) {

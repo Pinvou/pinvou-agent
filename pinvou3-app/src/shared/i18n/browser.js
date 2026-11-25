@@ -27,7 +27,13 @@ export const browserZh = {
   browserBlockedNavigation: '已阻止不安全的页面跳转',
   browserAutomationUnavailable: '页面仍可查看和手动操作，但当前平台的 Agent 浏览器自动化暂不可用。',
   browserPersistenceWarning: '页面仍可使用，但任务恢复信息暂未保存；应用正在后台重试。',
-  browserDownloadBlocked: (source) => `内嵌浏览器已阻止来自 ${source || '当前网站'} 的下载。请点击“在系统浏览器打开”后自行下载。`,
+  browserDownloadBlocked: (source) => `内嵌浏览器无法开始来自 ${source || '当前网站'} 的下载：未能创建临时文件。请点击“在系统浏览器打开”后自行下载。`,
+  browserDownloadStarted: (name) => `正在下载「${name}」。请在弹出的保存窗口中选择保存位置。`,
+  browserDownloadSaved: (name) => `「${name}」已保存。`,
+  browserDownloadCancelled: (name) => `已取消下载「${name}」。`,
+  browserDownloadFailed: (name) => `下载「${name}」失败，请重试。`,
+  browserDownloadUnsaved: (name) => `「${name}」已下载完成，但未能保存到所选位置。`,
+  browserDownloadSaveAs: '另存为…',
 };
 
 export const browserEn = {
@@ -59,7 +65,13 @@ export const browserEn = {
   browserBlockedNavigation: 'An unsafe navigation was blocked',
   browserAutomationUnavailable: 'The page remains available for viewing and manual use, but Agent browser automation is unavailable on this platform.',
   browserPersistenceWarning: 'The page is still usable, but its recovery state has not been saved yet. The app is retrying in the background.',
-  browserDownloadBlocked: (source) => `The embedded browser blocked a download from ${source || 'this site'}. Open the page in your system browser to download it.`,
+  browserDownloadBlocked: (source) => `The embedded browser could not start a download from ${source || 'this site'} because no temporary file could be created. Open the page in your system browser to download it.`,
+  browserDownloadStarted: (name) => `Downloading “${name}”. Choose where to save it in the Save dialog.`,
+  browserDownloadSaved: (name) => `“${name}” saved.`,
+  browserDownloadCancelled: (name) => `Download of “${name}” cancelled.`,
+  browserDownloadFailed: (name) => `“${name}” failed to download. Please try again.`,
+  browserDownloadUnsaved: (name) => `“${name}” finished downloading, but could not be saved to the chosen location.`,
+  browserDownloadSaveAs: 'Save as…',
 };
 
 export const browserJa = {
@@ -91,5 +103,11 @@ export const browserJa = {
   browserBlockedNavigation: '安全でないページ遷移をブロックしました',
   browserAutomationUnavailable: 'ページの表示と手動操作はできますが、このプラットフォームではエージェントのブラウザー自動操作をまだ利用できません。',
   browserPersistenceWarning: 'ページは使用できますが、復元状態をまだ保存できていません。アプリがバックグラウンドで再試行しています。',
-  browserDownloadBlocked: (source) => `内蔵ブラウザーは ${source || 'このサイト'} からのダウンロードをブロックしました。「システムブラウザーで開く」からダウンロードしてください。`,
+  browserDownloadBlocked: (source) => `一時ファイルを作成できなかったため、内蔵ブラウザーは ${source || 'このサイト'} からのダウンロードを開始できませんでした。「システムブラウザーで開く」からダウンロードしてください。`,
+  browserDownloadStarted: (name) => `「${name}」をダウンロードしています。保存ダイアログで保存先を選んでください。`,
+  browserDownloadSaved: (name) => `「${name}」を保存しました。`,
+  browserDownloadCancelled: (name) => `「${name}」のダウンロードをキャンセルしました。`,
+  browserDownloadFailed: (name) => `「${name}」をダウンロードできませんでした。もう一度お試しください。`,
+  browserDownloadUnsaved: (name) => `「${name}」のダウンロードは完了しましたが、選択した場所に保存できませんでした。`,
+  browserDownloadSaveAs: '名前を付けて保存…',
 };

@@ -1263,6 +1263,11 @@ pub fn run() {
                     browser_session_store.load(session_id).is_ok()
                 }));
                 app.manage(mgr);
+                // Created before any browser WebView exists: the coordinator
+                // deletes the staging an earlier process left behind.
+                app.manage(features::browser::BrowserDownloads::new(
+                    crate::platform::paths::browser_download_staging_dir(),
+                ));
                 features::browser::BrowserManager::spawn_watch(app.handle().clone());
                 spawn_deleted_session_browser_cleanup(
                     app.handle().clone(),
@@ -1727,6 +1732,7 @@ pub fn run() {
             commands::browser::browser_create_tab,
             commands::browser::browser_close_tab,
             commands::browser::browser_activate_tab,
+            commands::browser::browser_download_save_as,
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,

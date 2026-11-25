@@ -6,11 +6,17 @@
 //! - `browser:tabs-changed`: tabs were added or removed
 //! - `browser:activated`: MCP wrapper or this module prepared the conversation workspace
 //! - `browser:stopped`: browser stopped or crashed; the frontend hides the workspace
+//! - `browser:download-started`: a page download streams into private staging and the
+//!   OS save dialog is opening
+//! - `browser:download-finished`: a download was saved, cancelled, failed, or could not be
+//!   placed at the chosen path
+//! - `browser:download-blocked`: no staging file could be created, so the download was
+//!   cancelled
 
 use serde_json::Value;
 use tauri::State;
 
-use crate::features::browser::{BrowserManager, NativeSurfaceBounds, TabInfo};
+use crate::features::browser::{BrowserDownloads, BrowserManager, NativeSurfaceBounds, TabInfo};
 
 /// The host issues a globally increasing generation at renderer/HMR lifecycle start. Within
 /// one generation, the frontend assigns a strictly increasing sequence starting at 1 to
@@ -160,4 +166,16 @@ pub async fn browser_activate_tab(
     mgr: State<'_, BrowserManager>,
 ) -> Result<(), String> {
     mgr.activate_tab(&session_id, target_id).await
+}
+
+/// Reopens the OS save dialog for a download that finished but could not be
+/// placed (`outcome: "unsaved"`). Its staged file is kept until then, so a
+/// large transfer does not have to be downloaded again.
+#[tauri::command(async)]
+pub fn browser_download_save_as(
+    app: tauri::AppHandle,
+    download_id: String,
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<(), String> {
+    downloads.save_as(&app, &download_id)
 }

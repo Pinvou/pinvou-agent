@@ -27,6 +27,13 @@ import {
   shouldShowNativeBrowserSurface,
 } from './browser-display.mjs';
 import {
+  downloadFinishedNotice,
+  downloadNoticeCanSaveAs,
+  downloadNoticesReducer,
+  downloadStartedNotice,
+  latestDownloadNotice,
+} from './download-notice.mjs';
+import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -107,6 +114,7 @@ export function BrowserView({
     persistenceWarningReducer,
     EMPTY_PERSISTENCE_WARNING,
   );
+  const [downloadNotices, dispatchDownloadNotice] = useReducer(downloadNoticesReducer, {});
   const [controlOwner, setControlOwner] = useState(null);
   const [controlRevision, setControlRevision] = useState(null);
   const wheelRef = useRef(null);
@@ -166,6 +174,7 @@ export function BrowserView({
     return true;
   }, []);
   const persistenceWarning = visiblePersistenceWarning(persistenceWarningState);
+  const downloadNotice = latestDownloadNotice(downloadNotices);
   const showingNewTab = running && isInternalBlankPageUrl(url);
   const nativeSurfaceReady = shouldShowNativeBrowserSurface({
     statusResolved: initialStatusResolved,
@@ -552,6 +561,7 @@ export function BrowserView({
       setControlOwner(null);
       setControlRevision(null);
       dispatchPersistenceWarning({ type: 'clear' });
+      dispatchDownloadNotice({ type: 'reset' });
       setInitialStatusResolved(true);
     }));
     guard('browser:control-changed', listenTauri('browser:control-changed', (event) => {
@@ -603,6 +613,21 @@ export function BrowserView({
       if (payload.sessionId !== sessionId) return;
       errorEventEpochRef.current += 1;
       setError(t.browserDownloadBlocked(payload.source || ''));
+    }));
+    // A download streams into private staging while the OS save dialog asks
+    // where it belongs. Events carry the file name and outcome only.
+    guard('browser:download-started', listenTauri('browser:download-started', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      const payload = event.payload || {};
+      if (payload.sessionId !== sessionId) return;
+      dispatchDownloadNotice({ type: 'report', notice: downloadStartedNotice(t, payload) });
+    }));
+    guard('browser:download-finished', listenTauri('browser:download-finished', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      const payload = event.payload || {};
+      if (payload.sessionId !== sessionId) return;
+      const notice = downloadFinishedNotice(t, payload);
+      if (notice) dispatchDownloadNotice({ type: 'report', notice });
     }));
     guard('browser:persistence-warning', listenTauri('browser:persistence-warning', (event) => {
       if (disposed || !browserViewMountedRef.current) return;
@@ -776,6 +801,17 @@ export function BrowserView({
       reportErrorForOperation(errorOperationEpoch, e);
     }
   }, [beginErrorOperation, reportErrorForOperation, url]);
+
+  // ---- Downloads ----
+  const saveDownloadAs = useCallback(async () => {
+    if (!downloadNoticeCanSaveAs(downloadNotice)) return;
+    const operationEpoch = beginErrorOperation();
+    try {
+      await invokeTauri('browser_download_save_as', { downloadId: downloadNotice.downloadId });
+    } catch (e) {
+      reportErrorForOperation(operationEpoch, e);
+    }
+  }, [beginErrorOperation, downloadNotice, reportErrorForOperation]);
 
   // ---- Tabs ----
   const createTab = useCallback(async () => {
@@ -1122,6 +1158,42 @@ export function BrowserView({
             </button>
           </div>
           <div className="mt-1" style={{ opacity: 0.75, wordBreak: 'break-all' }}>{persistenceWarning}</div>
+        </div>
+      )}
+      {running && downloadNotice && (
+        <div
+          data-testid="browser-download-notice"
+          role="status"
+          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-sm"
+          style={{
+            background: isDark ? '#1C2530' : '#EDF3FB',
+            border: `1px solid ${isDark ? '#2E4258' : '#C3D5EC'}`,
+            color: isDark ? '#C3D9F2' : '#1F4E79',
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1" style={{ wordBreak: 'break-word' }}>{downloadNotice.message}</div>
+            {downloadNoticeCanSaveAs(downloadNotice) && (
+              <button
+                type="button"
+                data-testid="browser-download-save-as"
+                className="shrink-0 rounded border border-current px-2 py-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={saveDownloadAs}
+              >
+                {t.browserDownloadSaveAs}
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="browser-download-notice-dismiss"
+              title={t.winClose}
+              aria-label={t.winClose}
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+              onClick={() => dispatchDownloadNotice({ type: 'dismiss', downloadId: downloadNotice.downloadId })}
+            >
+              <XIcon size={13} />
+            </button>
+          </div>
         </div>
       )}
 
