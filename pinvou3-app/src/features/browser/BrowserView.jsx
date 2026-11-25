@@ -612,7 +612,11 @@ export function BrowserView({
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
       errorEventEpochRef.current += 1;
-      setError(t.browserDownloadBlocked(payload.source || ''));
+      // `limit` means too many downloads are live; anything else means no
+      // staging file could be created.
+      setError(payload.reason === 'limit'
+        ? t.browserDownloadBusy(payload.source || '')
+        : t.browserDownloadBlocked(payload.source || ''));
     }));
     // A download streams into private staging while the OS save dialog asks
     // where it belongs. Events carry the file name and outcome only.

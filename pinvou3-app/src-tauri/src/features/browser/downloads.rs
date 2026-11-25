@@ -18,6 +18,11 @@
 //!
 //! Events carry an opaque download id, the file name, and an outcome. The URL
 //! (which may hold one-time tokens) and local paths stay in this process.
+//!
+//! The engine reports completions either with the written path or, on engines
+//! without one, only by URL; a URL shared by several streaming transfers is
+//! attributed only once all of them have reported, failing closed when the
+//! reports disagree.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
@@ -33,19 +38,25 @@ use crate::platform::strings::truncate_utf8;
 
 const EVENT_STARTED: &str = "browser:download-started";
 const EVENT_FINISHED: &str = "browser:download-finished";
-/// No staging file could be created, so the engine download is cancelled.
+/// The app refused the download: no staging file could be created, or too
+/// many downloads are already live (`reason` says which).
 const EVENT_BLOCKED: &str = "browser:download-blocked";
 const MAIN_WINDOW: &str = "main";
 const FALLBACK_FILE_NAME: &str = "download";
 /// Longest suggested name kept for staging and for the dialog. It bounds one
 /// path component only; the transfer size is never limited.
 const MAX_FILE_NAME_BYTES: usize = 120;
+/// Live transfers tracked at once (streaming, asking, unsaved, or placing).
+/// A page that asks for more is denied with the `blocked` notice, so one
+/// page cannot grow staging or the serialized dialog queue without bound.
+const MAX_LIVE_DOWNLOADS: usize = 16;
 /// Longer "extensions" are treated as part of the name, so truncating a long
 /// name cannot spend its whole budget on a suffix.
 const MAX_EXTENSION_BYTES: usize = 24;
 
 /// The page that requested a download. Identifies the UI surface that shows
 /// the notice.
+#[derive(Clone)]
 pub(crate) struct DownloadPage {
     pub(crate) session_id: String,
     pub(crate) tab: String,
@@ -103,8 +114,6 @@ struct Download {
     staged_file: PathBuf,
     transfer: Transfer,
     intent: Intent,
-    /// Breaks ties when several transfers share a URL.
-    order: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,10 +182,21 @@ struct Registry {
     waiting: VecDeque<String>,
     /// The transfer whose save dialog is open.
     prompting: Option<String>,
-    next_order: u64,
+    /// Completion reports that cannot yet be attributed: engines without a
+    /// written path (macOS always, Windows on failure) can only match by URL,
+    /// and while several in-flight transfers share that URL the report would
+    /// mark an arbitrary one. Held until every transfer of the URL has
+    /// reported; see `transfer_finished`.
+    ambiguous_finishes: Vec<(String, bool)>,
 }
 
 impl Registry {
+    /// A new download is denied beyond the live cap, so one page cannot grow
+    /// staging or the dialog queue without bound.
+    fn has_capacity(&self) -> bool {
+        self.downloads.len() < MAX_LIVE_DOWNLOADS
+    }
+
     fn begin(&mut self, download: Download) -> Vec<Effect> {
         let effects = vec![Effect::Started(download.notice.clone())];
         self.waiting.push_back(download.notice.id.clone());
@@ -290,32 +310,98 @@ impl Registry {
 
     fn transfer_finished(&mut self, url: &str, path: Option<&Path>, success: bool) -> Vec<Effect> {
         let in_flight = |download: &Download| download.transfer == Transfer::InFlight;
-        let id = path
-            .and_then(|path| {
-                self.downloads
-                    .iter()
-                    .find(|(_, download)| in_flight(download) && download.staged_file == path)
-                    .map(|(id, _)| id.clone())
-            })
-            .or_else(|| {
-                self.downloads
-                    .iter()
-                    .filter(|(_, download)| in_flight(download) && download.url == url)
-                    .min_by_key(|(_, download)| download.order)
-                    .map(|(id, _)| id.clone())
-            });
-        let Some(id) = id else {
+        // A written path names exactly one transfer; engines that supply one
+        // are matched by it.
+        let matched = path.and_then(|path| {
+            self.downloads
+                .iter()
+                .find(|(_, download)| in_flight(download) && download.staged_file == path)
+                .map(|(id, _)| id.clone())
+        });
+        if let Some(id) = matched {
+            if let Some(download) = self.downloads.get_mut(&id) {
+                download.transfer = if success {
+                    Transfer::Succeeded
+                } else {
+                    Transfer::Failed
+                };
+            }
+            return self.settle(&id);
+        }
+        if path.is_some() {
             return Vec::new();
-        };
-        let Some(download) = self.downloads.get_mut(&id) else {
+        }
+        // Without a written path the report can only be attributed by URL, and
+        // only while exactly one in-flight transfer carries it. Otherwise it
+        // is held: every transfer reports once, so once all of them have
+        // reported, the outcomes are known even though their owner is not.
+        let candidates = self
+            .downloads
+            .values()
+            .filter(|download| in_flight(download) && download.url == url)
+            .count();
+        if candidates == 0 {
             return Vec::new();
-        };
-        download.transfer = if success {
+        }
+        if candidates == 1 {
+            let id = self
+                .downloads
+                .iter()
+                .find(|(_, download)| in_flight(download) && download.url == url)
+                .map(|(id, _)| id.clone());
+            let Some(id) = id else {
+                return Vec::new();
+            };
+            if let Some(download) = self.downloads.get_mut(&id) {
+                download.transfer = if success {
+                    Transfer::Succeeded
+                } else {
+                    Transfer::Failed
+                };
+            }
+            return self.settle(&id);
+        }
+        self.ambiguous_finishes.push((url.to_string(), success));
+        let reported = self
+            .ambiguous_finishes
+            .iter()
+            .filter(|(pending_url, _)| pending_url == url)
+            .count();
+        if reported < candidates {
+            return Vec::new();
+        }
+        // Every transfer of the URL has completed. With one outcome across the
+        // reports, every assignment is the same; with differing outcomes no
+        // assignment is provable, and no staged copy may ship unverified, so
+        // all of them fail closed.
+        let all_succeeded = self
+            .ambiguous_finishes
+            .iter()
+            .filter(|(pending_url, _)| pending_url == url)
+            .all(|(_, success)| *success);
+        let outcome = if all_succeeded {
             Transfer::Succeeded
         } else {
             Transfer::Failed
         };
-        self.settle(&id)
+        self.ambiguous_finishes
+            .retain(|(pending_url, _)| pending_url != url);
+        let mut ids: Vec<String> = self
+            .downloads
+            .iter()
+            .filter(|(_, download)| in_flight(download) && download.url == url)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // Sorted so the reported events do not depend on map order.
+        ids.sort();
+        let mut effects = Vec::new();
+        for id in ids {
+            if let Some(download) = self.downloads.get_mut(&id) {
+                download.transfer = outcome;
+            }
+            effects.extend(self.settle(&id));
+        }
+        effects
     }
 
     /// Queues a new save dialog for a finished transfer that has no place yet.
@@ -376,6 +462,15 @@ pub(crate) struct BrowserDownloads {
     registry: Mutex<Registry>,
     /// Folder of the last file the user saved in this session.
     last_directory: Mutex<Option<PathBuf>>,
+    /// Webview label -> owning page. wry attaches the download handler per
+    /// webview, but on Linux every tab shares one WebKitWebContext and its
+    /// signal handlers accumulate, so the first-connected handler answers for
+    /// every tab. The page is therefore resolved from the webview label at
+    /// event time; a page captured per build would misattribute downloads to
+    /// whichever tab happened to be built first. Labels are unique per tab and
+    /// never reused across sessions, so a closed tab's entry is never consulted
+    /// again, and a rebuilt tab overwrites its own entry in place.
+    pages: Mutex<HashMap<String, DownloadPage>>,
 }
 
 impl BrowserDownloads {
@@ -385,10 +480,21 @@ impl BrowserDownloads {
     pub(crate) fn new(staging_root: PathBuf) -> Self {
         discard_directory(&staging_root);
         Self {
-            staging_root,
+            staging_root: absolute_staging_root(staging_root),
             registry: Mutex::new(Registry::default()),
             last_directory: Mutex::new(None),
+            pages: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Records which page owns a webview label. Called by the platform adapter
+    /// when a browser webview is built; see the `pages` field.
+    pub(crate) fn register_page(&self, label: &str, page: DownloadPage) {
+        self.pages.lock().insert(label.to_string(), page);
+    }
+
+    pub(crate) fn page_for_label(&self, label: &str) -> Option<DownloadPage> {
+        self.pages.lock().get(label).cloned()
     }
 
     /// `DownloadEvent::Requested`. Runs on the native UI thread, so it only
@@ -401,6 +507,11 @@ impl BrowserDownloads {
         url: &Url,
         destination: &mut PathBuf,
     ) -> bool {
+        if !self.registry.lock().has_capacity() {
+            eprintln!("[browser] Download denied: too many live downloads");
+            emit_blocked(app, &page, url, "limit");
+            return false;
+        }
         let file_name = sanitize_file_name(destination.file_name());
         let id = new_download_id();
         let staging_dir = self.staging_root.join(&id);
@@ -411,23 +522,13 @@ impl BrowserDownloads {
                 "[browser] Download staging directory unavailable: {}",
                 error.kind()
             );
-            let _ = app.emit(
-                EVENT_BLOCKED,
-                json!({
-                    "sessionId": page.session_id,
-                    "tab": page.tab,
-                    // URLs may carry one-time tokens or query parameters.
-                    "source": download_source(url),
-                }),
-            );
+            emit_blocked(app, &page, url, "staging");
             return false;
         }
         let staged_file = staging_dir.join(&file_name);
         *destination = staged_file.clone();
         let effects = {
             let mut registry = self.registry.lock();
-            registry.next_order += 1;
-            let order = registry.next_order;
             registry.begin(Download {
                 notice: Notice {
                     id,
@@ -440,7 +541,6 @@ impl BrowserDownloads {
                 staged_file,
                 transfer: Transfer::InFlight,
                 intent: Intent::Asking { again: false },
-                order,
             })
         };
         self.perform(app, effects);
@@ -489,7 +589,7 @@ impl BrowserDownloads {
                 } => {
                     let app = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let placed = place_staged_file(&staged_file, &destination).is_ok();
+                        let placed = place_staged_file(&staged_file, &destination, &id).is_ok();
                         if placed {
                             discard_directory(&staging_dir);
                         }
@@ -556,6 +656,16 @@ fn dialog_directory(last: Option<&Path>, fallback: Option<PathBuf>) -> Option<Pa
         .or(fallback)
 }
 
+/// The engine writes the transfer itself and requires an absolute destination;
+/// a relative `PINVOU3_HOME` override would otherwise send it to a
+/// cwd-relative path that placement can never find again.
+fn absolute_staging_root(root: PathBuf) -> PathBuf {
+    if root.is_absolute() {
+        return root;
+    }
+    std::env::current_dir().unwrap_or_default().join(root)
+}
+
 fn finished_payload(notice: &Notice, outcome: Outcome) -> Value {
     let mut payload = notice.payload();
     if let Value::Object(fields) = &mut payload {
@@ -571,12 +681,7 @@ fn sanitize_file_name(raw: Option<&OsStr>) -> String {
     let name: String = raw
         .chars()
         .map(|character| {
-            if character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-            {
+            if is_forbidden_in_file_name(character) {
                 '_'
             } else {
                 character
@@ -591,7 +696,7 @@ fn sanitize_file_name(raw: Option<&OsStr>) -> String {
         trimmed
     };
     let (stem, extension) = split_extension(name);
-    let stem = if is_reserved_device_name(stem) {
+    let stem = if starts_with_reserved_device_name(stem) {
         format!("_{stem}")
     } else {
         stem.to_string()
@@ -619,6 +724,28 @@ fn split_extension(name: &str) -> (&str, &str) {
         .map_or((name, ""), |dot| (&name[..dot], &name[dot..]))
 }
 
+/// Control characters cannot render, and bidirectional overrides, isolates,
+/// zero-width marks, the soft hyphen, and the byte-order mark render
+/// deceptively: a reversed suffix can make an executable look like a document.
+fn is_forbidden_in_file_name(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+        )
+        || matches!(
+            character as u32,
+            0x00AD | 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF
+        )
+}
+
+/// Windows refuses these stems even with an extension and in any case. Classic
+/// Win32 reads the device name from the segment before the first dot, so
+/// `CON.tar.gz` is refused even though the full stem does not match.
+fn starts_with_reserved_device_name(stem: &str) -> bool {
+    is_reserved_device_name(stem) || stem.split('.').next().is_some_and(is_reserved_device_name)
+}
+
 /// Windows refuses these stems even with an extension and in any case.
 fn is_reserved_device_name(stem: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
@@ -638,25 +765,56 @@ fn new_download_id() -> String {
     format!("{:032x}", rand::random::<u128>())
 }
 
+/// Emits the notice for a download the app refused: no staging file could be
+/// created, or too many downloads are already live.
+fn emit_blocked(app: &AppHandle, page: &DownloadPage, url: &Url, reason: &str) {
+    let _ = app.emit(
+        EVENT_BLOCKED,
+        json!({
+            "sessionId": page.session_id,
+            "tab": page.tab,
+            // URLs may carry one-time tokens or query parameters.
+            "source": download_source(url),
+            "reason": reason,
+        }),
+    );
+}
+
 /// Exposes only the origin of a URL that may carry one-time tokens.
 fn download_source(url: &Url) -> String {
+    let port = match url.port() {
+        Some(port) => format!(":{port}"),
+        None => String::new(),
+    };
     match (url.scheme(), url.host_str()) {
-        (scheme, Some(host)) => format!("{scheme}://{host}"),
+        (scheme, Some(host)) => format!("{scheme}://{host}{port}"),
         (scheme, None) => format!("{scheme}:"),
     }
 }
 
 /// Moves a finished transfer to the user's path.
-fn place_staged_file(staged_file: &Path, destination: &Path) -> io::Result<()> {
-    place_staged_file_with(staged_file, destination, |from, to| {
-        std::fs::rename(from, to)
-    })
+fn place_staged_file(staged_file: &Path, destination: &Path, id: &str) -> io::Result<()> {
+    place_staged_file_with(
+        staged_file,
+        destination,
+        &format!(".pinvou-{id}.part"),
+        |from, to| std::fs::rename(from, to),
+        |source, target| io::copy(source, target),
+    )
 }
 
-/// `rename` is injected so tests can stand in for a destination on another
-/// volume, which a single-volume test machine cannot provide.
-fn place_staged_file_with<R>(staged_file: &Path, destination: &Path, rename: R) -> io::Result<()>
+/// `rename` and `copy` are injected so tests can stand in for a destination on
+/// another volume, which a single-volume test machine cannot provide, and for
+/// a transfer that dies mid-copy.
+fn place_staged_file_with<C, R>(
+    staged_file: &Path,
+    destination: &Path,
+    temporary_name: &str,
+    rename: R,
+    copy: C,
+) -> io::Result<()>
 where
+    C: Fn(&mut std::fs::File, &mut std::fs::File) -> io::Result<u64>,
     R: Fn(&Path, &Path) -> io::Result<()>,
 {
     match rename(staged_file, destination) {
@@ -666,26 +824,37 @@ where
         Err(_) => {}
     }
     // The destination never holds a partial file: the copy streams into a
-    // temporary sibling, and the staged copy is removed only after the swap.
+    // temporary sibling named after the download, and the staged copy is
+    // removed only after the swap. A process killed mid-copy leaves exactly
+    // one attributable `.pinvou-<id>.part` behind instead of a mystery file.
     let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let temporary = parent.join(format!(".pinvou-{}.part", new_download_id()));
+    let temporary = parent.join(temporary_name);
     let placed = (|| -> io::Result<()> {
+        // Power-loss durability matches the cross-volume path: the staged
+        // bytes reach the disk before the name appears at the destination.
+        std::fs::File::open(staged_file)?.sync_all()?;
         let mut source = std::fs::File::open(staged_file)?;
         let mut target = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        let copied = io::copy(&mut source, &mut target).and_then(|_| target.sync_all());
+        let copied = copy(&mut source, &mut target).and_then(|_| target.sync_all());
         // Windows refuses to rename a file that is still open.
         drop(target);
         copied?;
         rename(&temporary, destination)
     })();
     match placed {
-        Ok(()) => std::fs::remove_file(staged_file),
+        Ok(()) => {
+            // The transfer is at its destination; a staged copy that refuses
+            // to disappear is swept with the staging directory, not reported
+            // as a failed save.
+            let _ = std::fs::remove_file(staged_file);
+            Ok(())
+        }
         Err(error) => {
             let _ = std::fs::remove_file(&temporary);
             Err(error)
@@ -725,15 +894,13 @@ mod tests {
             staging_dir,
             transfer: Transfer::InFlight,
             intent: Intent::Asking { again: false },
-            order: 0,
         }
     }
 
     fn registry_with(ids: &[&str]) -> Registry {
         let mut registry = Registry::default();
-        for (position, id) in ids.iter().enumerate() {
-            let mut download = record(id, &url(id));
-            download.order = position as u64 + 1;
+        for id in ids {
+            let download = record(id, &url(id));
             registry.begin(download);
         }
         registry
@@ -814,6 +981,63 @@ mod tests {
         assert_eq!(
             sanitize_file_name(Some(OsStr::new("季度报告.pdf"))),
             "季度报告.pdf"
+        );
+        // Bidirectional overrides and zero-width marks render deceptively;
+        // a reversed suffix must not masquerade as a harmless extension.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("report\u{202E}fdp.pdf"))),
+            "report_fdp.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("\u{200B}x.pdf"))),
+            "_x.pdf"
+        );
+        // Classic Win32 reads the device name before the first dot.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("CON.tar.gz"))),
+            "_CON.tar.gz"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("lpt9.bak.gz"))),
+            "_lpt9.bak.gz"
+        );
+    }
+
+    #[test]
+    fn downloads_are_capped_so_one_page_cannot_grow_staging_without_bound() {
+        let mut registry = Registry::default();
+        registry.begin(record("a", URL_A));
+        assert!(registry.has_capacity());
+        let many: Vec<String> = (0..MAX_LIVE_DOWNLOADS)
+            .map(|index| format!("d{index}"))
+            .collect();
+        for id in many.iter() {
+            let download = record(id, &url(id));
+            registry.begin(download);
+        }
+        // The coordinator now tracks more than the cap: no further download.
+        assert!(!registry.has_capacity());
+    }
+
+    #[test]
+    fn abandoning_a_queued_transfer_leaves_the_open_dialog_alone() {
+        let mut registry = registry_with(&["a", "b"]);
+        // a owns the dialog; the late prompt task of queued b must not steal it.
+        assert_eq!(registry.abandon_prompt("b"), Vec::<Effect>::new());
+        assert_eq!(registry.prompting.as_deref(), Some("a"));
+        assert!(registry.is_asking("b"));
+    }
+
+    #[test]
+    fn a_relative_staging_root_is_made_absolute_for_the_engine() {
+        // The engine requires an absolute destination; a relative PINVOU3_HOME
+        // override would otherwise write the transfer to a cwd-relative path.
+        let absolute = absolute_staging_root(PathBuf::from("relative/downloads"));
+        assert!(absolute.is_absolute());
+        assert!(absolute.ends_with("relative/downloads"));
+        assert_eq!(
+            absolute_staging_root(PathBuf::from("/already/absolute")),
+            PathBuf::from("/already/absolute")
         );
     }
 
@@ -940,27 +1164,31 @@ mod tests {
     }
 
     #[test]
-    fn finished_matches_the_written_path_then_the_oldest_matching_url() {
+    fn finished_matches_the_written_path_then_the_one_matching_url() {
         let same = "https://site.invalid/file?token=one-time";
         let mut registry = Registry::default();
-        for (position, id) in ["a", "b", "c"].iter().enumerate() {
-            let mut download = record(id, same);
-            download.order = position as u64 + 1;
-            registry.begin(download);
+        for id in ["a", "b", "c"] {
+            registry.begin(record(id, same));
         }
-        // Engines that report no path fall back to the oldest transfer with that URL.
-        assert_eq!(
-            registry.transfer_finished(same, None, false),
-            vec![discard("a"), finished("a", Outcome::Failed)]
-        );
-        // A reported path wins over the URL.
+        // A completion without a written path cannot name its owner while two
+        // other transfers stream the same URL: it waits.
+        assert_eq!(registry.transfer_finished(same, None, false), vec![]);
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // A reported path wins over the URL at any time.
         assert_eq!(
             registry.transfer_finished(same, Some(&staged_path("c")), false),
             vec![discard("c"), finished("c", Outcome::Failed)]
         );
+        // Now every transfer of the URL has reported a failure, so both
+        // remaining transfers fail no matter which report named which.
         assert_eq!(
             registry.transfer_finished(same, None, false),
-            vec![discard("b"), finished("b", Outcome::Failed)]
+            vec![
+                discard("a"),
+                finished("a", Outcome::Failed),
+                discard("b"),
+                finished("b", Outcome::Failed)
+            ]
         );
         // Unknown and repeated reports change nothing.
         assert_eq!(registry.transfer_finished(same, None, true), vec![]);
@@ -969,6 +1197,66 @@ mod tests {
             vec![]
         );
         assert!(registry.downloads.is_empty());
+        assert!(registry.ambiguous_finishes.is_empty());
+    }
+
+    #[test]
+    fn same_url_completions_without_a_path_wait_until_all_have_reported() {
+        let mut registry = Registry::default();
+        registry.begin(record("a", URL_A));
+        registry.begin(record("b", URL_A));
+        // The first pathless completion is ambiguous and waits.
+        assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        assert_eq!(registry.downloads["b"].transfer, Transfer::InFlight);
+        // With every transfer of the URL completed, uniform outcomes attribute
+        // cleanly even though the owner of each report is unknown.
+        assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
+        assert_eq!(registry.downloads["a"].transfer, Transfer::Succeeded);
+        assert_eq!(registry.downloads["b"].transfer, Transfer::Succeeded);
+        assert!(registry.ambiguous_finishes.is_empty());
+        // Each waits for its own dialog answer; answering a hands the dialog
+        // to b, and neither places early.
+        assert_eq!(
+            registry.answer("a", Some(chosen("a"))),
+            vec![place("a", chosen("a")), prompt("b")]
+        );
+        assert_eq!(
+            registry.answer("b", Some(chosen("b"))),
+            vec![place("b", chosen("b"))]
+        );
+        assert_eq!(
+            registry.placed("a", true),
+            vec![finished("a", Outcome::Saved)]
+        );
+        assert_eq!(
+            registry.placed("b", true),
+            vec![finished("b", Outcome::Saved)]
+        );
+        assert!(registry.downloads.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_completions_that_disagree_fail_closed_instead_of_guessing() {
+        let mut registry = Registry::default();
+        registry.begin(record("a", URL_A));
+        registry.begin(record("b", URL_A));
+        assert_eq!(registry.answer("a", Some(chosen("a"))), vec![prompt("b")]);
+        assert_eq!(registry.answer("b", Some(chosen("b"))), vec![]);
+        // One transfer succeeded and one failed, but which is which is unknowable:
+        // nothing ships as saved, and both are discarded as failed.
+        assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            vec![
+                discard("a"),
+                finished("a", Outcome::Failed),
+                discard("b"),
+                finished("b", Outcome::Failed)
+            ]
+        );
+        assert!(registry.downloads.is_empty());
+        assert!(registry.ambiguous_finishes.is_empty());
     }
 
     #[test]
@@ -977,9 +1265,7 @@ mod tests {
         finish_ok(&mut registry, "a");
         // The first transfer is complete and still waits for the user when
         // the page starts the same download again.
-        let mut again = record("b", URL_A);
-        again.order = 2;
-        registry.begin(again);
+        registry.begin(record("b", URL_A));
         // An engine that reports no path must match the streaming transfer.
         assert_eq!(
             registry.transfer_finished(URL_A, None, false),
@@ -1129,6 +1415,17 @@ mod tests {
             download_source(&Url::parse("blob:https://site.invalid/uuid").unwrap()),
             "blob:"
         );
+        // The outcome strings cross the wire verbatim and are the keys the
+        // frontend notice map understands; renaming one silently drops notices.
+        assert_eq!(Outcome::Saved.as_str(), "saved");
+        assert_eq!(Outcome::Cancelled.as_str(), "cancelled");
+        assert_eq!(Outcome::Failed.as_str(), "failed");
+        assert_eq!(Outcome::Unsaved.as_str(), "unsaved");
+        // An explicit port is part of the origin a user can act on.
+        assert_eq!(
+            download_source(&Url::parse("https://site.invalid:8443/a").unwrap()),
+            "https://site.invalid:8443"
+        );
     }
 
     fn staged(root: &Path, bytes: &[u8]) -> PathBuf {
@@ -1167,7 +1464,7 @@ mod tests {
         let staged_file = staged(temp.path(), b"new contents");
         let destination = temp.path().join("file.bin");
         std::fs::write(&destination, b"old contents").unwrap();
-        place_staged_file(&staged_file, &destination).unwrap();
+        place_staged_file(&staged_file, &destination, "id").unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), b"new contents");
         assert!(!staged_file.exists());
     }
@@ -1187,7 +1484,9 @@ mod tests {
         place_staged_file_with(
             &staged_file,
             &destination,
+            ".pinvou-id.part",
             rename_across_volumes(&staged_file),
+            |source, target| io::copy(source, target),
         )
         .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), payload);
@@ -1204,7 +1503,16 @@ mod tests {
         // Every move is refused, the way a destination no process may touch is.
         let rename =
             |_: &Path, _: &Path| Err(io::Error::new(io::ErrorKind::PermissionDenied, "locked"));
-        assert!(place_staged_file_with(&staged_file, &destination, rename).is_err());
+        assert!(
+            place_staged_file_with(
+                &staged_file,
+                &destination,
+                ".pinvou-id.part",
+                rename,
+                |source, target| io::copy(source, target),
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read(&staged_file).unwrap(), b"contents");
         assert!(!destination.exists());
     }
@@ -1216,11 +1524,64 @@ mod tests {
         let folder = temp.path().join("other-volume");
         std::fs::create_dir(&folder).unwrap();
         let destination = folder.join("file.bin");
-        // The swap fails the way a locked destination or a full disk makes it.
-        let rename = |_: &Path, _: &Path| Err(io::Error::new(io::ErrorKind::Other, "locked"));
-        assert!(place_staged_file_with(&staged_file, &destination, rename).is_err());
+        // The first rename refuses like another volume, which forces the copy;
+        // the swap onto the destination then fails the way a locked file or a
+        // full disk makes it.
+        let rename = |from: &Path, _to: &Path| {
+            if from == staged_file {
+                Err(io::Error::new(
+                    io::ErrorKind::CrossesDevices,
+                    "simulated EXDEV",
+                ))
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, "locked"))
+            }
+        };
+        assert!(
+            place_staged_file_with(
+                &staged_file,
+                &destination,
+                ".pinvou-id.part",
+                rename,
+                |source, target| io::copy(source, target),
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read(&staged_file).unwrap(), b"contents");
+        assert!(!destination.exists());
         assert!(entries(&folder).is_empty());
+    }
+
+    #[test]
+    fn a_copy_that_dies_mid_stream_never_places_a_partial_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged_file = staged(temp.path(), b"contents");
+        let folder = temp.path().join("other-volume");
+        std::fs::create_dir(&folder).unwrap();
+        let destination = folder.join("file.bin");
+        // The copy is forced onto another volume and dies mid-stream; the swap
+        // itself would have succeeded, so only the copied-error guard stands
+        // between a truncated transfer and the user's folder.
+        let rename = |from: &Path, to: &Path| {
+            if from == staged_file {
+                Err(io::Error::new(
+                    io::ErrorKind::CrossesDevices,
+                    "simulated EXDEV",
+                ))
+            } else {
+                std::fs::rename(from, to)
+            }
+        };
+        let copy = |_: &mut std::fs::File, _: &mut std::fs::File| {
+            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated"))
+        };
+        assert!(
+            place_staged_file_with(&staged_file, &destination, ".pinvou-id.part", rename, copy)
+                .is_err()
+        );
+        assert!(!destination.exists());
+        assert!(entries(&folder).is_empty());
+        assert_eq!(std::fs::read(&staged_file).unwrap(), b"contents");
     }
 
     #[test]
@@ -1235,7 +1596,9 @@ mod tests {
             place_staged_file_with(
                 &staged_file,
                 &destination,
-                rename_across_volumes(&staged_file)
+                ".pinvou-id.part",
+                rename_across_volumes(&staged_file),
+                |source, target| io::copy(source, target),
             )
             .is_err()
         );

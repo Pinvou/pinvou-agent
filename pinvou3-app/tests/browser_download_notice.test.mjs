@@ -53,6 +53,8 @@ test('every reported outcome is described in all three languages', () => {
   for (const [language, dictionary] of Object.entries(DICTIONARIES)) {
     assert.equal(typeof dictionary.browserDownloadSaveAs, 'string', `${language} button`);
     assert.ok(dictionary.browserDownloadSaveAs.length > 0, `${language} button`);
+    // The live-cap refusal has its own copy in every language.
+    assert.equal(typeof dictionary.browserDownloadBusy, 'function', `${language} limit notice`);
   }
 });
 
@@ -108,6 +110,25 @@ test("one download's outcome cannot hide another that still waits for the user",
   state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'b' });
   state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'c' });
   assert.equal(latestDownloadNotice(state), null);
+});
+
+test('an unsaved download keeps the notice slot until it is dismissed', () => {
+  const started = (downloadId) => ({
+    type: 'report',
+    notice: downloadStartedNotice(browserEn, { downloadId, fileName: `${downloadId}.bin` }),
+  });
+  const reported = (outcome, downloadId) => ({ type: 'report', notice: finished(outcome, browserEn, downloadId) });
+
+  let state = downloadNoticesReducer(undefined, started('a'));
+  state = downloadNoticesReducer(state, reported('unsaved', 'a'));
+  // Later download events do not bury the transfer that still needs a place:
+  // its Save as… affordance would otherwise be lost until the next start.
+  state = downloadNoticesReducer(state, started('b'));
+  state = downloadNoticesReducer(state, reported('saved', 'b'));
+  assert.equal(latestDownloadNotice(state).downloadId, 'a');
+  // Dismissing it returns the slot to the newest notice.
+  state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'a' });
+  assert.equal(latestDownloadNotice(state).downloadId, 'b');
 });
 
 test('malformed reports and dismissals change nothing, and a stop clears every notice', () => {

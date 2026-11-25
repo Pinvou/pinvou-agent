@@ -3136,6 +3136,16 @@ fn build_webview<P: PlatformWebviewConfig>(
         })?;
     let page_id = next_native_page_id().map_err(|error| Box::new(WebviewBuildError::new(error)))?;
     let label = format!("{WEBVIEW_LABEL_PREFIX}{tab_token}");
+    // Attribution for downloads is resolved from this label at event time (see
+    // `BrowserDownloads::pages`): Linux accumulates one WebKit context handler
+    // per tab, so no page captured per build can be trusted there.
+    app.state::<super::super::BrowserDownloads>().register_page(
+        &label,
+        super::super::DownloadPage {
+            session_id: session_id.to_string(),
+            tab: tab_token.to_string(),
+        },
+    );
     if let Some(stale) = app.get_webview(&label) {
         stale.close().map_err(|e| {
             Box::new(WebviewBuildError::new(format!(
@@ -3175,8 +3185,6 @@ fn build_webview<P: PlatformWebviewConfig>(
     let popup_tab_token = tab_token.to_string();
     let popup_control = Arc::clone(&control);
     let popup_publication = Arc::clone(&publication);
-    let download_session_id = session_id.to_string();
-    let download_tab_token = tab_token.to_string();
     let cdp_tab_token = platform
         .capabilities()
         .chrome_devtools_protocol
@@ -3207,21 +3215,19 @@ fn build_webview<P: PlatformWebviewConfig>(
         .on_download(move |webview, event| {
             // Both events arrive on the native UI thread. The coordinator
             // answers at once and keeps the OS save dialog off this stack.
+            // The owning page is resolved from the webview label: wry hands
+            // every download to the handler connected first, and on Linux the
+            // per-tab handlers accumulate on one shared WebKit context, so a
+            // page captured per build would attribute them to the first tab.
             let app = webview.app_handle();
             let downloads = app.state::<super::super::BrowserDownloads>();
             match event {
-                DownloadEvent::Requested {
-                    url,
-                    destination,
-                } => downloads.requested(
-                    app,
-                    super::super::DownloadPage {
-                        session_id: download_session_id.clone(),
-                        tab: download_tab_token.clone(),
-                    },
-                    &url,
-                    destination,
-                ),
+                DownloadEvent::Requested { url, destination } => {
+                    match downloads.page_for_label(webview.label()) {
+                        Some(page) => downloads.requested(app, page, &url, destination),
+                        None => false,
+                    }
+                }
                 DownloadEvent::Finished { url, path, success } => {
                     downloads.finished(app, &url, path.as_deref(), success);
                     false

@@ -64,9 +64,17 @@ export function downloadNoticesReducer(state, action) {
   }
 }
 
+// A finished-but-unplaced transfer needs the user's action, so it keeps the
+// single notice slot even when later download events arrive; the staged file
+// is otherwise swept at the next start with its Save as… affordance lost.
+// Everything else shows the most recently updated download.
 export function latestDownloadNotice(state) {
   const notices = Object.values(state || {});
-  return notices.length ? notices[notices.length - 1] : null;
+  if (!notices.length) return null;
+  const actionable = notices.filter((notice) => notice.status === 'unsaved');
+  return actionable.length
+    ? actionable[actionable.length - 1]
+    : notices[notices.length - 1];
 }
 
 function downloadIdOf(payload) {

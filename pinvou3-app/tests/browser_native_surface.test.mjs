@@ -1093,10 +1093,16 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
     downloadCallback[1],
     /dialog\(|save_file\(|create_dir|remove_dir|fs::/,
   );
+  // The owning page is resolved from the webview label at event time: wry
+  // hands every download to the handler connected first, and on Linux the
+  // per-tab handlers accumulate on one shared WebKit context, so a page
+  // captured per build would attribute downloads to the first-ever tab.
   assert.match(
     nativeHost,
-    /DownloadEvent::Requested \{[\s\S]{0,80}\} => downloads\.requested\([\s\S]{0,220}session_id: download_session_id\.clone\(\),\s*tab: download_tab_token\.clone\(\),[\s\S]{0,60}&url,\s*destination,\s*\),/,
+    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_label\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*None => false,\s*\}\s*\}/,
   );
+  assert.doesNotMatch(downloadCallback[1], /download_session_id|download_tab_token/);
+  assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)\.register_page\(\s*&label,\s*super::super::DownloadPage \{\s*session_id: session_id\.to_string\(\),\s*tab: tab_token\.to_string\(\),\s*\},\s*\);/);
   assert.match(
     nativeHost,
     /DownloadEvent::Finished \{ url, path, success \} => \{\s*downloads\.finished\(app, &url, path\.as_deref\(\), success\);/,
@@ -1105,11 +1111,18 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // Without a staging file the download is still denied, and the notice
   // exposes the origin of a URL that may carry one-time tokens.
   assert.match(browserDownloads, /const EVENT_BLOCKED: &str = "browser:download-blocked";/);
+  // The refusal notice exposes the origin of a URL that may carry one-time
+  // tokens and says why: unavailable staging (`staging`) or the live cap
+  // (`limit`), so one page cannot grow staging without bound.
+  assert.match(browserDownloads, /const MAX_LIVE_DOWNLOADS: usize = 16;/);
+  assert.match(browserDownloads, /fn has_capacity\(&self\) -> bool \{\s*self\.downloads\.len\(\) < MAX_LIVE_DOWNLOADS\s*\}/);
   assert.match(
     browserDownloads,
-    /if let Err\(error\) = std::fs::create_dir_all\(&staging_dir\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*\}\),\s*\);\s*return false;/,
+    /fn emit_blocked\(app: &AppHandle, page: &DownloadPage, url: &Url, reason: &str\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*"reason": reason,\s*\}\),/,
   );
-  assert.match(browserDownloads, /\(scheme, Some\(host\)\) => format!\("\{scheme\}:\/\/\{host\}"\)/);
+  assert.match(browserDownloads, /if !self\.registry\.lock\(\)\.has_capacity\(\) \{\s*eprintln!\("\[browser\] Download denied: too many live downloads"\);\s*emit_blocked\(app, &page, url, "limit"\);\s*return false;/);
+  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*return false;/);
+  assert.match(browserDownloads, /\(scheme, Some\(host\)\) => format!\("\{scheme\}:\/\/\{host\}\{port\}"\)/);
 
   // The engine streams into a fresh private directory under the staging root.
   assert.match(
@@ -1131,7 +1144,15 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // Placement and cleanup never block the UI thread.
   assert.match(
     browserDownloads,
-    /spawn_blocking\(move \|\| \{\s*let placed = place_staged_file\(&staged_file, &destination\)\.is_ok\(\);/,
+    /spawn_blocking\(move \|\| \{\s*let placed = place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
+  );
+  // A cross-volume copy streams through a sibling named after the download,
+  // so a process killed mid-copy leaves one attributable `.part` behind, and
+  // the copied-error guard keeps a truncated transfer out of the destination.
+  assert.match(browserDownloads, /&format!\("\.pinvou-\{id\}\.part"\)/);
+  assert.match(
+    browserDownloads,
+    /let copied = copy\(&mut source, &mut target\)\.and_then\(\|_\| target\.sync_all\(\)\);\s*\/\/ Windows refuses to rename a file that is still open\.\s*drop\(target\);\s*copied\?;/,
   );
   assert.match(
     browserDownloads,
@@ -1187,7 +1208,10 @@ test('download events and notices carry names and outcomes but no URL or local p
   );
 
   assert.match(browserView, /listenTauri\('browser:download-blocked'/);
-  assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
+  assert.match(
+    browserView,
+    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlocked\(payload\.source \|\| ''\)/,
+  );
   assert.match(browserView, /listenTauri\('browser:download-started', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice: downloadStartedNotice\(t, payload\) \}\);/);
   assert.match(browserView, /listenTauri\('browser:download-finished', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice \}\);/);
   assert.match(
