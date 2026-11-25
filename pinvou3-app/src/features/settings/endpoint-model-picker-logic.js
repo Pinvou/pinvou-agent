@@ -67,9 +67,6 @@ const normalizeBaseUrlKey = baseUrl => {
   // different endpoint for dedup purposes).
   let text = String(baseUrl || '').trim();
   while (text.endsWith('/')) text = text.slice(0, -1);
-  if (text.toLowerCase().endsWith('/chat/completions')) {
-    text = text.slice(0, -'/chat/completions'.length);
-  }
   // Mirror the Rust persistence normalization (strip_chat_completions_suffix,
   // src-tauri/src/platform/prefs/model.rs): upsert_model rewrites a
   // /chat/completions-suffixed URL to its base before the record is ever
@@ -80,6 +77,9 @@ const normalizeBaseUrlKey = baseUrl => {
   // re-add). The suffix matches case-insensitively on a folded copy with the
   // prefix case preserved, then the whole text lowercases as before — the
   // same single strip, not a loop, byte-identical to the Rust arm.
+  if (text.toLowerCase().endsWith('/chat/completions')) {
+    text = text.slice(0, -'/chat/completions'.length);
+  }
   return text.toLowerCase();
 };
 
