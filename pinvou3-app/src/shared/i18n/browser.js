@@ -35,6 +35,7 @@ export const browserZh = {
   browserDownloadFailed: (name) => `下载「${name}」失败，请重试。`,
   browserDownloadUnsaved: (name) => `「${name}」已下载完成，但未能保存到所选位置。`,
   browserDownloadSaveAs: '另存为…',
+  browserDownloadDiscard: '丢弃下载',
 };
 
 export const browserEn = {
@@ -74,6 +75,7 @@ export const browserEn = {
   browserDownloadFailed: (name) => `“${name}” failed to download. Please try again.`,
   browserDownloadUnsaved: (name) => `“${name}” finished downloading, but could not be saved to the chosen location.`,
   browserDownloadSaveAs: 'Save as…',
+  browserDownloadDiscard: 'Discard download',
 };
 
 export const browserJa = {
@@ -113,4 +115,5 @@ export const browserJa = {
   browserDownloadFailed: (name) => `「${name}」をダウンロードできませんでした。もう一度お試しください。`,
   browserDownloadUnsaved: (name) => `「${name}」のダウンロードは完了しましたが、選択した場所に保存できませんでした。`,
   browserDownloadSaveAs: '名前を付けて保存…',
+  browserDownloadDiscard: 'ダウンロードを破棄',
 };

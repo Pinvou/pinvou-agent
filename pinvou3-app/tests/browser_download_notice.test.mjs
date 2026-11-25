@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { browserEn, browserJa, browserZh } from '../src/shared/i18n/browser.js';
 import {
   downloadFinishedNotice,
+  downloadNoticeCanDiscard,
   downloadNoticeCanSaveAs,
   downloadNoticesReducer,
   downloadStartedNotice,
@@ -53,6 +54,9 @@ test('every reported outcome is described in all three languages', () => {
   for (const [language, dictionary] of Object.entries(DICTIONARIES)) {
     assert.equal(typeof dictionary.browserDownloadSaveAs, 'string', `${language} button`);
     assert.ok(dictionary.browserDownloadSaveAs.length > 0, `${language} button`);
+    // Giving up on a stranded download has its own copy in every language.
+    assert.equal(typeof dictionary.browserDownloadDiscard, 'string', `${language} discard button`);
+    assert.ok(dictionary.browserDownloadDiscard.length > 0, `${language} discard button`);
     // The live-cap refusal has its own copy in every language.
     assert.equal(typeof dictionary.browserDownloadBusy, 'function', `${language} limit notice`);
   }
@@ -61,8 +65,12 @@ test('every reported outcome is described in all three languages', () => {
 test('only an unsaved download that is still identified offers another place', () => {
   for (const outcome of ['saved', 'cancelled', 'failed']) {
     assert.equal(downloadNoticeCanSaveAs(finished(outcome)), false, outcome);
+    assert.equal(downloadNoticeCanDiscard(finished(outcome)), false, outcome);
   }
   assert.equal(downloadNoticeCanSaveAs(finished('unsaved')), true);
+  // The discard affordance exists exactly where the retry does: both act on
+  // the same staged file.
+  assert.equal(downloadNoticeCanDiscard(finished('unsaved')), true);
   // Without an id the host could not find the staged transfer.
   assert.equal(
     downloadNoticeCanSaveAs(
@@ -154,6 +162,17 @@ test('BrowserView renders the notice from copy and wires the retry to the host',
     browserView,
     /invokeTauri\('browser_download_save_as', \{ downloadId: downloadNotice\.downloadId \}\)/,
   );
+  // Giving up is offered for the same transfer and sends its id too.
+  assert.match(
+    browserView,
+    /if \(!downloadNoticeCanDiscard\(downloadNotice\)\) return;/,
+  );
+  assert.match(
+    browserView,
+    /invokeTauri\('browser_download_discard', \{ downloadId: downloadNotice\.downloadId \}\)/,
+  );
+  assert.match(browserView, /data-testid="browser-download-discard"/);
+  assert.match(browserView, /\{t\.browserDownloadDiscard\}/);
   assert.match(
     browserView,
     /\{t\.browserDownloadSaveAs\}/,

@@ -56,7 +56,7 @@ const MAX_EXTENSION_BYTES: usize = 24;
 
 /// The page that requested a download. Identifies the UI surface that shows
 /// the notice.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadPage {
     pub(crate) session_id: String,
     pub(crate) tab: String,
@@ -175,6 +175,10 @@ fn step(download: &Download) -> Step {
     }
 }
 
+/// The live cap is full, so the download was refused.
+#[derive(Debug, PartialEq, Eq)]
+struct CapacityFull;
+
 #[derive(Debug, Default)]
 struct Registry {
     downloads: HashMap<String, Download>,
@@ -184,10 +188,24 @@ struct Registry {
     prompting: Option<String>,
     /// Completion reports that cannot yet be attributed: engines without a
     /// written path (macOS always, Windows on failure) can only match by URL,
-    /// and while several in-flight transfers share that URL the report would
-    /// mark an arbitrary one. Held until every transfer of the URL has
-    /// reported; see `transfer_finished`.
-    ambiguous_finishes: Vec<(String, bool)>,
+    /// and while several in-flight transfers share that URL no single report
+    /// names its owner. One batch per URL counts its members down; see
+    /// `transfer_finished`.
+    pending_finishes: HashMap<String, UrlBatch>,
+}
+
+/// The transfers of one URL whose completions cannot be told apart. Every
+/// member reports exactly once — Linux registers one download handler for the
+/// whole process and the other engines hand each event to its own webview's
+/// handler — so the batch resolves when every member has voted.
+#[derive(Debug)]
+struct UrlBatch {
+    /// Members that have not reported yet. A transfer that resolves through
+    /// its written path also leaves this count, carrying its vote into
+    /// `outcomes`.
+    remaining: usize,
+    /// One entry per reported member.
+    outcomes: Vec<bool>,
 }
 
 impl Registry {
@@ -197,11 +215,21 @@ impl Registry {
         self.downloads.len() < MAX_LIVE_DOWNLOADS
     }
 
-    fn begin(&mut self, download: Download) -> Vec<Effect> {
+    /// Admits a download or refuses it at the live cap, so one page cannot
+    /// grow staging or the dialog queue without bound.
+    fn begin(&mut self, download: Download) -> Result<Vec<Effect>, CapacityFull> {
+        if !self.has_capacity() {
+            return Err(CapacityFull);
+        }
+        // The transfer will report exactly once; an open batch for its URL
+        // counts it in as an unreported member.
+        if let Some(batch) = self.pending_finishes.get_mut(&download.url) {
+            batch.remaining += 1;
+        }
         let effects = vec![Effect::Started(download.notice.clone())];
         self.waiting.push_back(download.notice.id.clone());
         self.downloads.insert(download.notice.id.clone(), download);
-        effects.into_iter().chain(self.next_prompt()).collect()
+        Ok(effects.into_iter().chain(self.next_prompt()).collect())
     }
 
     /// Hands the dialog to the next live transfer, if it is free.
@@ -318,23 +346,38 @@ impl Registry {
                 .find(|(_, download)| in_flight(download) && download.staged_file == path)
                 .map(|(id, _)| id.clone())
         });
-        if let Some(id) = matched {
-            if let Some(download) = self.downloads.get_mut(&id) {
-                download.transfer = if success {
-                    Transfer::Succeeded
-                } else {
-                    Transfer::Failed
-                };
+        let Some(id) = matched else {
+            if path.is_some() {
+                return Vec::new();
             }
-            return self.settle(&id);
+            return self.vote_pathless_finish(url, success);
+        };
+        if let Some(download) = self.downloads.get_mut(&id) {
+            download.transfer = if success {
+                Transfer::Succeeded
+            } else {
+                Transfer::Failed
+            };
         }
-        if path.is_some() {
-            return Vec::new();
+        let mut effects = self.settle(&id);
+        // A member that resolves through its written path still votes in an
+        // open batch for its URL; without the vote the batch would wait for a
+        // report that already happened and hold the URL's other members — and
+        // a stale batch would poison the URL's next generation.
+        if let Some(batch) = self.pending_finishes.get_mut(url) {
+            batch.remaining = batch.remaining.saturating_sub(1);
+            batch.outcomes.push(success);
         }
-        // Without a written path the report can only be attributed by URL, and
-        // only while exactly one in-flight transfer carries it. Otherwise it
-        // is held: every transfer reports once, so once all of them have
-        // reported, the outcomes are known even though their owner is not.
+        effects.extend(self.resolve_finished_batch(url));
+        effects
+    }
+
+    /// Attributes a pathless completion by URL. The report joins the URL's
+    /// open batch, or opens one that counts every in-flight transfer of the
+    /// URL down; uniform outcomes attribute cleanly, and disagreeing ones all
+    /// fail closed instead of guessing.
+    fn vote_pathless_finish(&mut self, url: &str, success: bool) -> Vec<Effect> {
+        let in_flight = |download: &Download| download.transfer == Transfer::InFlight;
         let candidates = self
             .downloads
             .values()
@@ -343,49 +386,36 @@ impl Registry {
         if candidates == 0 {
             return Vec::new();
         }
-        if candidates == 1 {
-            let id = self
-                .downloads
-                .iter()
-                .find(|(_, download)| in_flight(download) && download.url == url)
-                .map(|(id, _)| id.clone());
-            let Some(id) = id else {
-                return Vec::new();
-            };
-            if let Some(download) = self.downloads.get_mut(&id) {
-                download.transfer = if success {
-                    Transfer::Succeeded
-                } else {
-                    Transfer::Failed
-                };
-            }
-            return self.settle(&id);
-        }
-        self.ambiguous_finishes.push((url.to_string(), success));
-        let reported = self
-            .ambiguous_finishes
-            .iter()
-            .filter(|(pending_url, _)| pending_url == url)
-            .count();
-        if reported < candidates {
+        let batch = self
+            .pending_finishes
+            .entry(url.to_string())
+            .or_insert(UrlBatch {
+                remaining: candidates,
+                outcomes: Vec::new(),
+            });
+        batch.remaining = batch.remaining.saturating_sub(1);
+        batch.outcomes.push(success);
+        self.resolve_finished_batch(url)
+    }
+
+    /// Applies a batch whose members have all reported. With one outcome
+    /// across the reports, every assignment is the same; with differing
+    /// outcomes no assignment is provable, and no staged copy may ship
+    /// unverified, so all of them fail closed.
+    fn resolve_finished_batch(&mut self, url: &str) -> Vec<Effect> {
+        let complete = self
+            .pending_finishes
+            .get(url)
+            .is_some_and(|batch| batch.remaining == 0);
+        if !complete {
             return Vec::new();
         }
-        // Every transfer of the URL has completed. With one outcome across the
-        // reports, every assignment is the same; with differing outcomes no
-        // assignment is provable, and no staged copy may ship unverified, so
-        // all of them fail closed.
         let all_succeeded = self
-            .ambiguous_finishes
-            .iter()
-            .filter(|(pending_url, _)| pending_url == url)
-            .all(|(_, success)| *success);
-        let outcome = if all_succeeded {
-            Transfer::Succeeded
-        } else {
-            Transfer::Failed
-        };
-        self.ambiguous_finishes
-            .retain(|(pending_url, _)| pending_url != url);
+            .pending_finishes
+            .get(url)
+            .is_some_and(|batch| batch.outcomes.iter().all(|success| *success));
+        self.pending_finishes.remove(url);
+        let in_flight = |download: &Download| download.transfer == Transfer::InFlight;
         let mut ids: Vec<String> = self
             .downloads
             .iter()
@@ -394,6 +424,11 @@ impl Registry {
             .collect();
         // Sorted so the reported events do not depend on map order.
         ids.sort();
+        let outcome = if all_succeeded {
+            Transfer::Succeeded
+        } else {
+            Transfer::Failed
+        };
         let mut effects = Vec::new();
         for id in ids {
             if let Some(download) = self.downloads.get_mut(&id) {
@@ -402,6 +437,29 @@ impl Registry {
             effects.extend(self.settle(&id));
         }
         effects
+    }
+
+    /// Drops a finished-but-unplaced transfer and its staged file. That state
+    /// has no other exit, so this is the user's way out of a stranded record.
+    /// A record that is gone or not discardable changes nothing.
+    fn discard(&mut self, id: &str) -> Vec<Effect> {
+        let discardable = self
+            .downloads
+            .get(id)
+            .is_some_and(|download| download.intent == Intent::Unsaved);
+        if !discardable {
+            return Vec::new();
+        }
+        match self.downloads.remove(id) {
+            Some(download) => vec![
+                Effect::Discard(download.staging_dir),
+                Effect::Finished {
+                    notice: download.notice,
+                    outcome: Outcome::Cancelled,
+                },
+            ],
+            None => Vec::new(),
+        }
     }
 
     /// Queues a new save dialog for a finished transfer that has no place yet.
@@ -462,15 +520,21 @@ pub(crate) struct BrowserDownloads {
     registry: Mutex<Registry>,
     /// Folder of the last file the user saved in this session.
     last_directory: Mutex<Option<PathBuf>>,
-    /// Webview label -> owning page. wry attaches the download handler per
-    /// webview, but on Linux every tab shares one WebKitWebContext and its
-    /// signal handlers accumulate, so the first-connected handler answers for
-    /// every tab. The page is therefore resolved from the webview label at
-    /// event time; a page captured per build would misattribute downloads to
-    /// whichever tab happened to be built first. Labels are unique per tab and
-    /// never reused across sessions, so a closed tab's entry is never consulted
-    /// again, and a rebuilt tab overwrites its own entry in place.
+    /// Webview label -> owning page. Engines that attribute downloads per
+    /// tab (macOS, Windows) fire each event in the downloading webview's own
+    /// handler, so the label names the requesting tab and the page is
+    /// resolved from it at event time. Labels are unique per tab and never
+    /// reused across sessions; a closed tab's entry is dropped at once, and a
+    /// rebuilt tab overwrites its own entry in place.
     pages: Mutex<HashMap<String, DownloadPage>>,
+    /// The page whose browser workspace is currently shown, recorded by the
+    /// host at every visibility transition. Linux registers one download
+    /// handler for the whole process on a never-closed surface (see
+    /// `ensure_download_surface`), so a download event cannot name its
+    /// requesting tab there; its notice is attributed to the shown workspace
+    /// instead. A download that arrives while no workspace is shown is
+    /// refused.
+    shown_page: Mutex<Option<DownloadPage>>,
 }
 
 impl BrowserDownloads {
@@ -484,6 +548,7 @@ impl BrowserDownloads {
             registry: Mutex::new(Registry::default()),
             last_directory: Mutex::new(None),
             pages: Mutex::new(HashMap::new()),
+            shown_page: Mutex::new(None),
         }
     }
 
@@ -493,8 +558,42 @@ impl BrowserDownloads {
         self.pages.lock().insert(label.to_string(), page);
     }
 
+    /// Forgets a closed tab's page, mirroring the core-binding lifecycle.
+    pub(crate) fn unregister_page(&self, label: &str) {
+        self.pages.lock().remove(label);
+    }
+
+    /// Forgets every page of one closed session; all of its tabs are gone.
+    pub(crate) fn forget_session_pages(&self, session_id: &str) {
+        self.pages
+            .lock()
+            .retain(|_, page| page.session_id != session_id);
+    }
+
+    /// Forgets every tab's page; called when the whole browser surface has
+    /// closed. The download surface itself never registers, so nothing needs
+    /// to survive.
+    pub(crate) fn forget_all_pages(&self) {
+        self.pages.lock().clear();
+    }
+
     pub(crate) fn page_for_label(&self, label: &str) -> Option<DownloadPage> {
         self.pages.lock().get(label).cloned()
+    }
+
+    /// The page a download is attributed to: the tab whose webview fired when
+    /// the engine identifies it (macOS, Windows), else the shown workspace's
+    /// page (Linux routes every download through one always-live surface, so
+    /// the webview label there is the surface's own).
+    pub(crate) fn page_for_request(&self, label: &str) -> Option<DownloadPage> {
+        self.page_for_label(label)
+            .or_else(|| self.shown_page.lock().clone())
+    }
+
+    /// Records or clears the shown workspace's page; called by the host at
+    /// every visibility transition.
+    pub(crate) fn set_shown_page(&self, page: Option<DownloadPage>) {
+        *self.shown_page.lock() = page;
     }
 
     /// `DownloadEvent::Requested`. Runs on the native UI thread, so it only
@@ -529,19 +628,32 @@ impl BrowserDownloads {
         *destination = staged_file.clone();
         let effects = {
             let mut registry = self.registry.lock();
-            registry.begin(Download {
+            // The page fields are cloned so a refused download can still
+            // report through `emit_blocked` below.
+            match registry.begin(Download {
                 notice: Notice {
                     id,
-                    session_id: page.session_id,
-                    tab: page.tab,
+                    session_id: page.session_id.clone(),
+                    tab: page.tab.clone(),
                     file_name,
                 },
                 url: url.to_string(),
-                staging_dir,
+                staging_dir: staging_dir.clone(),
                 staged_file,
                 transfer: Transfer::InFlight,
                 intent: Intent::Asking { again: false },
-            })
+            }) {
+                Ok(effects) => effects,
+                // The authoritative cap gate inside `begin`; the pre-check
+                // above keeps the common refusal free of staging I/O.
+                Err(CapacityFull) => {
+                    drop(registry);
+                    let _ = std::fs::remove_dir(&staging_dir);
+                    eprintln!("[browser] Download denied: too many live downloads");
+                    emit_blocked(app, &page, url, "limit");
+                    return false;
+                }
+            }
         };
         self.perform(app, effects);
         true
@@ -562,6 +674,14 @@ impl BrowserDownloads {
         let effects = self.registry.lock().ask_again(id).map_err(str::to_string)?;
         self.perform(app, effects);
         Ok(())
+    }
+
+    /// Drops an `unsaved` transfer the user no longer wants, deleting its
+    /// staged file. Idempotent: an unknown or not discardable id changes
+    /// nothing, so a repeated click neither fails nor reports twice.
+    pub(crate) fn discard(&self, app: &AppHandle, id: &str) {
+        let effects = self.registry.lock().discard(id);
+        self.perform(app, effects);
     }
 
     fn perform(&self, app: &AppHandle, effects: Vec<Effect>) {
@@ -688,8 +808,12 @@ fn sanitize_file_name(raw: Option<&OsStr>) -> String {
             }
         })
         .collect();
+    // Windows drops trailing dots and spaces from a name; leading dots are
+    // legal everywhere and meaningful on Unix (.bashrc), so dots are cleaned
+    // from the trailing end only. Whitespace goes from both ends.
+    let trimmed = name.trim_matches(|character: char| character.is_whitespace());
     let trimmed =
-        name.trim_matches(|character: char| character.is_whitespace() || character == '.');
+        trimmed.trim_end_matches(|character: char| character.is_whitespace() || character == '.');
     let name = if trimmed.is_empty() {
         FALLBACK_FILE_NAME
     } else {
@@ -747,18 +871,22 @@ fn starts_with_reserved_device_name(stem: &str) -> bool {
 }
 
 /// Windows refuses these stems even with an extension and in any case.
+/// Current Windows documentation reserves `COM0`-`COM9` and `LPT0`-`LPT9`
+/// (including the superscript digits), and Windows 11 adds `CONIN$`/`CONOUT$`.
 fn is_reserved_device_name(stem: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
     let numbered = upper
         .strip_prefix("COM")
         .or_else(|| upper.strip_prefix("LPT"));
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || numbered.is_some_and(|suffix| {
-            matches!(
-                suffix,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-            )
-        })
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered.is_some_and(|suffix| {
+        matches!(
+            suffix,
+            "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+        )
+    })
 }
 
 fn new_download_id() -> String {
@@ -800,23 +928,31 @@ fn place_staged_file(staged_file: &Path, destination: &Path, id: &str) -> io::Re
         &format!(".pinvou-{id}.part"),
         |from, to| std::fs::rename(from, to),
         |source, target| io::copy(source, target),
+        |staged| std::fs::File::open(staged).and_then(|file| file.sync_all()),
     )
 }
 
-/// `rename` and `copy` are injected so tests can stand in for a destination on
-/// another volume, which a single-volume test machine cannot provide, and for
-/// a transfer that dies mid-copy.
-fn place_staged_file_with<C, R>(
+/// `rename`, `copy`, and `sync` are injected so tests can stand in for a
+/// destination on another volume, which a single-volume test machine cannot
+/// provide, for a transfer that dies mid-copy, and for a sync whose order and
+/// count are pinned.
+fn place_staged_file_with<C, R, S>(
     staged_file: &Path,
     destination: &Path,
     temporary_name: &str,
     rename: R,
     copy: C,
+    sync: S,
 ) -> io::Result<()>
 where
     C: Fn(&mut std::fs::File, &mut std::fs::File) -> io::Result<u64>,
     R: Fn(&Path, &Path) -> io::Result<()>,
+    S: Fn(&Path) -> io::Result<()>,
 {
+    // Power-loss durability on both paths: the staged bytes reach the disk
+    // before the destination name appears — before the rename below and
+    // before the copy's swap that follows it.
+    sync(staged_file)?;
     match rename(staged_file, destination) {
         Ok(()) => return Ok(()),
         // Another volume cannot be renamed across; the copy below handles it.
@@ -833,9 +969,6 @@ where
         .unwrap_or(Path::new("."));
     let temporary = parent.join(temporary_name);
     let placed = (|| -> io::Result<()> {
-        // Power-loss durability matches the cross-volume path: the staged
-        // bytes reach the disk before the name appears at the destination.
-        std::fs::File::open(staged_file)?.sync_all()?;
         let mut source = std::fs::File::open(staged_file)?;
         let mut target = std::fs::OpenOptions::new()
             .write(true)
@@ -901,7 +1034,7 @@ mod tests {
         let mut registry = Registry::default();
         for id in ids {
             let download = record(id, &url(id));
-            registry.begin(download);
+            registry.begin(download).expect("within the live cap");
         }
         registry
     }
@@ -954,9 +1087,11 @@ mod tests {
     #[test]
     fn suggested_name_becomes_one_harmless_path_component() {
         assert_eq!(sanitize_file_name(None), "download");
+        // Leading dots survive (they are a legal part of a name); only the
+        // separators are replaced.
         assert_eq!(
             sanitize_file_name(Some(OsStr::new("../../etc/passwd"))),
-            "_.._etc_passwd"
+            ".._.._etc_passwd"
         );
         assert_eq!(
             sanitize_file_name(Some(OsStr::new(" report.pdf "))),
@@ -976,6 +1111,26 @@ mod tests {
         assert_eq!(
             sanitize_file_name(Some(OsStr::new("console.txt"))),
             "console.txt"
+        );
+        // Leading dots are a page's or a server's choice (.bashrc); only
+        // trailing dots are dropped, the way Windows drops them.
+        assert_eq!(sanitize_file_name(Some(OsStr::new(".bashrc"))), ".bashrc");
+        assert_eq!(sanitize_file_name(Some(OsStr::new("..x.pdf"))), "..x.pdf");
+        assert_eq!(sanitize_file_name(Some(OsStr::new("name.."))), "name");
+        // Current Windows documentation reserves the zero-numbered device
+        // names, and Windows 11 adds the console streams.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("com0.txt"))),
+            "_com0.txt"
+        );
+        assert_eq!(sanitize_file_name(Some(OsStr::new("LPT0"))), "_LPT0");
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("conin$.txt"))),
+            "_conin$.txt"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("conout$.log"))),
+            "_conout$.log"
         );
         assert_eq!(sanitize_file_name(Some(OsStr::new("..."))), "download");
         assert_eq!(
@@ -1006,17 +1161,32 @@ mod tests {
     #[test]
     fn downloads_are_capped_so_one_page_cannot_grow_staging_without_bound() {
         let mut registry = Registry::default();
-        registry.begin(record("a", URL_A));
-        assert!(registry.has_capacity());
-        let many: Vec<String> = (0..MAX_LIVE_DOWNLOADS)
+        let many: Vec<String> = (0..MAX_LIVE_DOWNLOADS - 1)
             .map(|index| format!("d{index}"))
             .collect();
         for id in many.iter() {
             let download = record(id, &url(id));
-            registry.begin(download);
+            registry.begin(download).expect("within the live cap");
         }
-        // The coordinator now tracks more than the cap: no further download.
+        // The last slot is still free at exactly MAX - 1 live downloads.
+        assert!(registry.has_capacity());
+        let download = record("last", &url("last"));
+        // The dialog slot is already held by the first record, so the last
+        // admitted transfer only starts.
+        assert_eq!(
+            registry.begin(download).expect("within the live cap"),
+            vec![started("last")]
+        );
+        // The cap refuses exactly at MAX live downloads, not one later.
         assert!(!registry.has_capacity());
+        assert_eq!(
+            registry.begin(record("over", &url("over"))),
+            Err(CapacityFull)
+        );
+        assert_eq!(
+            registry.begin(record("still-over", &url("still-over"))),
+            Err(CapacityFull)
+        );
     }
 
     #[test]
@@ -1068,10 +1238,17 @@ mod tests {
     fn simultaneous_downloads_share_one_dialog_in_order() {
         let mut registry = Registry::default();
         assert_eq!(
-            registry.begin(record("a", URL_A)),
+            registry
+                .begin(record("a", URL_A))
+                .expect("within the live cap"),
             vec![started("a"), prompt("a")]
         );
-        assert_eq!(registry.begin(record("b", &url("b"))), vec![started("b")]);
+        assert_eq!(
+            registry
+                .begin(record("b", &url("b")))
+                .expect("within the live cap"),
+            vec![started("b")]
+        );
         // Both transfers stream while only the first owns the dialog.
         assert_eq!(registry.prompting.as_deref(), Some("a"));
         assert_eq!(
@@ -1197,7 +1374,7 @@ mod tests {
             vec![]
         );
         assert!(registry.downloads.is_empty());
-        assert!(registry.ambiguous_finishes.is_empty());
+        assert!(registry.pending_finishes.is_empty());
     }
 
     #[test]
@@ -1214,7 +1391,7 @@ mod tests {
         assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
         assert_eq!(registry.downloads["a"].transfer, Transfer::Succeeded);
         assert_eq!(registry.downloads["b"].transfer, Transfer::Succeeded);
-        assert!(registry.ambiguous_finishes.is_empty());
+        assert!(registry.pending_finishes.is_empty());
         // Each waits for its own dialog answer; answering a hands the dialog
         // to b, and neither places early.
         assert_eq!(
@@ -1256,7 +1433,79 @@ mod tests {
             ]
         );
         assert!(registry.downloads.is_empty());
-        assert!(registry.ambiguous_finishes.is_empty());
+        assert!(registry.pending_finishes.is_empty());
+    }
+
+    #[test]
+    fn a_path_matched_member_votes_so_no_batch_strands_or_poisons() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        assert_eq!(registry.answer("a", Some(chosen("a"))), vec![prompt("b")]);
+        assert_eq!(registry.answer("b", Some(chosen("b"))), vec![]);
+        // One transfer fails without a written path while its sibling still
+        // streams: the batch waits for both members.
+        assert_eq!(registry.transfer_finished(URL_A, None, false), vec![]);
+        // The sibling resolves through its written path, votes, and completes
+        // the batch on the spot: the failed member settles now instead of
+        // stranding until restart, and no stale batch is left for the URL's
+        // next generation.
+        assert_eq!(
+            registry.transfer_finished(URL_A, Some(&staged_path("b")), true),
+            vec![
+                place("b", chosen("b")),
+                discard("a"),
+                finished("a", Outcome::Failed)
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        // The next generation of the same URL starts with clean accounting.
+        registry
+            .begin(record("c", URL_A))
+            .expect("within the live cap");
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            vec![discard("c"), finished("c", Outcome::Failed)]
+        );
+        assert!(registry.pending_finishes.is_empty());
+    }
+
+    #[test]
+    fn a_transfer_beginning_during_a_batch_joins_it() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        assert_eq!(registry.transfer_finished(URL_A, None, false), vec![]);
+        // A fresh transfer of the same URL begins while the batch is open; it
+        // will also report, so the batch counts it in instead of resolving
+        // early against the members it already knows.
+        registry
+            .begin(record("c", URL_A))
+            .expect("within the live cap");
+        assert_eq!(registry.transfer_finished(URL_A, None, false), vec![]);
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // The last member's report completes the batch: with mixed outcomes
+        // every member fails closed.
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            vec![
+                discard("a"),
+                finished("a", Outcome::Failed),
+                discard("b"),
+                finished("b", Outcome::Failed),
+                discard("c"),
+                finished("c", Outcome::Failed),
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
     }
 
     #[test]
@@ -1357,6 +1606,30 @@ mod tests {
     }
 
     #[test]
+    fn only_an_unsaved_transfer_can_be_discarded() {
+        let mut registry = registry_with(&["a", "b"]);
+        // Still streaming: not discardable.
+        assert_eq!(registry.discard("a"), vec![]);
+        // Unknown ids change nothing, so a repeated click never reports twice.
+        assert_eq!(registry.discard("missing"), vec![]);
+        // An unsaved record leaves with its staged file, reported cancelled.
+        finish_ok(&mut registry, "a");
+        registry.answer("a", Some(chosen("a")));
+        assert_eq!(
+            registry.placed("a", false),
+            vec![finished("a", Outcome::Unsaved)]
+        );
+        assert_eq!(
+            registry.discard("a"),
+            vec![discard("a"), finished("a", Outcome::Cancelled)]
+        );
+        assert_eq!(registry.discard("a"), vec![]);
+        // A finished record still waiting for its dialog is not discardable.
+        finish_ok(&mut registry, "b");
+        assert_eq!(registry.discard("b"), vec![]);
+    }
+
+    #[test]
     fn a_stale_answer_never_takes_the_dialog_from_its_owner() {
         let mut registry = registry_with(&["a", "b"]);
         // The dialog for b is not open yet, so an answer for it changes nothing.
@@ -1444,6 +1717,11 @@ mod tests {
         names
     }
 
+    /// A sync stand-in that exercises the real flush on the real file.
+    fn sync_staged(staged_file: &Path) -> io::Result<()> {
+        std::fs::File::open(staged_file).and_then(|file| file.sync_all())
+    }
+
     /// Stands in for a destination on another volume, where a rename cannot work.
     fn rename_across_volumes(staged_file: &Path) -> impl Fn(&Path, &Path) -> io::Result<()> + '_ {
         move |from, to| {
@@ -1487,6 +1765,7 @@ mod tests {
             ".pinvou-id.part",
             rename_across_volumes(&staged_file),
             |source, target| io::copy(source, target),
+            sync_staged,
         )
         .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), payload);
@@ -1510,6 +1789,7 @@ mod tests {
                 ".pinvou-id.part",
                 rename,
                 |source, target| io::copy(source, target),
+                sync_staged,
             )
             .is_err()
         );
@@ -1544,6 +1824,7 @@ mod tests {
                 ".pinvou-id.part",
                 rename,
                 |source, target| io::copy(source, target),
+                sync_staged,
             )
             .is_err()
         );
@@ -1576,8 +1857,15 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated"))
         };
         assert!(
-            place_staged_file_with(&staged_file, &destination, ".pinvou-id.part", rename, copy)
-                .is_err()
+            place_staged_file_with(
+                &staged_file,
+                &destination,
+                ".pinvou-id.part",
+                rename,
+                copy,
+                sync_staged,
+            )
+            .is_err()
         );
         assert!(!destination.exists());
         assert!(entries(&folder).is_empty());
@@ -1599,10 +1887,56 @@ mod tests {
                 ".pinvou-id.part",
                 rename_across_volumes(&staged_file),
                 |source, target| io::copy(source, target),
+                sync_staged,
             )
             .is_err()
         );
         assert_eq!(std::fs::read(&staged_file).unwrap(), b"contents");
+    }
+
+    #[test]
+    fn placement_syncs_the_staged_bytes_before_any_rename() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged_file = staged(temp.path(), b"contents");
+        let folder = temp.path().join("other-volume");
+        std::fs::create_dir(&folder).unwrap();
+        let destination = folder.join("file.bin");
+        // The first rename refuses like another volume, which forces the
+        // cross-volume copy; its swap then succeeds.
+        let log: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sync_log = std::sync::Arc::clone(&log);
+        let sync = move |_: &Path| {
+            sync_log.lock().unwrap().push("sync");
+            Ok(())
+        };
+        let rename_log = std::sync::Arc::clone(&log);
+        let staged = staged_file.clone();
+        let rename = move |from: &Path, to: &Path| {
+            let step = if from == staged { "rename" } else { "swap" };
+            rename_log.lock().unwrap().push(step);
+            if from == staged {
+                Err(io::Error::new(
+                    io::ErrorKind::CrossesDevices,
+                    "simulated EXDEV",
+                ))
+            } else {
+                std::fs::rename(from, to)
+            }
+        };
+        place_staged_file_with(
+            &staged_file,
+            &destination,
+            ".pinvou-id.part",
+            rename,
+            |source, target| io::copy(source, target),
+            sync,
+        )
+        .unwrap();
+        // The staged bytes are flushed once, before the same-volume rename
+        // attempt and before the copy's swap: a power loss can never leave a
+        // destination name whose data never reached the disk.
+        assert_eq!(*log.lock().unwrap(), vec!["sync", "rename", "swap"]);
     }
 
     #[test]
@@ -1616,6 +1950,39 @@ mod tests {
         assert!(!root.exists());
         // A missing root is not an error.
         let _coordinator = BrowserDownloads::new(temp.path().join("missing"));
+    }
+
+    #[test]
+    fn requests_fall_back_to_the_shown_workspace_page() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = BrowserDownloads::new(temp.path().join("staging"));
+        let shown = DownloadPage {
+            session_id: "shown-session".to_string(),
+            tab: "shown-tab".to_string(),
+        };
+        // No label page and nothing shown: the request is refused.
+        assert_eq!(downloads.page_for_request("agent-browser-x"), None);
+        downloads.set_shown_page(Some(shown.clone()));
+        assert_eq!(
+            downloads.page_for_request("agent-browser-x"),
+            Some(shown.clone())
+        );
+        // A label page wins over the shown workspace (macOS, Windows).
+        let tabbed = DownloadPage {
+            session_id: "tab-session".to_string(),
+            tab: "tab".to_string(),
+        };
+        downloads.register_page("agent-browser-tab", tabbed.clone());
+        assert_eq!(
+            downloads.page_for_request("agent-browser-tab"),
+            Some(tabbed)
+        );
+        // A closed tab's page is dropped, returning the request to the shown
+        // workspace.
+        downloads.unregister_page("agent-browser-tab");
+        assert_eq!(downloads.page_for_request("agent-browser-tab"), Some(shown));
+        downloads.set_shown_page(None);
+        assert_eq!(downloads.page_for_request("agent-browser-tab"), None);
     }
 
     #[test]

@@ -1083,23 +1083,26 @@ test('remote pages lack global clipboard-read access', () => {
 test('embedded downloads stage privately and ask the user through a deferred OS dialog', () => {
   // The engine callback answers at once: it only routes both events to the
   // coordinator and never opens a dialog or touches a file on its stack.
-  assert.match(nativeHost, /\.on_download\(move \|webview, event\|/);
+  // Every build shares one typed router, and on Linux the per-tab handler is
+  // not attached at all (see the download-surface pins below), so the
+  // never-closed surface owns the only context-level handler.
+  assert.match(nativeHost, /builder\.on_download\(handle_download_event\)/);
   assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)/);
   const downloadCallback = nativeHost.match(
-    /\.on_download\(move \|webview, event\| \{([\s\S]*?)\n {8}\}\)\n {8}\.on_navigation\(/,
+    /fn handle_download_event\(webview: tauri::Webview<tauri::Wry>, event: DownloadEvent<'_>\) -> bool \{([\s\S]*?)\n\}/,
   );
   assert.ok(downloadCallback, 'host wires on_download to the coordinator');
   assert.doesNotMatch(
     downloadCallback[1],
     /dialog\(|save_file\(|create_dir|remove_dir|fs::/,
   );
-  // The owning page is resolved from the webview label at event time: wry
-  // hands every download to the handler connected first, and on Linux the
-  // per-tab handlers accumulate on one shared WebKit context, so a page
-  // captured per build would attribute downloads to the first-ever tab.
+  // The owning page is resolved from the webview label at event time and
+  // falls back to the shown workspace: on Linux every download arrives
+  // through the always-live download surface, so the label there is the
+  // surface's own and cannot name the requesting tab.
   assert.match(
     nativeHost,
-    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_label\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*None => false,\s*\}\s*\}/,
+    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*None => false,\s*\}\s*\}/,
   );
   assert.doesNotMatch(downloadCallback[1], /download_session_id|download_tab_token/);
   assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)\.register_page\(\s*&label,\s*super::super::DownloadPage \{\s*session_id: session_id\.to_string\(\),\s*tab: tab_token\.to_string\(\),\s*\},\s*\);/);
@@ -1107,6 +1110,50 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
     nativeHost,
     /DownloadEvent::Finished \{ url, path, success \} => \{\s*downloads\.finished\(app, &url, path\.as_deref\(\), success\);/,
   );
+
+  // Linux: one never-closed download surface owns the single context-level
+  // handler. wry registers one per build with no dedupe, tauri resolves each
+  // handler's webview from its build-time label, and tauri-runtime-wry keeps
+  // the shared context alive for the process — so the first-built tab's
+  // handler answered everything and, once closed, cancelled every download
+  // before any app code ran. The surface removes both failure modes.
+  assert.match(nativeHost, /const DOWNLOAD_SURFACE_LABEL: &str = "agent-browser-download-surface";/);
+  assert.match(
+    nativeHost,
+    /let attach_per_tab_download_handler =\s*attach_per_tab_download_handler\(app, &window, platform, data_directory\);/,
+  );
+  assert.match(
+    nativeHost,
+    /let builder = if attach_per_tab_download_handler \{\s*builder\.on_download\(handle_download_event\)\s*\} else \{\s*builder\s*\};/,
+  );
+  assert.match(
+    nativeHost,
+    /fn ensure_download_surface<P: PlatformWebviewConfig>\(\s*app: &tauri::AppHandle,\s*window: &tauri::Window,\s*platform: &P,\s*data_directory: &Path,\s*\) -> bool \{/,
+  );
+  assert.match(
+    nativeHost,
+    /#\[cfg\(target_os = "linux"\)\]\s*fn ensure_download_surface/,
+  );
+  assert.match(
+    nativeHost,
+    /if app\.get_webview\(DOWNLOAD_SURFACE_LABEL\)\.is_some\(\) \{\s*return true;\s*\}/,
+  );
+  // The download surface never registers a page: its requests resolve
+  // through the shown workspace.
+  assert.doesNotMatch(
+    nativeHost,
+    /register_page\(\s*DOWNLOAD_SURFACE_LABEL/,
+  );
+  // Closed tabs drop their attribution pages with their core binding, and a
+  // closed session drops all of them at once.
+  assert.match(nativeHost, /fn forget_tab_surface\(app: Option<&tauri::AppHandle>, label: &str\) \{\s*super::unregister_browser_core_webview_binding\(label\);/);
+  assert.match(nativeHost, /\.unregister_page\(label\);/);
+  assert.match(nativeHost, /\.forget_all_pages\(\);/);
+  assert.match(nativeHost, /\.forget_session_pages\(session_id\);/);
+  // The shown workspace is mirrored into the coordinator at every visibility
+  // transition.
+  assert.match(nativeHost, /fn sync_shown_download_page\(&self, app_handle: &tauri::AppHandle\) \{/);
+  assert.match(nativeHost, /\.set_shown_page\(page\);/);
 
   // Without a staging file the download is still denied, and the notice
   // exposes the origin of a URL that may carry one-time tokens.
@@ -1116,6 +1163,21 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // (`limit`), so one page cannot grow staging without bound.
   assert.match(browserDownloads, /const MAX_LIVE_DOWNLOADS: usize = 16;/);
   assert.match(browserDownloads, /fn has_capacity\(&self\) -> bool \{\s*self\.downloads\.len\(\) < MAX_LIVE_DOWNLOADS\s*\}/);
+  // The cap is enforced where downloads are admitted, so every caller is
+  // refused at exactly MAX live records.
+  assert.match(
+    browserDownloads,
+    /fn begin\(&mut self, download: Download\) -> Result<Vec<Effect>, CapacityFull> \{\s*if !self\.has_capacity\(\) \{\s*return Err\(CapacityFull\);\s*\}/,
+  );
+  // Pathless completions are attributed through one per-URL batch that counts
+  // its members down; a member resolved through its written path votes too,
+  // so no stale batch survives a mixed generation.
+  assert.match(
+    browserDownloads,
+    /struct UrlBatch \{[\s\S]*?remaining: usize,[\s\S]*?outcomes: Vec<bool>,\s*\}/,
+  );
+  assert.match(browserDownloads, /fn vote_pathless_finish\(&mut self, url: &str, success: bool\) -> Vec<Effect> \{/);
+  assert.match(browserDownloads, /fn resolve_finished_batch\(&mut self, url: &str\) -> Vec<Effect> \{/);
   assert.match(
     browserDownloads,
     /fn emit_blocked\(app: &AppHandle, page: &DownloadPage, url: &Url, reason: &str\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*"reason": reason,\s*\}\),/,
@@ -1150,6 +1212,9 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // so a process killed mid-copy leaves one attributable `.part` behind, and
   // the copied-error guard keeps a truncated transfer out of the destination.
   assert.match(browserDownloads, /&format!\("\.pinvou-\{id\}\.part"\)/);
+  // The staged bytes are flushed before the destination name can appear —
+  // for the same-volume rename and for the copy's swap alike.
+  assert.match(browserDownloads, /sync\(staged_file\)\?;\s*match rename\(staged_file, destination\)/);
   assert.match(
     browserDownloads,
     /let copied = copy\(&mut source, &mut target\)\.and_then\(\|_\| target\.sync_all\(\)\);\s*\/\/ Windows refuses to rename a file that is still open\.\s*drop\(target\);\s*copied\?;/,
@@ -1175,11 +1240,17 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   );
   assert.match(
     tauriApp,
-    /commands::browser::browser_download_save_as,\s*commands::startup::report_frontend_startup,/,
+    /commands::browser::browser_download_save_as,\s*commands::browser::browser_download_discard,\s*commands::startup::report_frontend_startup,/,
   );
   assert.match(
     browserCommands,
     /#\[tauri::command\(async\)\]\s*pub fn browser_download_save_as\(/,
+  );
+  // A stranded `unsaved` download can be given up on; its staged file is
+  // deleted and the notice reads as cancelled.
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_discard\(\s*app: tauri::AppHandle,\s*download_id: String,\s*downloads: State<'_, BrowserDownloads>,\s*\) -> Result<\(\), String> \{\s*downloads\.discard\(&app, &download_id\);\s*Ok\(\(\)\)\s*\}/,
   );
 });
 

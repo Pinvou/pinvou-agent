@@ -179,3 +179,16 @@ pub fn browser_download_save_as(
 ) -> Result<(), String> {
     downloads.save_as(&app, &download_id)
 }
+
+/// Discards a download that finished but could not be placed
+/// (`outcome: "unsaved"`), deleting its staged file; the notice then reads as
+/// cancelled. Idempotent: an unknown or not discardable id changes nothing.
+#[tauri::command(async)]
+pub fn browser_download_discard(
+    app: tauri::AppHandle,
+    download_id: String,
+    downloads: State<'_, BrowserDownloads>,
+) -> Result<(), String> {
+    downloads.discard(&app, &download_id);
+    Ok(())
+}

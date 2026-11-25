@@ -28,6 +28,7 @@ import {
 } from './browser-display.mjs';
 import {
   downloadFinishedNotice,
+  downloadNoticeCanDiscard,
   downloadNoticeCanSaveAs,
   downloadNoticesReducer,
   downloadStartedNotice,
@@ -816,6 +817,15 @@ export function BrowserView({
       reportErrorForOperation(operationEpoch, e);
     }
   }, [beginErrorOperation, downloadNotice, reportErrorForOperation]);
+  const discardDownload = useCallback(async () => {
+    if (!downloadNoticeCanDiscard(downloadNotice)) return;
+    const operationEpoch = beginErrorOperation();
+    try {
+      await invokeTauri('browser_download_discard', { downloadId: downloadNotice.downloadId });
+    } catch (e) {
+      reportErrorForOperation(operationEpoch, e);
+    }
+  }, [beginErrorOperation, downloadNotice, reportErrorForOperation]);
 
   // ---- Tabs ----
   const createTab = useCallback(async () => {
@@ -1185,6 +1195,16 @@ export function BrowserView({
                 onClick={saveDownloadAs}
               >
                 {t.browserDownloadSaveAs}
+              </button>
+            )}
+            {downloadNoticeCanDiscard(downloadNotice) && (
+              <button
+                type="button"
+                data-testid="browser-download-discard"
+                className="shrink-0 rounded border border-current px-2 py-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={discardDownload}
+              >
+                {t.browserDownloadDiscard}
               </button>
             )}
             <button

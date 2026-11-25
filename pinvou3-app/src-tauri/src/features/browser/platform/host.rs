@@ -33,6 +33,10 @@ const BROWSER_CORE_RUNTIME: &str =
 use crate::platform::paths;
 
 const WEBVIEW_LABEL_PREFIX: &str = "agent-browser-";
+/// The always-live download surface: one hidden webview that owns the only
+/// context-level download handler on Linux. See `ensure_download_surface`.
+/// Tab tokens are 16 hex digits, so this label never collides with a tab.
+const DOWNLOAD_SURFACE_LABEL: &str = "agent-browser-download-surface";
 const USER_TAKEOVER_SCHEME: &str = "pinvou-user-takeover";
 const LOCATION_CHANGE_SCHEME: &str = "pinvou-location-change";
 const USER_CONTROL_IDLE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1286,6 +1290,23 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             .map(|workspace| workspace.control.snapshot())
     }
 
+    /// Mirrors the shown workspace (the active session) into the download
+    /// coordinator so Linux download notices attribute to the workspace the
+    /// user sees. Called after every `active_session` transition.
+    fn sync_shown_download_page(&self, app_handle: &tauri::AppHandle) {
+        let page = self.active_session.as_deref().and_then(|session_id| {
+            let workspace = self.workspaces.get(session_id)?;
+            let tab = active_entry(workspace)?.token.clone();
+            Some(super::super::DownloadPage {
+                session_id: session_id.to_string(),
+                tab,
+            })
+        });
+        app_handle
+            .state::<super::super::BrowserDownloads>()
+            .set_shown_page(page);
+    }
+
     pub fn show(
         &mut self,
         window: &tauri::Window,
@@ -1332,6 +1353,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 workspace.bounds = previous_bounds;
             }
             self.active_session = None;
+            self.sync_shown_download_page(window.app_handle());
             if let Some(previous_session) = previous_active.as_deref() {
                 if let Some(previous) = self.workspaces.get_mut(previous_session) {
                     previous.visible = true;
@@ -1350,9 +1372,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     }
                 }
             }
+            self.sync_shown_download_page(window.app_handle());
             return Err(error);
         }
         self.active_session = Some(session_id.to_string());
+        self.sync_shown_download_page(window.app_handle());
         Ok(true)
     }
 
@@ -1386,6 +1410,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 }
                 self.active_session = None;
             }
+        }
+        if let Some(app) = app {
+            self.sync_shown_download_page(app);
         }
         Ok(())
     }
@@ -1846,7 +1873,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .close()
                 .map_err(|error| format!("Failed to close pending browser tab: {error}"))?;
         }
-        super::unregister_browser_core_webview_binding(&label);
+        forget_tab_surface(app, &label);
         self.staged_tabs.remove(&staged_key);
         self.staged_user_tabs.remove(&staged_key);
         Ok(true)
@@ -1915,7 +1942,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         if committed.is_none() {
             return Ok(false);
         }
-        super::unregister_browser_core_webview_binding(&entry.label);
+        forget_tab_surface(app, &entry.label);
         if let Err(error) = self.persist_workspace(session_id) {
             eprintln!("[browser] Failed to persist mapping after creation compensation: {error}");
         }
@@ -1958,7 +1985,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     format!("Failed to close user browser tab awaiting publication: {error}")
                 })?;
             }
-            super::unregister_browser_core_webview_binding(&label);
+            forget_tab_surface(app, &label);
             self.staged_tabs.remove(&staged_key);
             self.staged_user_tabs.remove(&staged_key);
             return Ok(true);
@@ -2050,7 +2077,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 }
             }
         }
-        super::unregister_browser_core_webview_binding(&entry.label);
+        forget_tab_surface(Some(app), &entry.label);
         let snapshot = workspace.control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
         // WebView close is an irreversible physical commit. A later snapshot
@@ -2107,6 +2134,11 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         }
         if !self.has_sessions() {
             self.active_session = None;
+            if let Some(app) = app {
+                app.state::<super::super::BrowserDownloads>()
+                    .forget_all_pages();
+                self.sync_shown_download_page(app);
+            }
             self.data_directory = None;
             self.platform.reset();
         }
@@ -2208,6 +2240,12 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             errors.push(error);
         }
 
+        if errors.is_empty() {
+            // The session's tabs are all gone; their attribution pages go
+            // with them.
+            app.state::<super::super::BrowserDownloads>()
+                .forget_session_pages(session_id);
+        }
         let workspace_empty = self
             .workspaces
             .get(session_id)
@@ -3108,6 +3146,112 @@ fn complete_absent_prepare_rollback(
     Ok(Some(has_remaining_sessions))
 }
 
+/// Routes an engine download event to the coordinator. Both events arrive on
+/// the native UI thread; the coordinator answers at once and keeps the OS
+/// save dialog off this stack. The page is resolved from the webview label at
+/// event time and falls back to the shown workspace: on Linux every download
+/// arrives through the always-live download surface, so the label there is
+/// the surface's own and cannot name the requesting tab.
+fn handle_download_event(webview: tauri::Webview<tauri::Wry>, event: DownloadEvent<'_>) -> bool {
+    let app = webview.app_handle();
+    let downloads = app.state::<super::super::BrowserDownloads>();
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            match downloads.page_for_request(webview.label()) {
+                Some(page) => downloads.requested(app, page, &url, destination),
+                None => false,
+            }
+        }
+        DownloadEvent::Finished { url, path, success } => {
+            downloads.finished(app, &url, path.as_deref(), success);
+            false
+        }
+        _ => false,
+    }
+}
+
+/// On Linux one always-live download surface owns the only context-level
+/// download handler (see `ensure_download_surface`); other engines attach a
+/// handler per tab because every event arrives in the downloading webview's
+/// own handler with the correct webview.
+fn attach_per_tab_download_handler<P: PlatformWebviewConfig>(
+    app: &tauri::AppHandle,
+    window: &tauri::Window,
+    platform: &P,
+    data_directory: &Path,
+) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !ensure_download_surface(app, window, platform, data_directory)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, window, platform, data_directory);
+        true
+    }
+}
+
+/// Builds the always-live download surface once: a hidden webview on the
+/// shared browser WebContext that is never closed. wry registers one
+/// context-level download handler per webview build with no dedupe or
+/// disconnect, and on Linux tauri-runtime-wry keeps that WebContext alive for
+/// the whole process, so the first-connected handler answers every download
+/// forever — and tauri resolves each handler's `webview` from its build-time
+/// label, meaning the first-built tab answered for every tab and, once
+/// closed, made wry cancel every download before any app code ran. Routing
+/// all Linux downloads through this never-closed surface removes both
+/// failure modes; its notices are attributed to the shown workspace (see
+/// `BrowserDownloads::shown_page`). Returns false when the surface could not
+/// be created, in which case this build falls back to a per-tab handler.
+#[cfg(target_os = "linux")]
+fn ensure_download_surface<P: PlatformWebviewConfig>(
+    app: &tauri::AppHandle,
+    window: &tauri::Window,
+    platform: &P,
+    data_directory: &Path,
+) -> bool {
+    if app.get_webview(DOWNLOAD_SURFACE_LABEL).is_some() {
+        return true;
+    }
+    let Ok(url) = tauri::Url::parse("about:blank") else {
+        return false;
+    };
+    let builder = WebviewBuilder::new(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External(url));
+    let Ok(builder) = platform.configure_builder(builder, data_directory) else {
+        return false;
+    };
+    let Ok(webview) = window.add_child(
+        builder.on_download(handle_download_event),
+        PhysicalPosition::new(0, 0),
+        PhysicalSize::new(1, 1),
+    ) else {
+        eprintln!(
+            "[browser] Download surface unavailable; downloads fall back to per-tab handlers"
+        );
+        return false;
+    };
+    // The surface is never attached to the visible slot and never shown; it
+    // exists only so its handler chain stays alive.
+    if webview.hide().is_err() {
+        let _ = webview.close();
+        eprintln!(
+            "[browser] Download surface could not be hidden; downloads fall back to per-tab handlers"
+        );
+        return false;
+    }
+    true
+}
+
+/// Drops a closed tab's surface bookkeeping: the core binding and the
+/// download attribution page share the label lifecycle.
+fn forget_tab_surface(app: Option<&tauri::AppHandle>, label: &str) {
+    super::unregister_browser_core_webview_binding(label);
+    if let Some(app) = app {
+        app.state::<super::super::BrowserDownloads>()
+            .unregister_page(label);
+    }
+}
+
 fn build_webview<P: PlatformWebviewConfig>(
     platform: &P,
     app: &tauri::AppHandle,
@@ -3153,6 +3297,11 @@ fn build_webview<P: PlatformWebviewConfig>(
             )))
         })?;
     }
+    // One always-live download surface per process owns Linux downloads; a
+    // per-tab handler is attached everywhere else (and on Linux only when the
+    // surface itself could not be created).
+    let attach_per_tab_download_handler =
+        attach_per_tab_download_handler(app, &window, platform, data_directory);
 
     let navigation_app = app.clone();
     let navigation_session_id = session_id.to_string();
@@ -3204,37 +3353,27 @@ fn build_webview<P: PlatformWebviewConfig>(
     let builder = match platform.configure_builder(builder, data_directory) {
         Ok(builder) => builder,
         Err(error) => {
-            super::unregister_browser_core_webview_binding(&label);
+            forget_tab_surface(Some(app), &label);
             return Err(Box::new(WebviewBuildError::new(error)));
         }
     }
         // BrowserCore runs in every frame on all three desktop engines. The
         // script exposes DOM-only helpers; native input remains behind the
         // task lease in Rust and is never callable by page JavaScript.
-        .initialization_script_for_all_frames(init_script)
-        .on_download(move |webview, event| {
-            // Both events arrive on the native UI thread. The coordinator
-            // answers at once and keeps the OS save dialog off this stack.
-            // The owning page is resolved from the webview label: wry hands
-            // every download to the handler connected first, and on Linux the
-            // per-tab handlers accumulate on one shared WebKit context, so a
-            // page captured per build would attribute them to the first tab.
-            let app = webview.app_handle();
-            let downloads = app.state::<super::super::BrowserDownloads>();
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    match downloads.page_for_label(webview.label()) {
-                        Some(page) => downloads.requested(app, page, &url, destination),
-                        None => false,
-                    }
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    downloads.finished(app, &url, path.as_deref(), success);
-                    false
-                }
-                _ => false,
-            }
-        })
+        .initialization_script_for_all_frames(init_script);
+    // Per-tab download handlers on engines that attribute per tab. On Linux
+    // the always-live download surface owns the only context-level handler
+    // (see `ensure_download_surface`): every per-tab handler would accumulate
+    // on the one shared WebKit context, and tauri resolves each handler's
+    // webview from its build-time label, so the first-connected tab would
+    // answer every download forever — and once that tab closed, wry would
+    // cancel every download before any app code runs.
+    let builder = if attach_per_tab_download_handler {
+        builder.on_download(handle_download_event)
+    } else {
+        builder
+    };
+    let builder = builder
         .on_navigation(move |url| {
             if let Some(signal_nonce) = location_change_signal_nonce(url) {
                 if signal_nonce == navigation_location_signal_nonce {
@@ -3578,7 +3717,7 @@ fn build_webview<P: PlatformWebviewConfig>(
     ) {
         Ok(webview) => webview,
         Err(error) => {
-            super::unregister_browser_core_webview_binding(&label);
+            forget_tab_surface(Some(app), &label);
             return Err(Box::new(WebviewBuildError::new(format!(
                 "Failed to create system-WebView browser tab: {error}"
             ))));
@@ -3600,7 +3739,7 @@ fn build_webview<P: PlatformWebviewConfig>(
         entry.unpublish();
         return match webview.close() {
             Ok(()) => {
-                super::unregister_browser_core_webview_binding(&entry.label);
+                forget_tab_surface(Some(app), &entry.label);
                 Err(Box::new(WebviewBuildError::new(format!(
                     "Failed to initialize hidden browser tab: {hide_error}"
                 ))))
@@ -3617,7 +3756,7 @@ fn build_webview<P: PlatformWebviewConfig>(
         entry.unpublish();
         return match webview.close() {
             Ok(()) => {
-                super::unregister_browser_core_webview_binding(&entry.label);
+                forget_tab_surface(Some(app), &entry.label);
                 Err(Box::new(WebviewBuildError::new(format!(
                     "Failed to initialize native browser-tab container: {attach_error}"
                 ))))

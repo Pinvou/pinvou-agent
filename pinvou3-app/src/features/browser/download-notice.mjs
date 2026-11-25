@@ -39,6 +39,13 @@ export function downloadNoticeCanSaveAs(notice) {
   return notice?.status === 'unsaved' && !!notice.downloadId;
 }
 
+// The same transfer can also be given up on: its staged file is deleted and
+// the notice reads as cancelled. This is the only way out of an `unsaved`
+// state that the user does not want to retry.
+export function downloadNoticeCanDiscard(notice) {
+  return downloadNoticeCanSaveAs(notice);
+}
+
 // Notices are keyed by download so that one transfer's outcome cannot hide
 // another transfer that is still waiting for the user.
 export function downloadNoticesReducer(state, action) {
