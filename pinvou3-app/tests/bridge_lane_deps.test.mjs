@@ -231,7 +231,7 @@ const EXPECTED_SURFACE = {
   // setPlanModeNext; no cluster literal gains a dep — count only.
   // bumpModeSyncAttempt (review P2 ordering fence) is a base-local helper
   // over the same closure Maps — pure, count only.
-  sharedFnCount: 324,
+  sharedFnCount: 325,
 };
 
 assert.equal(

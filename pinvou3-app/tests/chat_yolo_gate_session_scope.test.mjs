@@ -273,11 +273,11 @@ function extractFunction(source, name) {
     addSystemItemFor: (sid, text) => notes.push(text),
     bt: key => key,
     notify: () => {},
-    // The shared per-lane closure accessor (handleModeSwitchFailure /
-    // markModeSwitchSettled live there): the sandbox stubs the two members
-    // the success path touches.
+    // The shared per-lane closure accessor (the dispatch-sequence fence
+    // lives there): the sandbox stubs the members the switch paths touch.
     pinvouSharedweb: () => ({
-      markModeSwitchSettled() {},
+      beginModeSwitchAttempt: () => 1,
+      settleModeSwitchSuccess() {},
       handleModeSwitchFailure: async () => {},
     }),
   };

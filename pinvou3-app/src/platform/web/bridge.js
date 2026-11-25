@@ -1966,6 +1966,7 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         // Use the meta.id captured at materialization, not activeSessionId: the user may have
         // switched away during the awaits above, and a mode command against the current active session would target the wrong object.
         if (["plan", "yolo", "auto"].includes(laneDefault)) {
+          const laneAttempt = pinvouSharedweb().beginModeSwitchAttempt(meta.id);
           try {
             const laneOutcome = laneDefault === "plan"
               ? await invoke("set_plan_mode_next", { sessionId: meta.id })
@@ -1977,13 +1978,13 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
                 addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
               });
             }
-            pinvouSharedweb().markModeSwitchSettled(meta.id);
+            pinvouSharedweb().settleModeSwitchSuccess(meta.id, laneAttempt);
           } catch (laneModeError) {
             // Convergence (review P2, receipt-equals-effective): the same
             // failed-hot-sync shape as every other switch surface — re-read
             // the authoritative state so the receipt tracks the effective
             // mode and mark the session for the edit-resend guard.
-            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"));
+            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt);
           }
         }
         await syncActivePersona();
@@ -5649,6 +5650,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     // Draft state: do not materialize a session; rewrite this lane's global
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
+    const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
     try {
       // The invoke targets sid directly at issue time; after the await, the
       // result is written back to the same sid and modeSyncSeq is bumped.
@@ -5658,8 +5660,8 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedweb().markModeSwitchSettled(sid);
-    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); }
+      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); }
     notify();
   }
   // tri-mode unified mode switch (review P2: the web face's Auto→Yolo escape used to be a dead button —
@@ -5679,6 +5681,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
+    const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
     try {
       const args = { sessionId: sid, mode };
       // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
@@ -5700,8 +5703,8 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-      pinvouSharedweb().markModeSwitchSettled(sid);
-    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed")); }
+      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -5731,6 +5734,7 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
     });
     if (stuck && stuck.submitting) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
     try {
       const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
       const st = outcome && outcome.state ? outcome.state : outcome;
@@ -5738,10 +5742,10 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedweb().markModeSwitchSettled(sid);
+      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed")); notify();
+      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
