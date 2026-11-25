@@ -1392,8 +1392,10 @@ try {
     // （重发回合会按引擎从未确认的 live posture 执行）。
     const sharedBase = read('src', 'shared', 'bridge-shared-helpers.js');
     const tauriInteraction = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
-    assert.match(sharedBase, /const modeSyncUnresolvedSids = new Set\(\);[\s\S]{0,200}?async function handleModeSwitchFailure\(sid, error, failCopy\) \{[\s\S]{0,400}?applyAuthoritativeModeState\(sid, currentMode\);\s*\n\s*modeSyncUnresolvedSids\.add\(sid\);\s*\n\s*addSystemItemFor\(sid, bt\("modeSyncFailedEffective"\) \+ error\);/,
-      '同步失败收敛必须回读权威状态、置未解决标记并给「已生效但同步失败」文案');
+    assert.match(sharedBase, /async function handleModeSwitchFailure\(sid, error, failCopy\) \{[\s\S]{0,460}?const attempt = bumpModeSyncAttempt\(sid\);\s*\n\s*modeSyncUnresolvedSids\.add\(sid\);\s*\n\s*try \{[\s\S]{0,460}?if \(modeSyncAttempt\.get\(sid\) !== attempt\) return;\s*\n\s*applyAuthoritativeModeState\(sid, currentMode\);\s*\n\s*addSystemItemFor\(sid, bt\("modeSyncFailedEffective"\) \+ error\);/,
+      '同步失败恢复必须在回读 await 前武装标记、完成后按尝试栅栏挡迟到完成，读回成功才落「已生效但同步失败」文案');
+    assert.match(sharedBase, /function markModeSwitchSettled\(sid\) \{[\s\S]{0,200}?bumpModeSyncAttempt\(sid\);\s*\n\s*modeSyncUnresolvedSids\.delete\(sid\);/,
+      '成功切换结算必须先抬尝试栅栏再解除标记（挂起的旧恢复不得重新封锁）');
     assert.match(sharedBase, /\} catch \{[\s\S]{0,300}?addSystemItemFor\(sid, failCopy \+ error\);/,
       '回读也失败（会话已删/桥断）必须保持朴素失败文案——不得伪称已生效');
     assert.match(sharedBase, /markModeSwitchSettled\(sid\);\s*\n\s*\} catch \(e\) \{ await handleModeSwitchFailure\(sid, e, bt\("switchModeFailed"\)\); \}/,
@@ -1423,6 +1425,65 @@ try {
       'codex 道切换失败必须先回读权威状态收敛控件，再给「已生效但同步失败」注记；回读也失败才落素错误面');
     assert.match(codexSource, /codexCopy\.modeAskPersistFailed \+ switchOutcome\.ask_error/,
       'codex 道必须把 ask 半边作为未保存注记');
+    // ===== 可执行栅栏（review P2 时序三态，评审点名的执行级复现口径）=====
+    // (a) pending 读：失败恢复必须在 await 前武装（守卫立即生效）；
+    // (b) rejected 读：标记保留（失败读从不证明同步已修复）；
+    // (c) 迟到完成：较新的成功切换解除守卫后，恢复 A 的迟到读回不得
+    //     重新封锁（尝试栅栏）。
+    {
+      const sharedRoot = {};
+      vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js'), {
+        window: sharedRoot, globalThis: sharedRoot, setTimeout, clearTimeout,
+      }, { filename: 'shared-helpers-harness.js' });
+      const notes = [];
+      let modeReadGate = () => Promise.resolve({ mode: 'yolo' });
+      const deps = {
+        state: { activeSessionId: 's1', chatItems: [] },
+        invoke: cmd => (cmd === 'get_mode_state' ? modeReadGate() : Promise.resolve({})),
+        notify: () => {}, bt: key => key,
+        addSystemItem: text => notes.push(text), addSystemItemFor: (sid, text) => notes.push(text),
+        setDraftMode: async () => {}, applyAuthoritativeModeState: () => {},
+        runSyncOnSession: (sid, fn) => fn(), runOnSession: (sid, fn) => fn(),
+        patchItemById: () => {}, patchItemByIdFor: () => {}, addChatItem: () => {},
+      };
+      const shared = vmRootThenCreate(sharedRoot, deps);
+      function vmRootThenCreate(root, factoryDeps) {
+        return root.PinvouBridgeShared.create('tauriInteraction', factoryDeps);
+      }
+      // (a) pending 读：catch 即武装，读回挂起期间守卫已生效。
+      let releaseRead;
+      modeReadGate = () => new Promise(resolve => { releaseRead = resolve; });
+      const pendingRecovery = shared.handleModeSwitchFailure('s1', new Error('sync boom'), 'switchModeFailed: ');
+      assert.equal(shared.editResendSyncBlocked('s1'), true,
+        '读回 pending 期间编辑守卫必须已武装（armed-before-await）');
+      releaseRead({ mode: 'yolo' });
+      await pendingRecovery;
+      assert.equal(shared.editResendSyncBlocked('s1'), true,
+        '读回完成后未解决标记保持（成功切换才解除）');
+      assert.ok(notes.at(-1).includes('modeSyncFailedEffective'),
+        '读回成功落「已生效但引擎同步失败」收敛文案');
+      // (b) rejected 读：标记保留 + 朴素失败文案（不伪称已生效）。
+      modeReadGate = () => Promise.reject(new Error('bridge down'));
+      await shared.handleModeSwitchFailure('s1', new Error('sync boom'), 'switchModeFailed: ');
+      assert.equal(shared.editResendSyncBlocked('s1'), true,
+        '读回被拒必须保留标记（失败读从不证明同步已修复）');
+      assert.ok(notes.at(-1).includes('switchModeFailed: '),
+        '读回被拒保持朴素失败文案');
+      // (c) 迟到完成：恢复 A 读回挂起期间，较新的成功切换 B 解除守卫；
+      // A 的迟到读回被尝试栅栏挡下（不加标记、不落收敛文案）。
+      let staleRelease;
+      modeReadGate = () => new Promise(resolve => { staleRelease = resolve; });
+      const staleRecovery = shared.handleModeSwitchFailure('s1', new Error('sync boom'), 'switchModeFailed: ');
+      assert.equal(shared.editResendSyncBlocked('s1'), true, '恢复 A 武装');
+      shared.markModeSwitchSettled('s1');
+      assert.equal(shared.editResendSyncBlocked('s1'), false, '较新的成功切换解除守卫');
+      staleRelease({ mode: 'plan' });
+      await staleRecovery;
+      assert.equal(shared.editResendSyncBlocked('s1'), false,
+        '迟到的读回完成不得重新封锁已修复的会话（尝试栅栏）');
+      assert.ok(!notes.at(-1).includes('modeSyncFailedEffective'),
+        '迟到完成不得再落「已生效」文案（较新结算的回执为准）');
+    }
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；
     // 列表非空 ⇒ 有 turn 在等审批,用 markRemoteTurn 复原 busy 面让停止键

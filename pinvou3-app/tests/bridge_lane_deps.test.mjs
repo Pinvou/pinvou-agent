@@ -229,7 +229,9 @@ const EXPECTED_SURFACE = {
   // addSystemItemFor / applyAuthoritativeModeState / state — every dep the
   // consuming clusters (web, tauriInteraction) already pass for
   // setPlanModeNext; no cluster literal gains a dep — count only.
-  sharedFnCount: 323,
+  // bumpModeSyncAttempt (review P2 ordering fence) is a base-local helper
+  // over the same closure Maps — pure, count only.
+  sharedFnCount: 324,
 };
 
 assert.equal(

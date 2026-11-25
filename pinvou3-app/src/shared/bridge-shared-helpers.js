@@ -4364,20 +4364,50 @@
   // the engine's live posture — only a fresh publish can clear the mark).
   // Closure state on this per-lane base instance.
   const modeSyncUnresolvedSids = new Set();
+  // Attempt stamp per sid (review P2, ordering fence): every settlement —
+  // the START of a failure recovery or a successful switch — bumps it, and
+  // a recovery's readback completion is fenced against its own stamp. A
+  // late completion can therefore neither re-block a session a newer
+  // successful switch already repaired nor finalize over a newer recovery
+  // that owns the session's state.
+  const modeSyncAttempt = new Map();
+  function bumpModeSyncAttempt(sid) {
+    const next = (modeSyncAttempt.get(sid) || 0) + 1;
+    modeSyncAttempt.set(sid, next);
+    return next;
+  }
   async function handleModeSwitchFailure(sid, error, failCopy) {
+    // Arm BEFORE awaiting anything (review P2): the failed engine hot-sync
+    // is known at catch time, so the edit-resend guard must hold at once —
+    // while the readback is still pending — and stay armed if the readback
+    // itself fails (a failed lookup never proves the sync repaired).
+    const attempt = bumpModeSyncAttempt(sid);
+    modeSyncUnresolvedSids.add(sid);
     try {
       const currentMode = await invoke("get_mode_state", { sessionId: sid });
+      // Fence: a newer settlement (a successful switch repaired the sync,
+      // or a newer recovery owns the session) supersedes this completion —
+      // the newer settlement's own receipt governs, and re-applying a
+      // stale read or re-arming the marker here would misreport the
+      // session's effective state.
+      if (modeSyncAttempt.get(sid) !== attempt) return;
       applyAuthoritativeModeState(sid, currentMode);
-      modeSyncUnresolvedSids.add(sid);
       addSystemItemFor(sid, bt("modeSyncFailedEffective") + error);
     } catch {
       // The re-read failed too — the session is gone or the bridge is down;
-      // neither means the switch landed, so keep the plain failure copy.
+      // neither means the sync repaired, so the marker stays armed and the
+      // plain failure copy stands (no "effective" claim without a read).
       addSystemItemFor(sid, failCopy + error);
     }
   }
   function editResendSyncBlocked(sid) { return modeSyncUnresolvedSids.has(sid); }
-  function markModeSwitchSettled(sid) { modeSyncUnresolvedSids.delete(sid); }
+  function markModeSwitchSettled(sid) {
+    // A successful switch repaired the live posture: bump the attempt first
+    // so a still-pending older recovery cannot re-block the session, then
+    // release the guard.
+    bumpModeSyncAttempt(sid);
+    modeSyncUnresolvedSids.delete(sid);
+  }
 
   // web+tauriInteraction 共享
   async function setPlanModeNext() {
