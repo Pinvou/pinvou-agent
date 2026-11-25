@@ -25,7 +25,8 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use anyhow::Result;
 use deepseek_tui::AppMode;
 use deepseek_tui::config::{
-    ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig, wire_model_for_provider,
+    ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig, ToolSchemaPolicy,
+    wire_model_for_provider,
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
@@ -2408,6 +2409,7 @@ impl Pinvou3Bridge {
             memory_path: _,
             locale_tag: _,
             strict_tool_mode: _,
+            tool_schema_policy: _,
             translation_enabled: _,
             vision_config: _,
             subagent_api_timeout: _, // pinvou3-customized (see below); 120s is not enough for local slow inference
@@ -2574,6 +2576,7 @@ impl Pinvou3Bridge {
             memory_path: paths::memory_path(),
             locale_tag: self.locale_tag().to_string(),
             strict_tool_mode: false,
+            tool_schema_policy: ToolSchemaPolicy::Relaxed,
             // pinvou3's Chinese users are already in a Chinese context; the
             // /translate path is not used
             translation_enabled: false,
@@ -8825,6 +8828,16 @@ mod tests {
                 .max_tool_calls,
             None,
             "the removed knob must not reach per-session configs either"
+        );
+    }
+
+    #[test]
+    fn forkguard_relaxed_tool_schema_preserves_automatic_tool_choice() {
+        let cfg = fixture_bridge().build_engine_config();
+        assert_eq!(cfg.tool_schema_policy, ToolSchemaPolicy::Relaxed);
+        assert!(
+            !cfg.strict_tool_mode,
+            "relaxed schemas must preserve automatic tool choice"
         );
     }
 

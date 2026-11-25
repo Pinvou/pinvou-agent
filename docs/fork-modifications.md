@@ -1,5 +1,13 @@
 # CodeWhale Fork 修改清单
 
+## 候选：工具 schema 策略独立于工具调用选择（T2，依赖 CodeWhale #176/#179）
+
+- 状态：候选，不得先于 [Pinvou/CodeWhale#176](https://github.com/Pinvou/CodeWhale/pull/176) 与 [Pinvou/CodeWhale#179](https://github.com/Pinvou/CodeWhale/pull/179) 合入。当前候选 gitlink `a7dfd66d9879a833b263f2321074737f4a1fc58f` 同时包含 #176 的 Moonshot 工具契约改动和 #179 的策略拆分；#176 仍有独立评审问题待解决，不能由本宿主候选登记代替其验收。公开维护头与父仓基线仍以第 0 节为准，待两项底座 PR 合入后改用实际公开维护提交并同步计数。
+- 底座策略：`tool_schema_policy = "auto" | "relaxed"` 独立于 `strict_tool_mode`。`auto` 保留逐工具 `strict` 值及既有严格准备流程；`relaxed` 在 Engine 层将每个选中工具设为 `Tool.strict = Some(false)`，跳过额外严格 schema 准备并保留选中 schema，且不改变 `tool_choice`。父请求、deferred 激活、preview 与子代理共用同一投影；显式 `Op::SetToolSchemaPolicy` 负责运行时 reload，普通 route install 不覆盖宿主自有 `EngineConfig` 策略。Provider 各自的 schema normalization 与 strict 字段移除规则继续生效，因此不宣称所有 provider 都收到 `function.strict = false` 或逐字不变的 wire schema。
+- 宿主接入：Pinvou 固定 `strict_tool_mode = false` 与 `tool_schema_policy = ToolSchemaPolicy::Relaxed`，即自动工具选择与宽松 schema 解耦；仅在显式 `EngineConfig` 构造处设置，不复制到 `DtConfig` 形成第二事实源。新增 `forkguard_relaxed_tool_schema_preserves_automatic_tool_choice`，同时钉住两项配置。此策略不改变工具白名单、权限或执行边界。
+- guard 同步：APP 指纹钉宿主 `Relaxed` 构造与结果测试；T2 指纹钉 `ToolSchemaPolicy::Relaxed` 投影、策略/tool_choice 独立性、Moonshot registry-to-wire 及子代理 surface。第 2 层新增三个非 `forkguard_` 命名测试的 pinned runner，逐一要求 `1 passed`，防止改名或删除后静默 no-op。
+- 验证边界：CodeWhale #179 的完整 Clippy 与排除既有环境失败后的 workspace 测试证据由该 PR 记录；宿主侧实际执行 `forkguard_relaxed_tool_schema_preserves_automatic_tool_choice`（1 passed）、`cargo fmt --check`、`./scripts/fork-guard.sh --fast`（全部新旧指纹通过，仅候选 gitlink/提交数与尚未推进的公开基线检查不符）及后续父仓适用门禁。未进行 live provider 调用；候选通过不等于公开维护头或最终集成树已验收。
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
