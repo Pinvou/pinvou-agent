@@ -204,6 +204,53 @@
     return healed;
   }
 
+  // ── CodeWhale compaction checkpoint ────────────────────────────────
+  // Compaction commits its summary into the saved history as a role="user"
+  // message (the model reads it as a user-history item, Codex parity), so the
+  // engine's context survives a reload. It is engine-written runtime state,
+  // not a user turn: a projection that renders it as typed input shows the
+  // model-facing summary under the user's name. Recognition mirrors the
+  // foundation's structural predicates (CodeWhale
+  // crates/tui/src/history_recognition.rs) rather than a substring scan,
+  // because a user may legitimately paste or quote the summary header.
+  const COMPACTION_SUMMARY_MARKERS = [
+    "Another language model started to solve this problem",
+    "Conversation Summary (Auto-Generated)",
+  ];
+  const COMPACTION_CHECKPOINT_PROVENANCE = "<!-- codewhale.compaction-checkpoint.v1 -->";
+
+  function isCheckpointTextBox(block) {
+    return !!block && block.type === "text" && block.cache_control == null;
+  }
+
+  // Loose form (`is_compaction_checkpoint_message`): the first text block
+  // begins with the summary header (current or pre-v0.9.6 legacy), and the
+  // only other block, if any, is the provenance marker.
+  function isCompactionCheckpointBlocks(blocks) {
+    if (!Array.isArray(blocks) || blocks.length === 0 || blocks.length > 2) return false;
+    const first = blocks[0];
+    if (!isCheckpointTextBox(first) || typeof first.text !== "string") return false;
+    if (COMPACTION_SUMMARY_MARKERS.every(marker => !first.text.startsWith(marker))) return false;
+    return blocks.length === 1 ||
+      (isCheckpointTextBox(blocks[1]) && blocks[1].text === COMPACTION_CHECKPOINT_PROVENANCE);
+  }
+
+  // Stamped form (`is_generated_compaction_checkpoint`): summary block plus
+  // the engine-written provenance block. Typed input cannot produce this
+  // shape — the marker is its own content block — so it is an unambiguous
+  // checkpoint.
+  //
+  // Display reads ONLY this form as a checkpoint. The bare form matches a
+  // user turn that merely pastes the summary header; the foundation still
+  // reads it loosely in a history with no stamped carrier because a missed
+  // carrier would stack a second summary, but hiding a user's own message
+  // has no such correctness need behind it. A pre-stamp bare carrier turns
+  // stamped on the engine's next restore and disappears from the bubbles
+  // then.
+  function isGeneratedCompactionCheckpointBlocks(blocks) {
+    return Array.isArray(blocks) && blocks.length === 2 && isCompactionCheckpointBlocks(blocks);
+  }
+
   function isInternalRuntimeUserMessage(value) {
     return isContextUpdateRuntimeMessage(value) ||
       containsOnlyInternalRuntimeMetadata(value) ||
@@ -223,6 +270,11 @@
   function isInternalUserMessage(blocks) {
     const textBlocks = Array.isArray(blocks) ? blocks : [];
     if (isInternalUserMessageProvenance(userMessageInputProvenance(textBlocks))) return true;
+    // The stamped checkpoint is engine-written by construction, so every
+    // consumer (display text, edit-last boundary, auto-title) reads it as
+    // runtime metadata. The bare form matches pasted headers and stays
+    // displayable.
+    if (isGeneratedCompactionCheckpointBlocks(textBlocks)) return true;
     let foundInternal = false;
     for (let i = 0; i < textBlocks.length; i++) {
       const block = textBlocks[i];
@@ -250,6 +302,13 @@
     isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
+    // CodeWhale compaction checkpoint (see the family above): the two
+    // structural predicates and their literals, exported for the replay and
+    // for parity tests with the ESM twin (src/shared/internal-message.mjs).
+    isCompactionCheckpointBlocks,
+    isGeneratedCompactionCheckpointBlocks,
+    COMPACTION_SUMMARY_MARKERS,
+    COMPACTION_CHECKPOINT_PROVENANCE,
     computerUseKnownErrorText,
     // Error texts the gate missed (gateway/proxy custom bodies, raw
     // provider messages) do not become model-service notices but still get

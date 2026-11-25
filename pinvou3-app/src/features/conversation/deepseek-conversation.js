@@ -305,9 +305,11 @@ function transferSteeredRunTerminals(turns) {
  * 压缩摘要头 turn 同样不占序号：以摘要头首句开头的 user 消息要么是会话内
  * 压缩的 stamped 载体（底座两个 era 口径下都是 runtime-owned，永不计入），
  * 要么是用户粘贴的摘要头（pre-provenance 历史的宽松口径读作已保存摘要，
- * 也不计入）。投影层不识别这类消息（会原样成为 userItem），入口表在此
- * 统一跳过，否则每个压缩过的会话 fork/回退序号整体 +1。标记字面量镜像自
- * 底座 `CodeWhale/crates/tui/src/history_recognition.rs`
+ * 也不计入）。历史重放已把 stamped 载体还原成系统提示、不再产生 userItem
+ * （bridge-shared-helpers.js 的 rerenderFromMessagesCore）；这里的标记判定
+ * 守的是仍会以 userItem 出现的形态——用户粘贴的摘要头、无出处戳的旧版裸
+ * 载体，以及未经重放的 chatItems——否则这类会话的 fork/回退序号整体 +1。
+ * 标记字面量镜像自底座 `CodeWhale/crates/tui/src/history_recognition.rs`
  * COMPACTION_SUMMARY_MARKER / LEGACY_COMPACTION_SUMMARY_MARKER（未从底座
  * 根导出）。已知残留：post-provenance 历史（会话内压缩过）里用户再粘贴
  * 摘要头时，底座 era 口径会计入而前端跳过——该场景罕见，根治是把序号由

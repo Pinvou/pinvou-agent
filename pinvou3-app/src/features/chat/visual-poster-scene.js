@@ -37,6 +37,8 @@ function createVisualPosterMessageMeta(text) {
 }
 
 export {
+  VISUAL_POSTER_CONTEXT,
+  VISUAL_POSTER_AUDIT,
   createVisualPosterMessageMeta,
   shouldUseVisualPosterScene,
 };

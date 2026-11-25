@@ -215,7 +215,13 @@ const EXPECTED_SURFACE = {
   // cronWsTrim (#900 review P3 round 2: the Unicode White_Space trim the
   // fence's key/value/EXPR parsing needs) is pure as well and resolves as
   // a base-local declaration inside the same fence — count only.
-  sharedFnCount: 320,
+  // scenePayloadSplitter (model-facing text kept out of the user's bubbles:
+  // history replay inverts the scene routing wrapper) reads only the
+  // window.__PINVOU_SCENE_PAYLOAD__ features global, like the
+  // window.PinvouBridgeMessages readers above; its sole caller
+  // rerenderFromMessagesCore resolves it as a base-local declaration —
+  // count only.
+  sharedFnCount: 321,
 };
 
 assert.equal(

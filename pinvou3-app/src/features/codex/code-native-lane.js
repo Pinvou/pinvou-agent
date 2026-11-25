@@ -14,7 +14,11 @@
 
 import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
-import { isInternalUserMessage, isKnownInternalMetadataBlock } from '../../shared/internal-message.mjs';
+import {
+  isGeneratedCompactionCheckpointBlocks,
+  isInternalUserMessage,
+  isKnownInternalMetadataBlock,
+} from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
 // chat workspace. Only a loaded model whose controls belong to this very
@@ -778,6 +782,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       ? raw
       : (typeof raw === 'string' && raw ? [{ type: 'text', text: raw }] : []);
     if (role === 'user') {
+      // 压缩检查点（带出处戳的摘要载体，见 internal-message.mjs）：还原为一条与
+      // 实时 chat:compaction 同款的系统项（文案由渲染层按 compactPhase 取三语），
+      // 绝不上屏为用户气泡。检查点只含文本块，没有 tool_result。
+      if (isGeneratedCompactionCheckpointBlocks(blocks)) {
+        lane.items.push({ id: nextId(lane), type: 'system', compactPhase: 'checkpoint', text: '' });
+        continue;
+      }
       if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
       const text = userMessageText(blocks);
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text });
