@@ -238,11 +238,16 @@ fn serial_string_for_slot(slot: u32) -> String {
 /// stable-identity rationale — macOS persists one display arrangement PER
 /// SLOT, once, instead of one per session — while bounding coexistence at
 /// [`IDENTITY_SLOTS`].len() displays. Slot 0 keeps the serial (numeric and
-/// string) every pre-pool session used, so a host that already remembered
-/// an arrangement for that identity (extend/mirror + remember) keeps that
-/// remembered choice; the vendor/product ids are new and had no pre-pool
-/// counterpart (pre-pool descriptors never sent them), which on 14+ hosts
-/// is vacuous — there the vendor id was zero and nothing built at all.
+/// string) every pre-pool session used, but the identity AS A WHOLE is new
+/// on every host: the vendor/product ids had no pre-pool counterpart
+/// (pre-pool descriptors never sent them), so per the (vendor, product,
+/// serial) keying above no host holds a persisted arrangement for any slot
+/// — the serial continuity pays off only if macOS keys arrangements on the
+/// serial alone, which has not been observed (on 14+ hosts the question is
+/// vacuous outright: there the vendor id was zero and nothing built at
+/// all). A simultaneous two-process init on slot 0 before either app
+/// registers is a theoretical TOCTOU; single-instance enforcement is what
+/// closes it in practice.
 const IDENTITY_SLOTS: &[u32] = &[0, 1, 2, 3];
 
 /// The serial for identity slot `slot`: the base serial plus the slot
@@ -266,8 +271,10 @@ fn identity_pool_exhausted_detail() -> String {
     format!(
         "CGVirtualDisplay rejected every identity slot (vendor {:#06x}, product \
          {:#06x}, serials {}); the usual cause is other Pinvou virtual displays \
-         still alive — one per concurrent session, up to {}: stop the other \
-         sessions' computer use (or quit the app), then start a new session",
+         still alive — one per concurrent session that has not ended, up to {}: \
+         quit the app to release them all immediately (stopping the other \
+         sessions' computer use only helps once their sessions end), then \
+         start a new session",
         display_vendor_id(),
         display_product_id(),
         serials.join(", "),
@@ -577,15 +584,19 @@ fn activation_timeout_detail() -> String {
 }
 /// Poll cadence for display activation and pid discovery.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Channel wait for the main-thread dispatch. Covers the ≤5 s in-closure
-/// poll plus queue hop latency, and the worst legal QUEUING when a
-/// concurrent session's creation is ahead of ours on the same main thread
-/// (two legacy polls ≈ 2 × 5 s + hop ≈ 11 s) — a tighter bound would turn
-/// that legal congestion into a spurious sticky failure even though the
-/// identity pool had room. The total worst case is no longer the design's
-/// 8 s budget: with the activation grace an unanswered Screen Mirroring
-/// alert stretches a failed creation to ~30 s, as the body discloses; this
-/// wait only bounds the main-thread leg.
+/// Channel wait for the main-thread dispatch. Every closure's own
+/// deadlines are absolute (anchored at its session's start), so a closure
+/// queued behind another session's legacy poll starts late and runs as a
+/// near-instant single-shot — it completes within milliseconds of the
+/// prior closure ending, either with an id or an explicit failure. The
+/// 12 s bound is therefore generous headroom for the hop latency and the
+/// queued builds, not a per-queued-poll budget: deep all-id-lag congestion
+/// (three or more concurrent creations, past the two designed-for
+/// sessions) can still answer a later session with this sticky timeout
+/// even though the identity pool had room. The total worst case is no
+/// longer the design's 8 s budget: with the activation grace an
+/// unanswered Screen Mirroring alert stretches a failed creation to
+/// ~30 s, as the body discloses; this wait only bounds the main-thread leg.
 const MAIN_DISPATCH_WAIT: Duration = Duration::from_secs(12);
 /// Main-thread grace for the post-build display-id read: normally the id is
 /// assigned within a poll tick or two of `applySettings`, so the closure
@@ -880,7 +891,7 @@ unsafe fn wait_for_activation(
             return Err(ComputerUseError::unavailable(
                 "the virtual display did not become active within the creation budget; \
                  if macOS showed a Screen Mirroring alert for the new display, that \
-                 alert closes when the session releases the display — start a new \
+                 alert closed when the session released the display — start a new \
                  session and choose \"Extend\" for it in Control Center → \
                  Screen Mirroring (or System Settings → Displays if the choice \
                  was remembered)",
@@ -3098,7 +3109,12 @@ fn capability_target_note() -> String {
      the captures may show the user's desktop and agent content may be visible \
      on the user's screen until the mirror is undone (until then the input \
      targeting rules also cannot fully distinguish the user's windows inside \
-     the mirrored geometry); the session-scope placement puts the virtual \
+     the mirrored geometry); if the session started as the only display \
+     and the user attaches one later while the virtual display remains \
+     the main display, their menu bar and newly opened windows land on \
+     the driven display until they set their own display as main again \
+     (the placement guard re-parks around it and logs the trip on every \
+     capture); the session-scope placement puts the virtual \
      display right of every other display and may move the user's main \
      display to the origin for the rest of the login session (it is left in \
      place when another display already occupies that space, and the applied \
@@ -3793,10 +3809,16 @@ fn capture_display_image(bounds: CGRect) -> Result<CFRetained<CGImage>, Computer
 /// needs positive evidence there is nothing to protect. A mirror
 /// arrangement applied just after this check falls to the mid-session
 /// contract (ensure_parked warns every capture) — the two are
-/// indistinguishable from outside. The text carries the recovery path
-/// because the session's backend fails sticky (no mid-creation fallback),
-/// and is written for the moment it is read: the display is already
-/// released, so the way out is a NEW session.
+/// indistinguishable from outside. The count includes a sibling session's
+/// virtual display, so a main flip on a truly headless host is refused
+/// with user-desktop wording that does not strictly apply (fail-safe); a
+/// transient main assignment during the first arrangement could likewise
+/// false-refuse (headers give no ordering guarantee between "in the
+/// active list" and "main assignment final") — sticky, recoverable by a
+/// new session, and not observed in the live evidence on 27.3. The text
+/// carries the recovery path because the session's backend fails sticky
+/// (no mid-creation fallback), and is written for the moment it is read:
+/// the display is already released, so the way out is a NEW session.
 fn mirrored_start_reason(
     is_main: bool,
     in_mirror_set: bool,
@@ -3819,8 +3841,9 @@ fn mirrored_start_reason(
              displays are active: their menu bar and new windows moved onto \
              it, so driving and capturing it would drive and capture the \
              user's desktop. Start a new session and choose \"Extend\" for \
-             the display in Control Center → Screen Mirroring (or \
-             System Settings → Displays if the choice was remembered)"
+             the display when macOS asks how to use it (Control Center → \
+             Screen Mirroring); if the arrangement was remembered, set your \
+             own display as the main display in System Settings → Displays"
                 .to_string(),
         );
     }
@@ -3869,7 +3892,11 @@ fn dispatch_creation_with_slots(
         }
     } else {
         // No app handle stored (creation before setup finished): the same
-        // bounded sequence runs right here on the worker thread.
+        // bounded sequence runs right here on the worker thread. The
+        // main-queue serialization the slot walk relies on holds only for
+        // the dispatched path; concurrent FALLBACK creations would walk
+        // slots unserialized (unreachable in production — setup stores the
+        // app handle before any session can exist; test binaries only).
         create_and_read_id_with_slots(
             deadline.min(Instant::now() + DISPLAY_ID_GRACE),
             deadline,
@@ -4250,6 +4277,25 @@ mod tests {
             1,
             "setProductName must be sent from exactly one place (the guarded match arm)"
         );
+        // Arm↔setter correspondence: the shape pins above cannot see WHICH
+        // send each match arm performs — swapping the two arm bodies keeps
+        // the block needles and the single-send count green while
+        // reintroducing the exact 27.3 crash class. Each send must live in
+        // its own arm's half of the match block.
+        let name_arm_split = name_block
+            .find("NameSetter::Name =>")
+            .expect("the match must keep the Name arm");
+        let (product_arm, name_arm) = name_block.split_at(name_arm_split);
+        assert!(
+            product_arm.contains("msg_send![&*descriptor, setProductName: &*product]")
+                && !product_arm.contains("msg_send![&*descriptor, setName: &*product]"),
+            "the ProductName arm must send setProductName (not setName)"
+        );
+        assert!(
+            name_arm.contains("msg_send![&*descriptor, setName: &*product]")
+                && !name_arm.contains("msg_send![&*descriptor, setProductName: &*product]"),
+            "the Name arm must send setName (not setProductName)"
+        );
     }
 
     /// The identity macOS 14+ insists on: both ids non-zero and 16-bit (the
@@ -4258,8 +4304,10 @@ mod tests {
     /// looks like a display swap and adds a persisted arrangement per
     /// session) — pinned byte-for-byte like the serial. The serial pool
     /// must give every slot a non-zero serial distinct from every other
-    /// slot's, with slot 0 keeping the historical serial (a host that
-    /// remembered an arrangement for it keeps that remembered choice).
+    /// slot's, with slot 0 keeping the historical serial (the pooled
+    /// identity as a whole is still new everywhere — see
+    /// [`IDENTITY_SLOTS`] — so no host holds a persisted arrangement for
+    /// it).
     #[test]
     fn display_identity_is_nonzero_16bit_and_stable() {
         for (what, id) in [
@@ -4341,6 +4389,12 @@ mod tests {
         // (there is no mid-creation fallback: the failure is the hand-back).
         assert!(SYSTEM_PROMPT_GRACE >= Duration::from_secs(15));
         assert!(SYSTEM_PROMPT_GRACE <= Duration::from_secs(60));
+        // The id-read grace and the main-dispatch hand-off are deliberate
+        // choices too: a silent drift changes failure latency and the
+        // main-thread freeze/queueing envelope without any other pin
+        // noticing.
+        assert_eq!(DISPLAY_ID_GRACE, Duration::from_secs(1));
+        assert_eq!(MAIN_DISPATCH_WAIT, Duration::from_secs(12));
     }
 
     /// The worker-side timeout must say how long it waited and name the one
@@ -4366,6 +4420,61 @@ mod tests {
             detail.contains("start a new session") && detail.contains("Extend"),
             "the detail must route the user to a new session (the alert is gone \
              once the display is released): {detail}"
+        );
+    }
+
+    /// The pool-exhaustion detail must name a recovery that actually frees
+    /// the slots (quitting the app is the only immediate release — stopping
+    /// another session's computer use helps once its session ends), route to
+    /// a new session, state the pool bound, and list every slot's serial.
+    #[test]
+    fn identity_pool_exhausted_detail_names_the_recovery() {
+        let detail = identity_pool_exhausted_detail();
+        assert!(
+            detail.contains("start a new session"),
+            "the exhaustion detail must route to a new session: {detail}"
+        );
+        assert!(
+            detail.contains("quit the app"),
+            "the exhaustion detail must name the only immediate release: {detail}"
+        );
+        assert!(
+            detail.contains(&IDENTITY_SLOTS.len().to_string()),
+            "the exhaustion detail must state the pool bound: {detail}"
+        );
+        for slot in IDENTITY_SLOTS {
+            assert!(
+                detail.contains(&format!("{:08X}", serial_number_for_slot(*slot))),
+                "the exhaustion detail must list slot {slot}'s serial: {detail}"
+            );
+        }
+    }
+
+    /// The chromaticities are Chromium's helper values byte-for-byte (a
+    /// P3-ish panel: sRGB red would be 0.640, 0.330 — these are not that);
+    /// a drifting value would silently change what the host is told about
+    /// the panel without any other pin noticing.
+    #[test]
+    fn chromaticities_match_the_chromium_helper_values() {
+        assert_eq!(
+            (VD_RED_PRIMARY.x, VD_RED_PRIMARY.y),
+            (0.6797, 0.3203),
+            "red primary"
+        );
+        assert_eq!(
+            (VD_GREEN_PRIMARY.x, VD_GREEN_PRIMARY.y),
+            (0.2559, 0.6983),
+            "green primary"
+        );
+        assert_eq!(
+            (VD_BLUE_PRIMARY.x, VD_BLUE_PRIMARY.y),
+            (0.1494, 0.0557),
+            "blue primary"
+        );
+        assert_eq!(
+            (VD_WHITE_POINT.x, VD_WHITE_POINT.y),
+            (0.3125, 0.3291),
+            "white point"
         );
     }
 
