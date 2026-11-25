@@ -668,18 +668,23 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.committed = new Set\(\);\s*inFlightModelCreates\.listed = new Set\(\);/,
-  'the module-level committed-unlisted book and the live listed mirror must live on the registry (instance props survive modal remounts and settings reopen; top-level bindings are chunk-boundary hazards)',
+  /inFlightModelCreates\.committed = new Set\(\);\s*inFlightModelCreates\.absentRetirable = new Set\(\);\s*inFlightModelCreates\.listed = new Set\(\);/,
+  'the module-level committed-unlisted book, its absence-floor marker set and the live listed mirror must live on the registry (instance props survive modal remounts and settings reopen; top-level bindings are chunk-boundary hazards)',
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.committed\.add\(key\);[\s\S]{0,200}setJustSavedKeys\(prev => \{/,
+  /inFlightModelCreates\.committed\.add\(key\);[\s\S]{0,420}setJustSavedKeys\(prev => \{/,
   'markSaveCommitted must record the identity in the LIVE module book before flushing the render — an unwired book left the refresh-failure branch blind to the batch loop (r5 review: the declared book was never populated)',
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{\s*if \(listed\.has\(key\)\) inFlightModelCreates\.committed\.delete\(key\);\s*\}/,
-  'the SettingsView effect must refresh the live listed mirror and retire confirmed keys from the committed book, with the failed-read freeze preceding the retirement — retiring on listing is what lets a deleted identity re-add (⑦.8)',
+  /if \(opts && opts\.absentRetirable\) inFlightModelCreates\.absentRetirable\.add\(key\);/,
+  'the absence floor must be granted per booking through markSaveCommitted — only keys whose save chain ran the reload tail may retire on a later absent list (review P2×2 late-completion; deferred batch keys keep the present-only rule)',
+);
+assert.match(
+  settingsViewSource,
+  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{[\s\S]{0,1100}if \(!listed\.has\(key\) && !inFlightModelCreates\.absentRetirable\.has\(key\)\) continue;\s*inFlightModelCreates\.committed\.delete\(key\);\s*inFlightModelCreates\.absentRetirable\.delete\(key\);\s*\}/,
+  'the SettingsView effect must refresh the live listed mirror and retire committed keys on a successful list — present (confirmed, ⑦.8) or absent with the floor (deleted mid-tail, review P2×2: the save chain refresh is a post-upsert read under last-write-wins, so a later successful list lacking the identity means deletion; a stranded reservation would block the legitimate re-add until reload) — with the failed-read freeze preceding both',
 );
 assert.match(
   settingsViewSource,
@@ -756,23 +761,51 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /onSaveCommitted\(formIdentity\);/,
-  'doSave must register its identity as committed-unlisted on success — the bridge refresh can silently fail and the empty list must not invite a re-add',
+  /const outcome = await onSave\(\{[\s\S]{0,2400}bookSaveOutcome\(formIdentity, outcome\);/,
+  'doSave must route its settled save through the chain-end verdict — booking an identity the tail list no longer contains strands a reservation no later list can confirm (review P2×2 late-completion) — and otherwise register it as committed-unlisted with the absence floor (the bridge refresh can silently fail and the empty list must not invite a re-add)',
 );
 assert.match(
   settingsViewSource,
-  /onSaveCommitted\(rowIdentity\);/,
-  'the local row add must register its identity as committed-unlisted on success',
+  /const outcome = await onSave\(buildLocalModelPayload\(row\)\);[\s\S]{0,300}bookSaveOutcome\(rowIdentity, outcome\);/,
+  'the local row add must route its settled save through the chain-end verdict before booking',
 );
 assert.match(
   settingsViewSource,
-  /onSaveCommitted\(pickIdentity\);/,
-  'the endpoint pick must register its identity as committed-unlisted on success',
+  /const outcome = await onSave\(buildEndpointModelPayload\(row\)\);[\s\S]{0,300}bookSaveOutcome\(pickIdentity, outcome\);/,
+  'the endpoint pick must route its settled save through the chain-end verdict before booking',
 );
 assert.match(
   settingsViewSource,
-  /onSaveCommitted\(rowIdentity\);\s*added \+= 1;/,
-  'the batch loop must register each landed row as committed-unlisted — the final deferred reload can fail and landed prefix rows must stay blocked until listed',
+  /const outcome = await onSave\(buildEndpointModelPayload\(row, \{ baseUrl: confirmBaseUrl, preset: confirmPreset \}\), batchReloadAvailable \? \{ deferRefresh: true \} : undefined\);[\s\S]{0,300}bookSaveOutcome\(rowIdentity, outcome\);\s*added \+= 1;/,
+  'the batch loop must register each landed row as committed-unlisted — deferred rows book without the floor (the closing reload may not have run), the no-reload fallback books through the full chain verdict; a failed closing reload keeps landed prefix rows blocked until listed',
+);
+assert.match(
+  settingsViewSource,
+  /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{\s*absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),\s*\}\);\s*\};/,
+  'the verdict gate must skip booking exactly when the successful tail list lacks the identity (deleted mid-tail) and grant the absence floor only for chains that ran the reload tail (ok/failed) — deferred batches and verdict-less legacy bridges book present-only',
+);
+// Bridge-side chain-end verdict (review P2×2): the reload tail list is a
+// post-upsert read under last-write-wins, so saveModel must hand the settled
+// outcome back to the caller — ok (with the list), failed (book without
+// evidence), deferred (batch, no tail).
+assert.match(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8'),
+  /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,1800}return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: state\.savedModels \};/,
+  'the tauri saveModel must return the chain-end verdict — deferred / failed (book without evidence) / ok with the post-upsert list (a delete dispatched mid-tail lands its own newer-seq loadModels before the verdict is read)',
+);
+assert.match(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
+  /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,1800}return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: state\.savedModels \};/,
+  'the web saveModel must return the same chain-end verdict contract as the tauri lane',
+);
+// Canonical identity fold (review P2: full-URL → canonical list → delete →
+// re-add): the Rust persistence arm strips the /chat/completions suffix before
+// the record is ever listed, so the frontend dedup key must fold identically
+// or a raw-form booking never matches its own canonical record.
+assert.match(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'settings', 'endpoint-model-picker-logic.js'), 'utf8'),
+  /if \(text\.toLowerCase\(\)\.endsWith\('\/chat\/completions'\)\) \{\s*text = text\.slice\(0, -'\/chat\/completions'\.length\);\s*\}\s*return text\.toLowerCase\(\);/,
+  'normalizeBaseUrlKey must strip the /chat/completions suffix exactly like the Rust persistence arm (strip_chat_completions_suffix) — a raw-form URL and its canonical listed record must share one dedup key',
 );
 assert.match(
   settingsViewSource,
@@ -1416,6 +1449,10 @@ function injectSource() {
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
     // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
     var saveModelError = null;
+    // ⑦.9f 晚到完成旋钮:true 时 get_settings 挂起排队,releaseGetSettingsHold
+    // 一并放行——制造「loadModels 已发布、刷新尾未落定」的窗口。
+    var holdGetSettings = false;
+    var heldGetSettings = [];
     // save_model 在飞窗口注入(round-4 M4 运行时钉):>0 时 save_model 延迟
     // resolve/reject,拉长单行保存在飞窗口,供「全部添加」禁用断言驱动时序。
     var saveModelDelay = 0;
@@ -1442,8 +1479,19 @@ function injectSource() {
     var probedLocalKind = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     // save_model 的落库体(函数声明提升,save_model 分支同步/延迟两条路径共用)。
+    // base_url 镜像 Rust upsert_model 的归一化(normalize_provider_metadata →
+    // strip_chat_completions_suffix):列表里的记录永远带 canonical URL,
+    // ⑦.9g 的全 URL → canonical 列表 → 删除 → 重加场景靠它成立。
+    function canonicalBaseUrl(value) {
+      var text = String(value || '').trim();
+      while (text.slice(-1) === '/') text = text.slice(0, -1);
+      var suffix = '/chat/completions';
+      if (text.toLowerCase().slice(-suffix.length) === suffix) text = text.slice(0, text.length - suffix.length);
+      return text;
+    }
     function applySaveModel(args) {
       var savedModel = Object.assign({}, args.model, {
+        base_url: canonicalBaseUrl(args.model.base_url),
         has_secret: !!args.model.api_key,
         credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
       });
@@ -1491,7 +1539,14 @@ function injectSource() {
         });
         case 'computer_use_set_enabled': return Promise.resolve(null);
         case 'computer_use_set_virtual_display_preference': return Promise.resolve(null);
-        case 'get_settings': return Promise.resolve(settings);
+        case 'get_settings':
+          // ⑦.9f 晚到完成旋钮:挂起刷新尾(loadSettings 是保存链 save_model →
+          // loadModels → get_settings → 有效配置的第三步),让删除在「A 已发布、
+          // 链未落定」的窗口内插入——评审 P2×2 的精确时序。
+          if (holdGetSettings) {
+            return new Promise(function (resolve) { heldGetSettings.push(resolve); });
+          }
+          return Promise.resolve(settings);
         case 'update_settings':
           settings = Object.assign({}, settings, args.patch || {});
           return Promise.resolve(settings);
@@ -1616,6 +1671,27 @@ function injectSource() {
                 max_model_len: 8192,
               },
             ],
+            // ⑦.9f 晚到完成场景的隔离名册:仅在 ⑦.9f 使用,不与既有场景互染。
+            8260: [
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8260/v1',
+                status: 'ready',
+                model: 'late-twin-a',
+                models: ['late-twin-a'],
+                max_model_len: 8192,
+              },
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8260/v1',
+                status: 'ready',
+                model: 'late-twin-b',
+                models: ['late-twin-b'],
+                max_model_len: 8192,
+              },
+            ],
           };
           const customPort = args && args.request && args.request.customPort;
           return Promise.resolve({ candidates: alternates[customPort] || [
@@ -1705,6 +1781,13 @@ function injectSource() {
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setSaveModelError: function (message) { saveModelError = message || null; },
       setSaveModelDelay: function (ms) { saveModelDelay = Number(ms) || 0; },
+      armGetSettingsHold: function () { holdGetSettings = true; },
+      releaseGetSettingsHold: function () {
+        holdGetSettings = false;
+        var queued = heldGetSettings.slice();
+        heldGetSettings = [];
+        queued.forEach(function (resolve) { resolve(settings); });
+      },
       armListModelsFailure: function () { listModelsFailure = true; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
@@ -4871,6 +4954,153 @@ async function modalWidth(page, headingText) {
       && premountReadd.clicked && premountRelanded,
     JSON.stringify({ row: premountThawRow, readd: premountReadd, relanded: premountRelanded }));
   await page2.close();
+
+  // ===== ⑦.9f review P2×2 (late compound-save completion, zhuowp's exact
+  // schedule): a local row add whose reload tail is still pending can race a
+  // deletion of the freshly visible record — the user deletes A while the
+  // save chain sits between loadModels (A already published) and the tail
+  // end. The chain-end verdict must keep the deleted identity OUT of the
+  // committed book: booked after the deletion, no later successful list could
+  // ever contain it and the ordinary same-identity re-add would stay blocked
+  // until reload. Isolated roster 8260; the get_settings hold parks the save
+  // chain mid-tail so the deletion deterministically lands inside the window.
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8260');
+  await clickExact(page, '检测');
+  await sleep(600);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armGetSettingsHold());
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('late-twin-a'));
+    if (button) button.click();
+  });
+  await sleep(600); // save_model ✓ → loadModels ✓(A 已发布)→ get_settings 挂起(刷新尾中段)
+  // 刷新尾窗内的删除:走生产 deleteModel 链(行按钮 onDeleteModel 的同一
+  // 处理器)。不 await:删除链自己也会挂进保持的 get_settings 队列,evaluate
+  // 等它落定会吊死 CDP;下面的 sleep 让链推进到 loadModels 更新列表。
+  await page.evaluate(() => {
+    const record = window.__SETTINGS_TEST__.models().find(item => item.model === 'late-twin-a');
+    window.TauriBridge.models.deleteModel(record.id);
+  });
+  await sleep(600); // 删除链:delete_model ✓ → loadModels(无 A,镜像已更新)→ get_settings 亦挂起
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseGetSettingsHold());
+  await sleep(600); // 两链落定:保存链尾裁定读到的列表已无 A → 不入簿
+  const lateReaddable = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('late-twin-a'));
+    return button
+      ? { found: true, disabled: button.disabled, savedLabel: (button.textContent || '').includes('已保存') }
+      : { found: false };
+  });
+  const lateReadd = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('late-twin-a'));
+    if (!button || button.disabled) return { clicked: false };
+    button.click();
+    return { clicked: true };
+  });
+  await sleep(900);
+  const lateRelanded = await page.evaluate(() => ({
+    saves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'late-twin-a').length,
+    landed: window.__SETTINGS_TEST__.models().some(item => item.model === 'late-twin-a'),
+  }));
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9f 刷新尾窗内删除:链尾裁定缺席不入簿,同身份行恢复可点且恰好再落一笔(晚到完成不残留永久预订)',
+    lateReaddable.found && !lateReaddable.disabled && !lateReaddable.savedLabel
+      && lateReadd.clicked && lateRelanded.saves === 2 && lateRelanded.landed,
+    JSON.stringify({ readdable: lateReaddable, readd: lateReadd, relanded: lateRelanded }));
+
+  // ===== ⑦.9g review P2 (full-URL → canonical list → delete → re-add):
+  // Rust normalizes the persisted URL (normalize_provider_metadata strips the
+  // /chat/completions suffix) before the record is ever listed; the frontend
+  // dedup key must fold the same suffix or a booking made from the raw form
+  // URL never matches its own canonical record — the false already-exists
+  // guard would survive the record's deletion for the whole session. The mock
+  // persistence (applySaveModel) mirrors the Rust normalization, so the
+  // canonical lifecycle runs against listed-canonical records.
+  const fillManualLocal = rawUrl => page.evaluate(url => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, url);
+    const modelInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === '本地模型 ID').nextElementSibling;
+    typeInto(modelInput, 'canonical-twin');
+  }, rawUrl);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await clickExact(page, '手动添加本地模型');
+  await sleep(250);
+  await fillManualLocal('http://127.0.0.1:8290/v1/chat/completions/');
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(900);
+  const canonicalLanded = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().some(item => item.model === 'canonical-twin'
+      && item.base_url === 'http://127.0.0.1:8290/v1'));
+  // 在录时重开表单手填同 raw URL:键折叠后必须命中 canonical 记录——
+  // 保存禁用+重复提示(真实重复,P2 修复前这单查不出来)。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await clickExact(page, '手动添加本地模型');
+  await sleep(250);
+  await fillManualLocal('http://127.0.0.1:8290/v1/chat/completions');
+  await sleep(400);
+  const canonicalDup = await page.evaluate(() => {
+    const save = document.querySelector('[data-testid="model-form-save"]');
+    const hint = document.querySelector('[data-testid="model-form-duplicate-hint"]');
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint && (hint.textContent || '').trim().length > 0,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  // 删除 → 同 raw URL 重加:预订随真实删除的成功刷新退休(缺席地板),
+  // 保存恢复可用且恰好再落一笔 canonical 记录。
+  await clickRowAction(page, 'canonical-twin', '删除');
+  await sleep(300);
+  await clickExact(page, '删除模型');
+  await sleep(500);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await clickExact(page, '手动添加本地模型');
+  await sleep(250);
+  await fillManualLocal('http://127.0.0.1:8290/v1/chat/completions');
+  await sleep(400);
+  const canonicalReadd = await page.evaluate(() => {
+    const save = document.querySelector('[data-testid="model-form-save"]');
+    return { found: !!save, enabled: !!save && !save.disabled };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(900);
+  const canonicalRelanded = await page.evaluate(() => ({
+    landed: window.__SETTINGS_TEST__.models().some(item => item.model === 'canonical-twin'
+      && item.base_url === 'http://127.0.0.1:8290/v1'),
+    count: window.__SETTINGS_TEST__.models().filter(item => item.model === 'canonical-twin').length,
+  }));
+  rec('⑦.9g 全URL→canonical→删除→重加:raw 键与 canonical 记录同键(在录时重复守卫命中),删除后预订随缺席退休,重加恢复可保存且恰好一笔',
+    canonicalLanded && canonicalDup.saveDisabled && canonicalDup.hintShown
+      && canonicalReadd.found && canonicalReadd.enabled
+      && canonicalRelanded.landed && canonicalRelanded.count === 1,
+    JSON.stringify({ landed: canonicalLanded, dup: canonicalDup, readd: canonicalReadd, relanded: canonicalRelanded }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

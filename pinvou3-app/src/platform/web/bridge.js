@@ -4644,9 +4644,20 @@ async function loadModels() { return pinvouSharedweb().loadModels(); }
    // caller refreshes once via reloadSavedModels(). Default keeps the
    // save-then-refresh chain single-row callers rely on.
    await invoke("save_model", { model });
-   if (options && options.deferRefresh) return;
+   if (options && options.deferRefresh) return { refresh: 'deferred' };
    await loadModels();
+   // Chain-end verdict, same contract as the tauri lane (review P2, late
+   // compound-save completion): the reload tail's list is a post-upsert read
+   // under last-write-wins, so a successful tail list lacking the saved
+   // identity means the record was deleted inside the refresh tail and the
+   // caller must not book it (the reservation could never be confirmed and
+   // would block the legitimate re-add until reload). A failed read still
+   // books (protect the genuinely committed but unlisted save, r3 lane G)
+   // and still grants the absence floor: later successful lists reflect
+   // reads that started after this chain's loadModels, i.e. after the upsert.
+   const listFailed = state.modelsListLoadFailed === true;
    await loadEffectiveModelConfig();
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: state.savedModels };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // the web save chain reloads models + effective config, so the batch refresh

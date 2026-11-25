@@ -103,10 +103,27 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
    // loop finishes. Default (no options) keeps the save-then-refresh chain
    // every single-row caller relies on.
    await invoke("save_model", { model });
-   if (options && options.deferRefresh) return;
+   if (options && options.deferRefresh) return { refresh: 'deferred' };
    await loadModels();
+   // Chain-end verdict (review P2, late compound-save completion): loadModels
+   // starts AFTER the upsert resolves and its seq discipline is last-write-
+   // wins, so whatever sits in state at the end of the reload tail reflects a
+   // world at or after the upsert. A successful list there that lacks the
+   // saved identity means the record was deleted inside the refresh tail —
+   // the caller must not book that identity into its settled-but-unlisted
+   // registry, because no later successful list can ever contain it and the
+   // reservation would block a legitimate re-add until reload. The list is
+   // read after the whole tail for exactly that reason: a delete dispatched
+   // mid-tail lands its own newer-seq loadModels before this point. A failed
+   // list read keeps the caller booking (protect the genuinely committed but
+   // unlisted save, r3 lane G) while still granting the absence floor: any
+   // later successful list reflects a read that started after this chain's
+   // loadModels started, i.e. after the upsert, so an absent identity there
+   // is a deleted one.
+   const listFailed = state.modelsListLoadFailed === true;
    await loadSettings();
    await loadEffectiveModelConfig();
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: state.savedModels };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // exactly the three loaders the save chain runs, executed once for the whole

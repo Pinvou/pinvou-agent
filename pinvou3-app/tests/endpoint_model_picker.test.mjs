@@ -399,6 +399,60 @@ test('modelDuplicationKey folds exactly one trailing :latest (saved llama3 vs di
     'the fold must not collapse distinct ids that both carry :latest',
   );
 });
+// URL canonical fold (review P2: full-URL → canonical list → delete → re-add):
+// the Rust persistence arm (strip_chat_completions_suffix, prefs/model.rs)
+// rewrites a /chat/completions-suffixed URL to its base before the record is
+// ever listed, so the dedup key must fold the same suffix — a booking made
+// from the raw form URL has to hash to the same identity as its own canonical
+// listed record, or the settled-book retirement and the saved-keys guard
+// never match and the identity stays blocked for the whole session.
+test('modelDuplicationKey strips the /chat/completions suffix exactly like the Rust persistence arm', () => {
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+    'the raw form URL and its canonical persisted record must share one key',
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions/'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+    'trailing slash before the suffix folds first, mirroring trim_url_tail',
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions///'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+    'all trailing slashes fold before the suffix check (trim_end_matches)',
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/Chat/Completions'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+    'the suffix matches case-insensitively (to_ascii_lowercase probe)',
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://host/chat/completions'),
+    modelDuplicationKey('glm-5', 'https://host'),
+    'a suffix that is the whole path collapses to the origin',
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions'),
+    modelDuplicationKey('GLM-5', 'https://API.example.COM/v1/'),
+    'the suffix fold composes with the existing case/slash folds',
+  );
+  assert.notEqual(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v2'),
+    'the strip must not collapse genuinely different endpoints',
+  );
+  assert.notEqual(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions/x'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions'),
+    'only a trailing suffix strips; a deeper path is a different endpoint',
+  );
+  assert.equal(
+    savedModelKeys([{ model: 'glm-5', base_url: 'https://api.example.com/v1' }]).has(modelDuplicationKey('glm-5', 'https://api.example.com/v1/chat/completions')),
+    true,
+    'savedModelKeys hashes canonical records into the same key space as raw form input',
+  );
+});
 test('splitBatchAdd treats saved llama3 vs discovery llama3:latest as already saved', () => {
   const baseUrl = 'https://x/v1';
   const saved = savedModelKeys([{ model: 'llama3', base_url: baseUrl }]);

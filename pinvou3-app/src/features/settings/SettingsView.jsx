@@ -68,7 +68,12 @@ const inFlightModelCreates = new Set();
 // 新顶层绑定——本文件任何顶层绑定的增删都会改变 rollup 的 chunk 拆分边界,
 // 实测让某个 lazy view chunk 模块求值顺序翻转入 TDZ(Cannot access 'br'
 // before initialization)。跨弹窗实例/设置重开存活。
+// 非 deferred 簿键的缺席退休标记(复审 P2×2,晚到完成):链尾裁定 ok/failed
+// 时与 committed 同步置位——成功列表缺席这类键即记录已删(保存链自身刷新
+// 是 upsert 后的读取,序号后发者胜,此后任何成功列表都反映 ≥ upsert 的
+// 世界);deferred 簿键(批量跳过刷新尾)无这层地板,只认 present。
 inFlightModelCreates.committed = new Set();
+inFlightModelCreates.absentRetirable = new Set();
 inFlightModelCreates.listed = new Set();
 
 function isReadonlyModel(model) {
@@ -451,6 +456,19 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, onSaveCommitted }) => {
       const settingsCopy = t.uiSettingsDetail;
+      // 复审 P2×2(晚到完成):按保存链尾裁定入簿。ok 且列表缺席 = 记录在
+      // 刷新尾窗内被删——不入簿,簿键永无成功列表可确认,只会把合法同身份
+      // 重加永久拦死到重载。ok/failed(链跑过刷新尾)= 簿键带缺席退休地板
+      // (链内 loadModels 是 upsert 后的读取,序号后发者胜);deferred(批量
+      // 跳过刷新尾)与旧桥无裁定 = 照旧入簿只认 present。四个创建入口共用:
+      // 表单保存、本地行、端点单行、批量循环。
+      const bookSaveOutcome = (key, outcome) => {
+        if (outcome && outcome.refresh === 'ok' && outcome.models
+          && !savedModelKeys(outcome.models).has(key)) return;
+        onSaveCommitted(key, {
+          absentRetirable: !!(outcome && (outcome.refresh === 'ok' || outcome.refresh === 'failed')),
+        });
+      };
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
       const initialProvider = modelScope === 'cloud' ? findCloudProviderForModel(initial) : null;
@@ -929,9 +947,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         setPickSavingModel(true);
         inFlightModelCreates.add(pickIdentity);
         try {
-          await onSave(buildEndpointModelPayload(row));
-          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)。
-          onSaveCommitted(pickIdentity);
+          const outcome = await onSave(buildEndpointModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支);链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(pickIdentity, outcome);
           setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
         } catch (e) {
           // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
@@ -1005,9 +1024,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
               || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
             inFlightModelCreates.add(rowIdentity);
             batchIdentities.push(rowIdentity);
-            await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            const outcome = await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
             // 已落库:进父层「已提交未确认」簿——若收尾的统一刷新失败,身份仍被拦。
-            onSaveCommitted(rowIdentity);
+            // deferred 簿键无缺席地板只认 present;回退路径(老桥无统一刷新)
+            // 跑全链,裁定照常生效(复审 P2×2,见 bookSaveOutcome)。
+            bookSaveOutcome(rowIdentity, outcome);
             added += 1;
           }
           if (batchReloadAvailable) await bridge.models.reloadSavedModels();
@@ -1180,7 +1201,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         setSaveError('');
         inFlightModelCreates.add(formIdentity);
         try {
-          await onSave({
+          const outcome = await onSave({
             id, name: saveName, preset,
             alias: showAliasField ? (alias.trim() || null) : null,
             context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
@@ -1201,8 +1222,9 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
           });
           // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)——桥内刷新链
-          // 若吞掉 list_models 失败,身份仍被拦,直到列表真正确认它。
-          onSaveCommitted(formIdentity);
+          // 若吞掉 list_models 失败,身份仍被拦,直到列表真正确认它;链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(formIdentity, outcome);
           onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
@@ -1319,9 +1341,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         setLocalAddBusyKey(row.key);
         setLocalAddError('');
         try {
-          await onSave(buildLocalModelPayload(row));
-          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)。
-          onSaveCommitted(rowIdentity);
+          const outcome = await onSave(buildLocalModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支);链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(rowIdentity, outcome);
         } catch (error) {
           // Same shape as doSave (keep the modal open, drop nothing), but the
           // message goes to THIS picker view: saveError renders only in the
@@ -3313,7 +3336,21 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         inFlightModelCreates.listed = listed;
         if (failed) return;
         for (const key of [...inFlightModelCreates.committed]) {
-          if (listed.has(key)) inFlightModelCreates.committed.delete(key);
+          // Two exits on a successful list (review P2×2): present retires as
+          // before (the list confirmed the identity); absent also retires a
+          // key carrying the absence floor — the save chain's own refresh is
+          // a post-upsert read under last-write-wins, so any successful list
+          // after that chain reflects a world at or after the upsert, and the
+          // identity missing there means the record was deleted. Without the
+          // absent exit a reservation stranded by a deletion could never be
+          // cleared and the ordinary same-identity re-add stays blocked until
+          // reload. Keys without the floor (deferred batch bookings) keep the
+          // present-only rule: before the batch's closing reload, a read that
+          // started before the upsert can still be the newest seq and a
+          // successful list may legitimately not know the record yet.
+          if (!listed.has(key) && !inFlightModelCreates.absentRetirable.has(key)) continue;
+          inFlightModelCreates.committed.delete(key);
+          inFlightModelCreates.absentRetirable.delete(key);
         }
       });
       // (model id + base_url) identity keys of saves that COMMITTED but are
@@ -3323,17 +3360,22 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // the identity over to the saved-keys guard — but loadModels swallows
       // a list_models failure by clearing the list, and then the settled
       // identity would be re-addable again (refresh-failure branch, review
-      // r3 lane G). Keys clear derivatively once the models list actually
-      // contains the identity; nothing is registered on failure, so retries
-      // stay possible.
+      // r3 lane G). Keys clear derivatively on a successful list — when it
+      // contains the identity (confirmation, r3) or, for keys carrying the
+      // absence floor, when it lacks it (the record was deleted, review P2×2
+      // late-completion; see the mirror effect above). Nothing is registered
+      // on a thrown save, so retries stay possible.
       // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
       // 把落库后的禁用态刷进同一次提交。
       const [, setJustSavedKeys] = useState(() => new Set());
-      const markSaveCommitted = key => {
+      const markSaveCommitted = (key, opts) => {
         // 模块簿是唯一活源(r5 复审补线,commit-only 版):批量循环逐行直读
         // committed——刷新失败(loadModels 吞错清列表)时实时镜像与冻结快照
         // 里都没有该身份,这里不记,循环就会对同一身份再落一个 id。
         inFlightModelCreates.committed.add(key);
+        // 缺席退休地板只给链跑过刷新尾的簿键(裁定 ok/failed);deferred
+        // 批量簿键无地板,只认 present(见镜像 effect 注释)。
+        if (opts && opts.absentRetirable) inFlightModelCreates.absentRetirable.add(key);
         // state Set 从此只作渲染驱动(pendingSavedKeys 改读模块簿):落库后
         // 用一次重渲把禁用态刷出来;值本身不再被读取。
         setJustSavedKeys(prev => {
