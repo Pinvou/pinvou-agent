@@ -25,9 +25,11 @@
 //! version gate), so the probe is the crash-safety mechanism, not
 //! best-effort politeness.
 //!
-//! The private selector surface moves between macOS versions (27.3 removed
-//! `setSerialString:`, `setProductName:` and the descriptor's `setModes:`,
-//! and builds nothing from a descriptor whose vendor id is zero). Selectors
+//! The private selector surface moves between macOS versions (current macOS
+//! lacks `setSerialString:`, `setProductName:` and the descriptor's own
+//! `setModes:` — verified live on 27.3, and no public dump at any macOS
+//! version contains them, so treat the removal timing as unattested — and
+//! it builds nothing from a descriptor whose vendor id is zero). Selectors
 //! the versions disagree about are therefore never part of the required
 //! surface: [`descriptor_options`] asks the live descriptor's class which of
 //! them this host implements, and [`build_descriptor`] sends exactly those —
@@ -216,24 +218,31 @@ fn serial_number() -> u32 {
 }
 
 /// The serial string handed to the display descriptor: the stable prefix
-/// plus the hex of the derived serial number (human-readable in system
-/// reports about displays).
-fn serial_string() -> String {
-    format!("{SERIAL_STRING_PREFIX}{:08X}", serial_number())
+/// plus the hex of the slot's serial number (human-readable in system
+/// reports about displays). Slot-parameterized like the numeric serial so
+/// the descriptor's two serial fields agree per slot on hosts that still
+/// carry the string — a string identity that ignored the slot would make
+/// slots 1–3 indistinguishable from slot 0 to anything keying on it.
+fn serial_string_for_slot(slot: u32) -> String {
+    format!("{SERIAL_STRING_PREFIX}{:08X}", serial_number_for_slot(slot))
 }
 
 /// Identity slots for concurrent sessions. macOS 14+ expects virtual
 /// displays to have distinct serials and rejects a second
 /// `initWithDescriptor:` whose (vendor, product, serial) matches a display
 /// still alive (verified on 27.3; Chromium dates the expectation to macOS
-/// 14), so ONE fixed identity would cap the app at a single live virtual
-/// display and turn a second concurrent session's first computer-use
-/// action into a sticky failure. The pool keeps the stable-identity
-/// rationale — macOS persists one display arrangement PER SLOT, once,
-/// instead of one per session — while bounding coexistence at
-/// [`IDENTITY_SLOTS`].len() displays. Slot 0 keeps the identity every
-/// pre-pool session used, so a host that already remembered an arrangement
-/// for it (extend/mirror + remember) keeps that remembered choice.
+/// 14; DeskPad issue #46 hit the same rejection on Sonoma/Sequoia until the
+/// identity values changed), so ONE fixed identity would cap the app at a
+/// single live virtual display and turn a second concurrent session's
+/// first computer-use action into a sticky failure. The pool keeps the
+/// stable-identity rationale — macOS persists one display arrangement PER
+/// SLOT, once, instead of one per session — while bounding coexistence at
+/// [`IDENTITY_SLOTS`].len() displays. Slot 0 keeps the serial (numeric and
+/// string) every pre-pool session used, so a host that already remembered
+/// an arrangement for that identity (extend/mirror + remember) keeps that
+/// remembered choice; the vendor/product ids are new and had no pre-pool
+/// counterpart (pre-pool descriptors never sent them), which on 14+ hosts
+/// is vacuous — there the vendor id was zero and nothing built at all.
 const IDENTITY_SLOTS: &[u32] = &[0, 1, 2, 3];
 
 /// The serial for identity slot `slot`: the base serial plus the slot
@@ -244,10 +253,11 @@ fn serial_number_for_slot(slot: u32) -> u32 {
 }
 
 /// The error for a creation where every identity slot was rejected. The
-/// usual cause is another Pinvou virtual display still alive somewhere
-/// this process cannot see (a concurrent session whose backend has not
-/// been dropped) — the text must say that, because the raw rejection
-/// ("CGVirtualDisplay rejected the display descriptor") does not.
+/// usual cause is other Pinvou virtual displays still alive somewhere this
+/// process cannot see (one per concurrent session whose backend has not
+/// been dropped, up to the pool size) — the text must say that, because
+/// the raw rejection ("CGVirtualDisplay rejected the display descriptor")
+/// does not.
 fn identity_pool_exhausted_detail() -> String {
     let serials: Vec<String> = IDENTITY_SLOTS
         .iter()
@@ -255,12 +265,13 @@ fn identity_pool_exhausted_detail() -> String {
         .collect();
     format!(
         "CGVirtualDisplay rejected every identity slot (vendor {:#06x}, product \
-         {:#06x}, serials {}); the usual cause is another Pinvou virtual display \
-         still alive in another session — stop that session's computer use (or \
-         quit it), then start a new session",
+         {:#06x}, serials {}); the usual cause is other Pinvou virtual displays \
+         still alive — one per concurrent session, up to {}: stop the other \
+         sessions' computer use (or quit the app), then start a new session",
         display_vendor_id(),
         display_product_id(),
-        serials.join("–")
+        serials.join(", "),
+        IDENTITY_SLOTS.len()
     )
 }
 
@@ -276,13 +287,16 @@ fn display_product_id() -> u32 {
     fnv1a32(PRODUCT_ID_SEED) & 0xFFFF
 }
 
-/// Panel chromaticities: the sRGB primaries and white point Chromium's
+/// Panel chromaticities: the primaries and white point Chromium's
 /// maintained virtual-display helper (`ui/display/mac/test/
-/// virtual_display_util_mac.mm`) hands its descriptor. Sent only where the
-/// host has the setters. They are carried for parity with that descriptor
-/// shape — on 27.3 it was the shape the system extended by itself, without
-/// the Screen Mirroring alert — not because macOS is known to need them for
-/// that (removing any one other field of the shape stayed green in probing).
+/// virtual_display_util_mac.mm`) hands its descriptor, byte-identical.
+/// These are a P3-ish panel's primaries (sRGB red would be 0.640, 0.330 —
+/// the values here are not that), not an sRGB calibration. Sent only where
+/// the host has the setters. They are carried for parity with that
+/// descriptor shape — on 27.3 it was the shape the system extended by
+/// itself, without the Screen Mirroring alert — not because macOS is known
+/// to need them for that (removing any one other field of the shape stayed
+/// green in probing).
 const VD_RED_PRIMARY: CGPoint = CGPoint {
     x: 0.6797,
     y: 0.3203,
@@ -335,8 +349,8 @@ const CLASS_MODE: &std::ffi::CStr = c"CGVirtualDisplayMode";
 ///
 /// Selectors the macOS versions disagree about are deliberately NOT here:
 /// they are [`descriptor_options`] fields, sent only where the host
-/// implements them. Listing them as required is what made macOS 27.3 (which
-/// removed `setSerialString:`, `setProductName:` and the descriptor's
+/// implements them. Listing them as required is what made current macOS
+/// (lacking `setSerialString:`, `setProductName:` and the descriptor's
 /// `setModes:`) answer Unavailable for a display it can build.
 fn required_selectors() -> Vec<(
     &'static std::ffi::CStr,
@@ -386,8 +400,10 @@ fn required_selectors() -> Vec<(
 
 /// Which descriptor setter carries the display name on this macOS. The
 /// legacy `setProductName:` — the setter this module was written against —
-/// is preferred wherever the host has it; macOS 27.3 removed it and takes
-/// `setName:` instead.
+/// is preferred wherever the host has it; current macOS lacks it and takes
+/// `setName:` instead (`setName:` is the one name setter present in every
+/// public dump from 10.14.6 on, so it is the path the macOS 11 floor
+/// actually takes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NameSetter {
     ProductName,
@@ -411,8 +427,8 @@ fn name_setter(responds_to: &impl Fn(objc2::runtime::Sel) -> bool) -> Option<Nam
 /// Which version-dependent descriptor setters this macOS implements. Pure
 /// over a `responds_to` predicate so both host shapes are unit-testable on
 /// any macOS: the surface this module was written against (every setter
-/// present) and the macOS 27.3 surface (no serial string, no
-/// `setProductName:`, no descriptor modes).
+/// present) and the current-macOS surface (verified on 27.3: no serial
+/// string, no `setProductName:`, no descriptor modes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DescriptorOptions {
     /// `None` when the host has neither display-name setter.
@@ -520,21 +536,28 @@ pub(crate) fn probe() -> VirtualAvailability {
 /// the per-process display list AND reports membership — this call is the
 /// required refresh step, not just a query).
 const ACTIVATION_POLL_TIMEOUT: Duration = Duration::from_secs(5);
-/// Extra activation wait, on the worker thread only. macOS 27.3 does not
-/// always extend the desktop onto a new virtual display by itself: it can
-/// leave the display offline and ask the user in Control Center's Screen
-/// Mirroring alert how to use it (the alert offers extended display, mirror
-/// display and window mirroring). The display joins the active list only
-/// after that choice, which the 5 s budget cannot cover. The wait runs on
-/// the worker with the main run loop pumping, so on a host where the display
-/// arrives immediately the longer ceiling costs nothing — it only delays the
-/// explicit Unavailable where it never does.
+/// Extra activation wait, on the worker thread only. Current macOS (observed
+/// on 27.3) does not always extend the desktop onto a new virtual display by
+/// itself: it can leave the display offline and ask the user in Control
+/// Center's Screen Mirroring alert how to use it (the alert offers extended
+/// display, mirror display and window mirroring). The display joins the
+/// active list only after that choice, which the 5 s budget cannot cover.
+/// The wait runs on the worker with the main run loop pumping, so on a host
+/// where the display arrives immediately the longer ceiling costs nothing —
+/// it only delays the explicit Unavailable where it never does. Scope: the
+/// grace lives on the worker-side wait, which is the leg a creation takes
+/// when the display reports its id promptly (the normal path). A display
+/// whose id itself lags past [`DISPLAY_ID_GRACE`] falls into the legacy
+/// main-thread poll, which keeps the bare 5 s ceiling — the grace cannot
+/// reach that leg without freezing the UI for its whole length.
 const SYSTEM_PROMPT_GRACE: Duration = Duration::from_secs(25);
 
 /// The worker-side activation deadline for a creation started at `started`.
 /// Pure so the budget split is pinned: the MAIN-thread poll keeps the 5 s
 /// ceiling (a longer one would freeze the UI for its whole length); only the
-/// worker-side wait carries the system-prompt grace.
+/// worker-side wait carries the system-prompt grace. So the advertised
+/// ~30 s applies to the normal path; the id-lag fallback leg still fails at
+/// ~5 s (same as the pre-PR budget), with the same recovery text.
 fn worker_activation_deadline(started: Instant) -> Instant {
     started + ACTIVATION_POLL_TIMEOUT + SYSTEM_PROMPT_GRACE
 }
@@ -547,18 +570,23 @@ fn activation_timeout_detail() -> String {
         "the virtual display did not become active within {} s; if macOS showed a \
          Screen Mirroring alert for the new display, that alert closed when the \
          session released the display — start a new session and choose \"Extend\" \
-         for the display in Control Center ▸ Screen Mirroring",
+         for the display in Control Center → Screen Mirroring (or System \
+         Settings → Displays if the choice was remembered)",
         (ACTIVATION_POLL_TIMEOUT + SYSTEM_PROMPT_GRACE).as_secs()
     )
 }
 /// Poll cadence for display activation and pid discovery.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Channel wait for the main-thread dispatch (covers the ≤5 s in-closure
-/// poll plus queue hop latency). The total worst case is no longer the
-/// design's 8 s budget: with the activation grace an unanswered Screen
-/// Mirroring alert stretches a failed creation to ~30 s, as the body
-/// discloses; this wait only bounds the main-thread leg.
-const MAIN_DISPATCH_WAIT: Duration = Duration::from_secs(7);
+/// Channel wait for the main-thread dispatch. Covers the ≤5 s in-closure
+/// poll plus queue hop latency, and the worst legal QUEUING when a
+/// concurrent session's creation is ahead of ours on the same main thread
+/// (two legacy polls ≈ 2 × 5 s + hop ≈ 11 s) — a tighter bound would turn
+/// that legal congestion into a spurious sticky failure even though the
+/// identity pool had room. The total worst case is no longer the design's
+/// 8 s budget: with the activation grace an unanswered Screen Mirroring
+/// alert stretches a failed creation to ~30 s, as the body discloses; this
+/// wait only bounds the main-thread leg.
+const MAIN_DISPATCH_WAIT: Duration = Duration::from_secs(12);
 /// Main-thread grace for the post-build display-id read: normally the id is
 /// assigned within a poll tick or two of `applySettings`, so the closure
 /// typically returns in milliseconds and the main run loop pumps while the
@@ -683,10 +711,12 @@ unsafe fn build_descriptor(serial_slot: u32) -> Result<Retained<AnyObject>, Comp
             }
         }
 
-        // Legacy serial string: macOS 27.3 dropped the setter, and the numeric
-        // serial above carries the identity there.
+        // Legacy serial string, slot-parameterized like the numeric serial
+        // above so the two serial fields agree per slot; current macOS lacks
+        // the setter, and there the numeric serial alone carries the
+        // identity.
         if options.serial_string {
-            let serial = NSString::from_str(&serial_string());
+            let serial = NSString::from_str(&serial_string_for_slot(serial_slot));
             let _: () = msg_send![&*descriptor, setSerialString: &*serial];
         }
 
@@ -701,10 +731,11 @@ unsafe fn build_descriptor(serial_slot: u32) -> Result<Retained<AnyObject>, Comp
         // dispatch_queue_create is deliberately never released: the
         // descriptor retains its own reference, and the display's async
         // teardown may still touch the queue after our Drop — a bounded
-        // one-queue-per-session leak (a few hundred bytes, reclaimed at
-        // process death) is strictly safer than a potential over-release.
-        // There is no pidfile/orphan machinery for the same reason (process
-        // death reclaims the display).
+        // leak of at most one queue per identity-slot attempt (so up to
+        // IDENTITY_SLOTS.len() per pool-exhausted creation; a few hundred
+        // bytes each, reclaimed at process death) is strictly safer than a
+        // potential over-release. There is no pidfile/orphan machinery for
+        // the same reason (process death reclaims the display).
         let queue = dispatch_queue_create(QUEUE_LABEL.as_ptr(), std::ptr::null());
         if queue.is_null() {
             return Err(ComputerUseError::unavailable(
@@ -713,9 +744,9 @@ unsafe fn build_descriptor(serial_slot: u32) -> Result<Retained<AnyObject>, Comp
         }
         let _: () = msg_send![&*descriptor, setQueue: queue];
 
-        // Empty mode list where the descriptor still has the slot (macOS 27.3
-        // dropped it — the mode is applied via CGVirtualDisplaySettings
-        // below either way).
+        // Empty mode list where the descriptor still has the slot (current
+        // macOS lacks the slot — the mode is applied via
+        // CGVirtualDisplaySettings below either way).
         if options.modes {
             let modes: Retained<objc2_foundation::NSArray<AnyObject>> =
                 objc2_foundation::NSArray::from_slice(&[]);
@@ -848,9 +879,11 @@ unsafe fn wait_for_activation(
         if Instant::now() >= deadline {
             return Err(ComputerUseError::unavailable(
                 "the virtual display did not become active within the creation budget; \
-                 if macOS showed a Screen Mirroring alert for the new display, start \
-                 a new session and choose \"Extend\" for it in Control Center ▸ \
-                 Screen Mirroring",
+                 if macOS showed a Screen Mirroring alert for the new display, that \
+                 alert closes when the session releases the display — start a new \
+                 session and choose \"Extend\" for it in Control Center → \
+                 Screen Mirroring (or System Settings → Displays if the choice \
+                 was remembered)",
             ));
         }
         sleep(POLL_INTERVAL);
@@ -971,6 +1004,25 @@ fn wait_activation_on_worker(display_id: u32, deadline: Instant) -> Result<(), C
         }
         sleep(POLL_INTERVAL);
     }
+}
+
+/// How many ACTIVE displays exist besides `except`, or `None` when the
+/// active display list cannot be read (callers pick their own failure
+/// posture; the mirrored-start refusal treats an unreadable list like
+/// "others present" — fail-closed for the never-DRIVEN contract).
+fn other_active_display_count(except: u32) -> Option<usize> {
+    // A session has a handful of displays; 16 is far above any real layout.
+    let mut displays = [0u32; 16];
+    let mut count: u32 = 0;
+    // SAFETY: both pointers are valid out buffers of the declared lengths;
+    // CGGetActiveDisplayList writes at most `max_displays` entries.
+    let error =
+        unsafe { CGGetActiveDisplayList(displays.len() as u32, displays.as_mut_ptr(), &mut count) };
+    if error != CGError::Success {
+        return None;
+    }
+    let count = usize::try_from(count).unwrap_or(0).min(displays.len());
+    Some(displays[..count].iter().filter(|&&id| id != except).count())
 }
 
 /// Bounds of every active display except `except`, as (id, bounds) pairs.
@@ -1246,9 +1298,9 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
 /// pool / thread-affinity analysis cannot see through `AnyObject`), but
 /// THIS object is specifically managed:
 /// - created exactly once on the main thread (or the worker thread in the
-///   no-main-dispatch fallback) by [`create_and_read_id`], which hands the
-///   +1 across the bounded channel INSIDE this wrapper — a single, one-way
-///   ownership transfer, never shared;
+///   no-main-dispatch fallback) by [`create_and_read_id_for_slot`], which
+///   hands the +1 across the bounded channel INSIDE this wrapper — a
+///   single, one-way ownership transfer, never shared;
 /// - owned exclusively by one `MacosVirtualDisplayBackend` on the
 ///   computer_use worker thread afterwards; the object is never messaged
 ///   again after creation (write-only lifecycle state), so the only
@@ -1275,9 +1327,10 @@ struct VdHandle(Retained<AnyObject>);
 unsafe impl Send for VdHandle {}
 
 impl VdHandle {
-    /// Takes ownership of a +1 raw pointer produced by [`create_and_read_id`].
-    /// Returns None on null (which the creation path never produces — it
-    /// only hands out non-null pointers from `Retained::into_raw`).
+    /// Takes ownership of a +1 raw pointer produced by
+    /// [`create_and_read_id_for_slot`]. Returns None on null (which the
+    /// creation path never produces — it only hands out non-null pointers
+    /// from `Retained::into_raw`).
     fn from_raw(ptr: *mut AnyObject) -> Option<Self> {
         // SAFETY: ptr is the +1 raw pointer from Retained::into_raw; the
         // +1 moves back into this Retained (released exactly once, on Drop).
@@ -3721,29 +3774,57 @@ fn capture_display_image(bounds: CGRect) -> Result<CFRetained<CGImage>, Computer
 }
 
 /// The refusal reason when the freshly activated display did not come up
-/// as a separate desktop: macOS applied a mirror arrangement (in
-/// particular, a NEW display usually becomes the mirror set's primary —
-/// observed on 27.3 — and the primary is where the user's windows
-/// relocate, so driving the display would drive the user's desktop and
-/// capture it). Pure over the two CG facts so both refusal branches and
-/// the wording are pinned by a test; the text carries the recovery path
-/// because the session's backend fails sticky (no mid-creation fallback).
-fn mirrored_start_reason(is_main: bool, in_mirror_set: bool) -> Option<String> {
-    if !(is_main || in_mirror_set) {
-        return None;
+/// as a separate desktop the session may drive. Two hazards, pure over the
+/// three facts so every refusal branch, the carve-out and the wording are
+/// pinned by tests:
+/// - a mirror arrangement (a NEW display usually becomes the mirror set's
+///   primary — observed on 27.3): the set's content — the user's desktop —
+///   is duplicated onto the display, so driving and capturing it would
+///   drive and capture the user's desktop;
+/// - a MAIN flip while the user's own displays are active: their menu bar
+///   and the new-window default moved onto the driven display.
+///
+/// The ONLY-display carve-out: when the virtual display is the sole active
+/// display (headless Mac mini, lid-closed clamshell), becoming main is not
+/// a hazard — there is no user desktop to relocate or capture — so the
+/// start is accepted; refusing would make the feature unusable on exactly
+/// the unattended hosts it serves. An UNREADABLE display list keeps
+/// refusing (`None` count is treated like "others present"): the carve-out
+/// needs positive evidence there is nothing to protect. A mirror
+/// arrangement applied just after this check falls to the mid-session
+/// contract (ensure_parked warns every capture) — the two are
+/// indistinguishable from outside. The text carries the recovery path
+/// because the session's backend fails sticky (no mid-creation fallback),
+/// and is written for the moment it is read: the display is already
+/// released, so the way out is a NEW session.
+fn mirrored_start_reason(
+    is_main: bool,
+    in_mirror_set: bool,
+    other_active_displays: Option<usize>,
+) -> Option<String> {
+    if in_mirror_set {
+        return Some(
+            "the virtual display came up as part of a mirror set, not as a \
+             separate desktop: the set's content — the user's desktop — is \
+             duplicated onto it, so driving and capturing it would drive and \
+             capture the user's desktop. Start a new session and choose \
+             \"Extend\" for the display in Control Center → Screen Mirroring \
+             (or System Settings → Displays if the choice was remembered)"
+                .to_string(),
+        );
     }
-    Some(format!(
-        "the virtual display came up mirrored ({}), not as a separate desktop: \
-         the mirror's primary holds the user's relocated windows, so driving \
-         it would drive and capture the user's desktop. Set the display to \
-         \"Extend\" in Control Center ▸ Screen Mirroring (or System Settings ▸ \
-         Displays if the choice was remembered), then start a new session",
-        if is_main {
-            "it became the mirror set's main display"
-        } else {
-            "it joined a mirror set"
-        }
-    ))
+    if is_main && other_active_displays != Some(0) {
+        return Some(
+            "the virtual display became the main display while the user's own \
+             displays are active: their menu bar and new windows moved onto \
+             it, so driving and capturing it would drive and capture the \
+             user's desktop. Start a new session and choose \"Extend\" for \
+             the display in Control Center → Screen Mirroring (or \
+             System Settings → Displays if the choice was remembered)"
+                .to_string(),
+        );
+    }
+    None
 }
 
 /// Dispatches the identity-slot creation loop to the main thread (or runs
@@ -3819,17 +3900,20 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     if !activated {
         wait_activation_on_worker(display_id, worker_activation_deadline(started))?;
     }
-    // Refuse a mirrored start BEFORE parking (a mirrored display cannot be
-    // re-parked into shape — ensure_parked's mirrored branch only ever
-    // warns): the arrangement is the system's choice and, on a first run,
-    // the user's via the Screen Mirroring alert, and driving the mirror's
-    // primary would drive the user's relocated windows. Refusing fails the
-    // session sticky with the recovery path in the text; the display drops
-    // with the locals, which dissolves the mirror and returns the user's
-    // windows to their own display.
+    // Refuse a mirrored/misplaced start BEFORE parking (a mirrored display
+    // cannot be re-parked into shape — ensure_parked's mirrored branch only
+    // ever warns): the arrangement is the system's choice and, on a first
+    // run, the user's via the Screen Mirroring alert, and driving it would
+    // drive the user's desktop. The ONLY-display carve-out keeps headless
+    // hosts (virtual display is the sole active display) working — see
+    // `mirrored_start_reason`. Refusing fails the session sticky with the
+    // recovery path in the text; the display drops with the locals, which
+    // dissolves the mirror and returns the user's windows to their own
+    // display.
     if let Some(reason) = mirrored_start_reason(
         CGMainDisplayID() == display_id,
         CGDisplayIsInMirrorSet(display_id),
+        other_active_display_count(display_id),
     ) {
         return Err(ComputerUseError::unavailable(reason));
     }
@@ -3970,19 +4054,45 @@ mod tests {
 
     /// Serial identity: stable derivation from the product name, pinned
     /// byte-for-byte so system reports stay consistent across releases (a
-    /// drifting serial would look like a display swap).
+    /// drifting serial would look like a display swap). The string form is
+    /// slot-parameterized like the numeric form and agrees with it per slot
+    /// (the descriptor's two serial fields must not disagree), and slot 0
+    /// carries the historical string every pre-pool session used.
     #[test]
     fn serial_identity_is_stable_and_derived() {
         assert_eq!(fnv1a32(b""), 0x811c_9dc5, "FNV-1a offset basis");
         assert_eq!(fnv1a32(b"a"), 0xe40c_292c, "FNV-1a 'a'");
         let serial = serial_number();
         assert_eq!(serial, fnv1a32(PRODUCT_NAME.as_bytes()));
-        assert_eq!(serial_string(), format!("PINVOU3-VD-{serial:08X}"));
-        assert!(serial_string().starts_with(SERIAL_STRING_PREFIX));
+        assert_eq!(
+            serial_string_for_slot(0),
+            format!("PINVOU3-VD-{serial:08X}")
+        );
+        assert!(serial_string_for_slot(0).starts_with(SERIAL_STRING_PREFIX));
         // Deterministic across calls (no hidden entropy).
         assert_eq!(serial_number(), serial_number());
         // macOS 14+ tells displays apart by the serial: zero reads as unset.
         assert_ne!(serial_number(), 0);
+        // Every slot's string agrees with its numeric serial, and the pool's
+        // strings are pairwise distinct (a shared string would make slots
+        // 1–3 indistinguishable from slot 0 to anything keying on it).
+        let mut strings: Vec<String> = Vec::new();
+        for slot in IDENTITY_SLOTS {
+            let string = serial_string_for_slot(*slot);
+            assert_eq!(
+                string,
+                format!("PINVOU3-VD-{:08X}", serial_number_for_slot(*slot)),
+                "slot {slot}'s string must carry slot {slot}'s numeric serial"
+            );
+            strings.push(string);
+        }
+        strings.sort();
+        strings.dedup();
+        assert_eq!(
+            strings.len(),
+            IDENTITY_SLOTS.len(),
+            "slot serial strings must be pairwise distinct"
+        );
     }
 
     /// `descriptor_options` for a host whose descriptor implements every
@@ -3996,11 +4106,11 @@ mod tests {
         })
     }
 
-    /// The macOS 27.3 surface, reproduced by selector name: the descriptor
-    /// lost the serial string, the product-name setter and its mode list,
-    /// and kept the identity, chromaticity and plain-name setters. This is
-    /// the shape that made the old required table (and so every session)
-    /// answer Unavailable on 27.3.
+    /// The current-macOS surface (verified live on 27.3), reproduced by
+    /// selector name: the descriptor lacks the serial string, the
+    /// product-name setter and its own mode list, and kept the identity,
+    /// chromaticity and plain-name setters. This is the shape that made the
+    /// old required table (and so every session) answer Unavailable.
     #[test]
     fn descriptor_options_follow_the_macos_27_surface() {
         assert_eq!(
@@ -4227,7 +4337,8 @@ mod tests {
             SYSTEM_PROMPT_GRACE
         );
         // Long enough to read and answer a system alert, short enough that an
-        // unanswered one still hands the session back to the physical target.
+        // unanswered one fails the creation promptly and releases the display
+        // (there is no mid-creation fallback: the failure is the hand-back).
         assert!(SYSTEM_PROMPT_GRACE >= Duration::from_secs(15));
         assert!(SYSTEM_PROMPT_GRACE <= Duration::from_secs(60));
     }
@@ -4258,22 +4369,31 @@ mod tests {
         );
     }
 
-    /// A mirrored start is refused, with the recovery path: the mirror's
-    /// primary holds the user's relocated windows, so driving it would
-    /// drive the user's desktop (the never-DRIVEN contract), and the
-    /// refusal is sticky for the session — the text must carry the way out.
+    /// A mirrored/misplaced start is refused, with the recovery path: the
+    /// set's content (the user's desktop) is duplicated onto the display, or
+    /// the user's menu bar/windows moved onto it via a main flip — either
+    /// way driving it would drive the user's desktop (the never-DRIVEN
+    /// contract), and the refusal is sticky for the session — the text must
+    /// carry the way out, written for the moment it is read (a NEW session).
     #[test]
     fn mirrored_start_is_refused_with_the_recovery_path() {
         assert!(
-            mirrored_start_reason(false, false).is_none(),
+            mirrored_start_reason(false, false, Some(1)).is_none(),
             "an extended desktop (the verified 27.3 outcome) must be accepted"
         );
         for (what, reason) in [
-            ("main flip", mirrored_start_reason(true, false)),
-            ("mirror join", mirrored_start_reason(false, true)),
-            ("both", mirrored_start_reason(true, true)),
+            ("mirror join", mirrored_start_reason(false, true, Some(1))),
+            ("mirror primary", mirrored_start_reason(true, true, Some(1))),
+            (
+                "main flip with user displays",
+                mirrored_start_reason(true, false, Some(1)),
+            ),
+            (
+                "unreadable display list",
+                mirrored_start_reason(true, false, None),
+            ),
         ] {
-            let reason = reason.expect("a mirrored start must be refused");
+            let reason = reason.expect("a mirrored/misplaced start must be refused");
             assert!(
                 reason.contains("Extend"),
                 "{what} must say how to fix it: {reason}"
@@ -4283,15 +4403,33 @@ mod tests {
                 "{what} must route to a new session (the failure is sticky): {reason}"
             );
             assert!(
-                reason.contains("user's relocated windows") || reason.contains("user's desktop"),
+                reason.contains("user's desktop"),
                 "{what} must say why: {reason}"
             );
         }
     }
 
+    /// The ONLY-display carve-out: when the virtual display is the sole
+    /// active display (headless Mac mini, lid-closed clamshell), becoming
+    /// main is not a hazard — there is no user desktop to relocate or
+    /// capture — so the start must be ACCEPTED, not refused. This behavioral
+    /// pin is what keeps the carve-out from silently regressing into a
+    /// blanket refusal: a mutation dropping the carve-out arm fails here
+    /// (the source-shape pin below cannot see inside the predicate).
+    #[test]
+    fn mirrored_start_refusal_allows_the_only_display() {
+        assert!(
+            mirrored_start_reason(true, false, Some(0)).is_none(),
+            "the only display becoming main is the headless-host case: accept it"
+        );
+    }
+
     /// The refusal must be wired into creation, BEFORE the park (a mirrored
     /// display cannot be re-parked into shape — ensure_parked's mirrored
-    /// branch only ever warns) — the source-shape half of the contract. The
+    /// branch only ever warns) — the source-shape half of the contract. All
+    /// three facts must reach the predicate (main flip, mirror set, and the
+    /// only-display count — pinning the count ARGUMENT expression stops a
+    /// mutation hard-wiring the carve-out from inside the call site). The
     /// needles are wrapping-robust: each fact is located separately within
     /// a window after the previous anchor, so rustfmt re-wraps do not
     /// false-fail the pin.
@@ -4305,11 +4443,13 @@ mod tests {
             .find("mirrored_start_reason(")
             .expect("create_backend must refuse a mirrored start");
         let call = pool + call;
-        let facts = &prod[call..call + 220];
+        let facts = &prod[call..call + 300];
         assert!(
             facts.contains("CGMainDisplayID() == display_id")
-                && facts.contains("CGDisplayIsInMirrorSet(display_id)"),
-            "the refusal must test both mirror facts (main flip and mirror set): {facts}"
+                && facts.contains("CGDisplayIsInMirrorSet(display_id)")
+                && facts.contains("other_active_display_count(display_id)"),
+            "the refusal must test all three facts (main flip, mirror set, \
+             only-display count): {facts}"
         );
         let park_after = prod[call..]
             .find("park_right_of_main(display_id)")
@@ -4371,7 +4511,12 @@ mod tests {
         let active_created = active_display_count();
         let main_after = CGMainDisplayID();
         let arrangement = if main_before != main_after {
-            "the virtual display became the main display — a mirror arrangement"
+            if active_before == 0 {
+                "the virtual display is the only display and became main — the \
+                 only-display carve-out (headless host)"
+            } else {
+                "the virtual display became the main display — a mirror arrangement"
+            }
         } else if active_created > active_before {
             "an extended desktop: the virtual display is active beside the user's main display"
         } else {
