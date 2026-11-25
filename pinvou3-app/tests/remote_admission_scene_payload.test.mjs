@@ -38,8 +38,14 @@ function loadAdmission(runtime, { publisher = false } = {}) {
     : ['src', 'platform', 'tauri', 'bridge', 'chat-events.js']));
   const signature = '  function applyRemoteUserMessageEvent(e, force) {';
   const start = source.indexOf(signature);
+  // Extraction end marker (rebase review P2): the old web marker was the
+  // planCardHydrationKey definition, but that helper now lives in the shared
+  // base (Debtsweep L4 moved it to shared/bridge-shared-helpers.js and the
+  // bridge consumes the shorthand), so the marker no longer existed in
+  // web/bridge.js and every web case died at extraction time. The next
+  // standalone function in the same lane file is the stable boundary now.
   const endMarker = runtime === 'web'
-    ? '\nfunction planCardHydrationKey(item)'
+    ? '\n  function applyDeferredRemoteUserMessage(_sid, buf)'
     : '\n  listen("chat:user_message", async function (e) {';
   const end = source.indexOf(endMarker, start);
   assert.ok(start > 0 && end > start, `${runtime}: applyRemoteUserMessageEvent must stay a standalone function`);
