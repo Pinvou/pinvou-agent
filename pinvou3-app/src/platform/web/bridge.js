@@ -4548,9 +4548,48 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }
   }); });
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（与 tauri 车道逐字同文，bridge-messages 计数器原语旁），内聚高于拆分
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
-    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
+  // Rewind/undo rehydration seam (work-mode ChatView) is desktop-only: the
+  // web lane has no session-buffer cache to invalidate (the compaction
+  // registration below is byte-identical with the tauri lane per the
+  // chat_manual_compact byte gate), so bind null — the typeof guards make
+  // the resync/refusal arms no-ops and done falls to the plain-notice arm.
+  const invalidateSessionBuffer = null;
+listen("chat:compaction", function (e) {
+    const compactionSid = e.payload && e.payload.session_id;
+    const prePhase = e.payload && e.payload.phase;
+    const preBefore = Number(e.payload && e.payload.messages_before);
+    const preAfter = Number(e.payload && e.payload.messages_after);
+    // r40 M1：真实活动归属必须在进入 onSessionEvent **之前**捕获——
+    // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
+    // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
+    // 内分类：后台压缩恒走活动臂，把正在阅读/输入的用户强切到刚压缩完的
+    // 后台会话（前台抢占回归），「后台臂」沦为死代码。此捕获值语义：true
+    // 当且仅当被压缩会话在事件派发时刻就是前台会话（事件未携带 sid 的事件
+    // 不做重同步，只挂通知）。
+    const compactionOuterActive =
+      !!compactionSid && compactionSid === state.activeSessionId;
+    // r41 minor 1：缓存失效同样必须在换入域**之前**执行——
+    // invalidateSessionBuffer 的活动腿（清 live 工作集数组引用）在换入域内
+    // 会对后台 sid 误发：state.messages/chatItems 被清空后与工作集对象失联，
+    // 其后 addSystemItem 推入失联数组、finally 把失联内容持久化进孤儿对象，
+    // 通知条无处渲染。预换入失效让两条腿都自然走对：活动会话清 live 投影 +
+    // 换草稿，后台会话删缓存 + 换草稿。收缩判定也在此计算（payload 原样
+    // 可得），handler 只消费结果。
+    const compactionShrank = prePhase === "done" &&
+      (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
+    const compactionResync = compactionShrank && !!compactionSid &&
+      typeof invalidateSessionBuffer === "function" &&
+      (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
+    // r46 MAJOR-3：refuseWhenBusy 传入压缩臂——busy/queued（排队追问正等待
+    // 发送）在场时失效被拒绝，缓存刻意保留（排队消息与 busy 不受压缩窗口
+    // 波及），前台臂的强制重载随之跳过（重载的工作集保存/替换会把
+    // queued/busy 清空，正好绕过拒绝）。拒绝时调和门继续诚实隐藏入口；
+    // 通知条照常挂载（缓存未失效，挂载落点正确）。
+    const compactionInvalidated =
+      compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）+ r40-M1 预捕获 + #834 标记账本本就贴着上限；r7 M2 的计数基线重置以单个条件位并入 done 腿，内聚高于拆分
+    onSessionEvent(e, function () {
+    if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
     const msg = e.payload && e.payload.message || "";
     const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
@@ -4586,7 +4625,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // turn already set turnUsageDirty, so subsequent usage accumulations
     // are untrustworthy and the usage bar can only be refreshed by this
     // post_tokens — it must not be swallowed by the dirty semantics.
-    const sid = e.payload && e.payload.session_id;
+    const sid = compactionSid;
     // The compactionStarts signal is persistent BY DESIGN: it survives the
     // terminal and prune-only merges, so the UI can reconcile a manual
     // compact marker whose start and terminal coalesced before any render
@@ -4607,9 +4646,37 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       } else delete state.compactingSessions[sid];
       notify();
     }
+    // r39 M1：真实收缩后（缓存已在换入前失效——见上）前台会话立即强制盘载
+    // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
+    // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
+    // 会被吞掉）。后台会话不重载（r40 M1：那会把用户前台视图切走），照常
+    // 挂 done 通知条——r41 minor 1 如实：换入域内的挂载对后台是尽力而为
+    // （空桩 buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
+    // 以切回后的落盘时间线为准。压缩多发生在 turn 途中（上下文超限自动
+    // 触发）：盘载与在途流式并存时，未决 token 积累在 pending 缓冲、随消息
+    // 边界落在新 buffer 上，chat:done 对账兜底——宁可短暂闪动也不留陈旧
+    // 全量时间线。
+    const compactionNotice = bt("compactDone") + auto + " " + msg;
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
-    else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
+    else if (phase === "done") {
+      if (compactionInvalidated && compactionOuterActive && typeof switchToSessionInternal === "function") {
+        // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
+        Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
+          // r42 minor 9: boolean contract (true on success, false on failure,
+          // never rejects) — a failed or superseded reload still runs then()
+          // and would append the notice to whatever buffer is current (a
+          // phantom compaction pill on another session / a blanked view).
+          // Gate on the boolean: attach only when the reload succeeded.
+          .then(function (reloaded) {
+            if (reloaded === true) addSystemItem(compactionNotice);
+          })
+          .catch(function () {});
+      } else {
+        // 后台收缩（已预失效）/非收缩 done/原语缺席：照常挂通知。
+        addSystemItem(compactionNotice);
+      }
+    }
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
     if (phase === "done") {
@@ -5029,6 +5096,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
 function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
+    // 与 tauri 车道同款标记：前端-only 回显不计后端 turn（回退序号剔除用）。
+    if (!persist) item.frontendEcho = true;
     let message = null;
     addChatItem(item);
     if (persist) {

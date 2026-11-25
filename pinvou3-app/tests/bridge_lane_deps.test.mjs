@@ -221,7 +221,11 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages readers above; its sole caller
   // rerenderFromMessagesCore resolves it as a base-local declaration —
   // count only.
-  sharedFnCount: 321,
+  // Re-measured on the merged bodies: main's 321 + the rewind-lane shared
+  // helpers this PR adds, minus the coarse isCompactionCarrierBlocks classic
+  // predicate removed by the stamped-only display contract (superseded by
+  // main's isGeneratedCompactionCheckpointBlocks pill arm): 322.
+  sharedFnCount: 322,
 };
 
 assert.equal(

@@ -9,20 +9,50 @@
 //! （`features::sessions`）同样读这一个列表，checkpoint 序号必须与之同口径，
 //! 否则「第 N 轮」在 checkpoint 卡片与回退/分叉入口之间整体错位。设计文档
 //! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」。
+//!
+//! 步数预算通知剔除（评审 r10 M3）：底座把 soft landing / exhaustion 两条通知
+//! 以 ExternalUser provenance 落盘（engine.rs 硬编码，上游待修），era 列表会
+//! 将其误计为用户 turn。识别前缀与前端双 bridge / code 车道同款镜像——所有
+//! 计数/截断定位点（本计数、rewind/fork 的边界枚举与 undo 计数）必须共用
+//! 同一个剔除后的列表，否则 keepTurns 口径分叉。
 
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{ContentBlock, Message, Role};
 use deepseek_tui::user_turn_prompt_indices;
 
 /// 会话日志中的真实用户 turn 数（不含 tool_result、运行时内部信封、纯图片
-/// turn 与 pre-provenance 历史里的压缩摘要头 turn——与底座 Editable 分类
-/// 同口径）。唯一计入的运行时形态：canonical `<context_update>` 漂移增量
-/// 无 provenance 载体、按底座分类就是 Editable turn 边界（序号计数器的
-/// 存在前提，见 `count_user_turns_counts_canonical_context_update_as_era_boundary`）。
-/// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时
-/// 调用）。era 由传入的完整消息列表推导；对被截段的 `removed_messages`
-/// 切片，era 取切片自身（通常不含 provenance 载体，退回宽松口径）。
+/// turn、pre-provenance 历史里的压缩摘要头 turn 与步数预算通知——与底座
+/// Editable 分类同口径再剔除预算通知）。唯一计入的运行时形态：canonical
+/// `<context_update>` 漂移增量无 provenance 载体、按底座分类就是 Editable
+/// turn 边界（序号计数器的存在前提，见
+/// `count_user_turns_counts_canonical_context_update_as_era_boundary`）。
+/// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时调用）。
+/// era 由传入的完整消息列表推导；对被截段的 `removed_messages` 切片，era
+/// 取切片自身（通常不含 provenance 载体，退回宽松口径）。
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
-    user_turn_prompt_indices(messages).len() as u32
+    user_turn_prompt_cut_indices(messages).len() as u32
+}
+
+/// 底座 era 边界列表剔除步数预算通知后的统一口径：快照序号、回退预检、
+/// 调和门与截断/分叉边界的唯一定位点。
+pub(crate) fn user_turn_prompt_cut_indices(messages: &[Message]) -> Vec<usize> {
+    user_turn_prompt_indices(messages)
+        .into_iter()
+        .filter(|&idx| !is_step_budget_notification(&messages[idx]))
+        .collect()
+}
+
+/// 步数预算通知判定（评审 r10 M3）：底座把 soft landing / exhaustion 两条通知
+/// 以 ExternalUser provenance 落盘（engine.rs 硬编码，上游待修），谓词将其
+/// 误计为用户 turn。识别前缀与前端双 bridge / code 车道同款镜像。
+pub fn is_step_budget_notification(message: &Message) -> bool {
+    if message.role != Role::User {
+        return false;
+    }
+    let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
+        return false;
+    };
+    text.starts_with("Step budget soft landing:")
+        || text.starts_with("Your model-step budget was exhausted")
 }
 
 /// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
@@ -44,7 +74,9 @@ pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepseek_tui::models::ContentBlock;
+    // 附件包裹图片 turn 的 fixture 直接断言底座单消息谓词（era 列表的构成
+    // 基元），生产代码本体只经 user_turn_prompt_indices 走 era 口径。
+    use deepseek_tui::is_user_turn_prompt;
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {
@@ -220,5 +252,49 @@ mod tests {
         // doc promises Err on deserialization failure).
         let invalid = vec![serde_json::json!({ "role": 42 })];
         assert!(count_user_turns_in_json(&invalid).is_err());
+    }
+
+    /// 工作车道附件-only 发送的真实落盘形态必须计为用户 turn（评审 M1 对齐 pin）。
+    /// 两个附件构造器（`prepare_native_user_message_in_dir` /
+    /// `build_message_with_attachments_in_dir`）对空草稿文本也总是生成非空包装段
+    /// （"---\n用户附上了以下文件:\n\n…"），引擎 `user_content_blocks` 把该完整
+    /// 文本作为第一个 Text 块落盘、ImageUrl 与 turn_meta 随后追加。因此工作车道
+    /// 的附件-only 轮次在 `classify_user_turn_prompt` 下是 Editable——后端计数
+    /// **包含**它们，与前端 `rewindEntriesByTurnId` 逐 userItem 计数对齐（若任
+    /// 一侧改变——比如包装文本被剥离、该形态退化成上面的裸 ImageUrl fixture——
+    /// 本 pin 与 image-only fixture 的计数差即暴露错位）。
+    #[test]
+    fn attachment_wrapped_image_turn_counts_as_user_turn() {
+        let wrapper = "---\n用户附上了以下文件:\n\n### shot.png (image, 12345 bytes)\n\
+                       [Attached image: /ws/attachments/shot.png]\n\n---\n";
+        let wrapped = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: wrapper.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ImageUrl {
+                    image_url: deepseek_tui::models::ImageUrlContent {
+                        url: "file:///ws/attachments/shot.png".to_string(),
+                    },
+                },
+            ],
+        };
+        assert!(is_user_turn_prompt(&wrapped));
+        assert_eq!(count_user_turns(std::slice::from_ref(&wrapped)), 1);
+
+        // 对照组：同一张图去掉包装文本（CLI 车道的裸形态）不计——证明两个
+        // fixture 之间隔着的正是构造器的包装文本，而非图片块本身。
+        let bare = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::ImageUrl {
+                image_url: deepseek_tui::models::ImageUrlContent {
+                    url: "file:///ws/attachments/shot.png".to_string(),
+                },
+            }],
+        };
+        assert!(!is_user_turn_prompt(&bare));
+        assert_eq!(count_user_turns(std::slice::from_ref(&bare)), 0);
     }
 }

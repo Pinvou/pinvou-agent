@@ -5306,6 +5306,23 @@
     }
   }
 
+  // NotPrompt 同族的 tool-result 块类型全集（CodeWhale request.rs ContentBlock
+  // 变体；r20 minor 4 与后端 classify 保持同集）。
+  const TOOL_RESULT_BLOCK_TYPES = [
+    "tool_result",
+    "tool_search_tool_result",
+    "code_execution_tool_result",
+  ];
+
+  // 运行时图片标记文本块（CodeWhale image_attach.rs / turn_loop.rs
+  // tool_result_message_content：`<image path="…">` 开、`</image>` 闭，夹
+  // ImageUrl 块）。它们是载体的组成部分而非用户话语；混合消息里剥掉它们
+  // 之后剩下的才算用户文本（r22 集成修复，见下方 toolResultCarrier 处）。
+  const IMAGE_MARKER_TEXT_RE = /^<\/?image(?:\s+path="[^"]*")?>$/; // path 内引号未转义形态由 CodeWhale 侧保证不产生（r33 minor 7 披露）
+  function isImageMarkerTextBlock(b) {
+    return !!b && b.type === "text" && IMAGE_MARKER_TEXT_RE.test(String(b.text || "").trim());
+  }
+
   // web+tauriMain 共享（FE14 wave 5：rerenderFromMessages 共享核心）。
   // 重放主体两侧逐字一致；仅剩的 lane 差异点全部经 lane hooks 注入：
   //   itemIdSeq                重放前清零（cell）
@@ -5446,18 +5463,45 @@
           addChatItem({ type: "system", text: bt("compactDone"), time: "", compactionCheckpoint: true });
           continue;
         }
+        // 压缩摘要载体不在此臂吞气泡：带出处戳的生成检查点已由上方 arm 落
+        // 系统占位；裸粘贴摘要头是用户消息（internal-message.mjs 的 stamped-only
+        // 展示契约——隐藏用户自己的消息没有正确性需求支撑），照常渲染；计数侧
+        // 由 era 口径与 turnHasUserText 同步跳过。
+        // 工具结果载体（评审 r9 M5）：含 tool_result 块的 User 消息不是用户轮
+        // （classify 按 ToolResult-first 判 NotPrompt）——如截图工具回传的
+        // [ToolResult, Text("<image …>"), ImageUrl, Text] 形态。工具卡由下方
+        // toolMeta 回填还原，这里只跳过用户气泡（否则幻影气泡渲染裸标记文本、
+        // 序号被顶 → 调和门隐藏该会话全部回退入口）。
+        // r20 minor 4：后端 classify 的 NotPrompt 同族还有 tool_search_tool_result
+        // 与 code_execution_tool_result（CodeWhale request.rs ContentBlock 变体），
+        // 前端必须同集，否则该形态回传仍出幻影气泡（fail-closed 顶偏序号）。
+        const toolResultCarrier = blocks.some(b => b && TOOL_RESULT_BLOCK_TYPES.includes(b.type));
         // Always strip exact internal envelopes: sessions saved before the
         // persistence alignment still carry the engine-baked <turn_meta>
         // block on mid-turn steered messages, and without the filter the
         // hydrated bubble rendered the raw envelope after a restart.
-        const utext = lane.userMessageDisplayText(blocks, true);
+        // r22 集成修复（main #749 重放口径）：载体不再一刀切吞气泡——先剥掉
+        // 运行时图片标记文本块，剩下的才是用户话语。纯载体（r9 M5 截图回传
+        // [ToolResult, Text("<image …>"), ImageUrl, Text]）剥完为空 → 依旧无
+        // 气泡；混合形态（tool_result + 真实文本，main 重放测试的合成形态）
+        // 保留气泡与 user 边界——main 的 artifact 续接边界依赖 user 项
+        // （updatePresentedArtifact 扫到 user 项即拒绝原地续写，改为追加新卡）。
+        // 已知张力（PR 说明披露）：后端 classify 对混合形态仍判 NotPrompt
+        // （runtime_handoff.rs ToolResult-first），前端出气泡而 ledger 不计
+        // turn；真实引擎流不产生混合消息（tool_result_message_content 只拼
+        // ToolResult + 图片标记），仅合成历史可触发，如需彻底对齐需上游决策。
+        const utext = lane.userMessageDisplayText(
+          toolResultCarrier ? blocks.filter(b => !isImageMarkerTextBlock(b)) : blocks, true);
         // 场景路由载荷只给模型看：发送时气泡显示用户原文，落盘的却是
         // 路由包装后的全文，重放须还原成原文，否则重开会话后气泡里带着
         // 整段场景提示词（载荷互逆解析见 scenePayloadSplitter）。
         const sidecarScene = pinvouSceneForMessagePos(mi);
         const sceneSplit = utext && splitScenePayload ? splitScenePayload(utext, sidecarScene) : null;
         const userText = sceneSplit ? sceneSplit.text : utext;
-        if (userText) {
+        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（count_user_turns 的
+        // 步数预算通知剔除）同口径——否则调和门序号错位 / 假用户气泡。
+        const stepBudgetNotice = utext && (utext.indexOf("Step budget soft landing:") === 0 || utext.indexOf("Your model-step budget was exhausted") === 0);
+        if (userText && !stepBudgetNotice) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           // 引擎 <context_update> 运行时消息（pinned 上下文漂移）按底座 era
           // 口径计 turn 边界而投影层不产生 turn：落下的每个都计入待消费

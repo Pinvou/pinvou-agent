@@ -18,6 +18,8 @@ import {
   isGeneratedCompactionCheckpointBlocks,
   isInternalUserMessage,
   isKnownInternalMetadataBlock,
+  isStepBudgetNoticeText,
+  isToolResultCarrierBlocks,
 } from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
@@ -790,7 +792,18 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         continue;
       }
       if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
-      const text = userMessageText(blocks);
+      // 工具结果载体（评审 r10 M2 / r25 MAJOR-2）：NotPrompt 同族全集
+      // （tool_search/code_execution 变体与共享 rerender 核心同集），跳过用户
+      // 气泡、tool_result 回填照跑。压缩摘要载体不在此臂：带出处戳的载体已由
+      // 上方 isGeneratedCompactionCheckpointBlocks 臂还原为系统项；裸粘贴摘要
+      // 头是用户消息（无戳、无法与用户粘贴区分——隐藏用户自己的消息没有正确
+      // 性需求支撑，见 internal-message.mjs isGeneratedCompactionCheckpointBlocks
+      // 契约），照常渲染；计数侧由 era 口径与 turnHasUserText 同步跳过
+      // （pre-provenance 历史不占序号）。
+      const skipUserBubble = isToolResultCarrierBlocks(blocks);
+      const text = skipUserBubble ? '' : userMessageText(blocks);
+      // 步数预算通知（r10 M3）：过滤气泡与 Rust 计数侧同口径。
+      if (text && isStepBudgetNoticeText(text)) continue;
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text });
       for (const block of blocks) {
         if (!block || block.type !== 'tool_result') continue;

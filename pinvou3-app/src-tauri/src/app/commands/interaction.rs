@@ -10,8 +10,43 @@ pub async fn compact_now(
     session_id: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<(), String> {
     let sid = require_active_sid(session_id, &store)?;
+    // 车道门（与 chat()/accept_plan 同口径）：compact_now 在 web 侧 access-policy
+    // allowlist 内而 EnginePool 不感知 ACP——若该 id 恰有存活的原生引擎，ACP
+    // 会话 id 直发会经原生车道改写其历史（压缩不会拉起引擎：无存活引擎时直接
+    // 以 session_engine_not_running 失败，故本门为纵深防御）。桌面侧唯一调用方
+    // （代码页原生车道）自带 isNativeAgent 前置门，不受影响。
+    if acp_pool.is_acp(&sid) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
+    // r34 MAJOR-1：rewind 临界区栅栏——压缩在回退/反悔的截断持久化窗口内
+    // 落地时，引擎内存中的回退前历史会整体覆写已截断的 transcript（对话
+    // 复活、工作区仍回退、undo 永久消失）。与 rewind/undo 同款执行根标志
+    // 探针（roots 解析失败按未回退放行，与历史行为一致）。
+    // r42 P2-1：内存标志探针盖不住崩溃回退——进程重启后标志已清，但
+    // pending_rewind.json 仍在（P1 唯一指针）。压缩的收缩钩子作废腿若不设防
+    // 会把暂记自己的目标快照一并作废（引导重试卡死 checkpoint_missing、
+    // 降级重试被 revision 拒、undo 被活暂记拒，直到下一次发送的
+    // target-missing 臂静默清暂记——崩溃边界从此无 undo），压缩 persist 本身
+    // 还会把回退前历史整体落盘。活暂记在飞时拒绝压缩，先完成/撤销/对账。
+    // 暂记窥视失败按放行（与 roots 解析失败同向——探测腿不得比被保护操作
+    // 更脆；作废腿的 preserve 集是第二道防线）。
+    if let Ok(roots) = store.session_roots(&sid) {
+        if pool.is_execution_root_rewinding(&roots.execution) {
+            return Err("会话绑定的项目目录正在回退/回滚，请稍后再压缩".to_string());
+        }
+        if crate::features::code_checkpoints::peek_pending_rewind(&roots.ledger)
+            .map(|pending| pending.is_some())
+            .unwrap_or(false)
+        {
+            return Err(
+                "存在未完成的回退暂记，请先完成该回退（重试同一回退、撤销，或发送一条新消息自动对账）再压缩上下文"
+                    .to_string(),
+            );
+        }
+    }
     pool.compact_now(&sid)
         .await
         .map_err(|e| format!("compact_now: {e:#}"))
@@ -187,7 +222,14 @@ pub async fn accept_plan(
     display_message: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<SessionModeState, String> {
+    // 车道门（与 chat() 同口径）：ACP 会话的 plan 批准在外部 agent 进程内部
+    // 消化，不经本命令。现状下 ACP 会话也无法持有原生 pending plan claim
+    // （claim 失败兜底），但显式拒绝让「ACP 车道维持排除」不依赖间接论证。
+    if acp_pool.is_acp(&session_id) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
     let mut reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
@@ -206,12 +248,31 @@ pub async fn accept_plan(
         .filter(|message| !message.is_empty())
         .unwrap_or_else(|| "✅ 就这么干".to_string());
     let mut created_snapshot_id: Option<String> = None;
-    let mut checkpoint_ledger_root = None;
-    if store.is_code_session(&session_id) {
-        let roots = store
-            .session_roots(&session_id)
-            .map_err(|error| format!("解析会话根失败: {error:#}"))?;
-        checkpoint_ledger_root = Some(roots.ledger.clone());
+    // roots 无条件解析（对齐 chat.rs 的形状：快照门只看车道）。未绑定会话两根
+    // 同为会话私有目录，照常可快照；解析失败对齐 chat.rs 如实报错。
+    let roots = store
+        .session_roots(&session_id)
+        .map_err(|error| format!("解析会话根失败: {error:#}"))?;
+    let checkpoint_ledger_root = Some(roots.ledger.clone());
+    // 原生车道（工作模式 + 原生 code）同款快照门：ACP 已在命令入口拒绝；
+    // scheduled 会话维持无快照（与 chat()/fork 拒绝口径一致）。
+    // r39 minor 6：scheduled 腿用与拒绝门同款别名挫败谓词（此前只查注册表
+    // 精确键）；读失败按 scheduled 处理（跳过快照 = 诚实降级）。
+    // r44 minor 7：读失败至少留成因日志（该会话快照被无声禁用）。
+    if store.is_scheduled_session(&session_id).is_err() {
+        log::warn!(
+            "[pinvou3][accept_plan] scheduled-registry read failed sid={session_id}; per-turn snapshots are disabled for this turn (fail-scheduled direction)"
+        );
+    }
+    if !store.is_scheduled_session(&session_id).unwrap_or(true)
+        && !crate::features::sessions::is_aux_session_id(&session_id)
+    {
+        // r23 M1：崩溃对账重放臂的栅栏输入（与 chat() 同款；pool 引用供
+        // 对端探针与执行根互斥在重放臂内惰性消费）。
+        let reconcile_gates = super::checkpoints::ReconcileGates {
+            compaction_in_flight: pool.is_compaction_in_flight(&session_id),
+            pools: Some((&pool, &acp_pool)),
+        };
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store.inner(),
             &session_id,
@@ -219,6 +280,7 @@ pub async fn accept_plan(
             roots.execution,
             display_content.clone(),
             "accept_plan",
+            reconcile_gates,
         )
         .await;
     }
