@@ -1074,6 +1074,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Some(webview) = app.get_webview(label) {
                 let _ = webview.close();
             }
+            forget_tab_surface(Some(app), label);
         }
         if let Err(restore_error) = persist_workspace_snapshot(workspace, rollback.revision) {
             eprintln!("[browser] {mapping_failure_message}: {restore_error}");
@@ -1175,6 +1176,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Some(webview) = app.get_webview(&created_label) {
                 let _ = webview.close();
             }
+            forget_tab_surface(Some(app), &created_label);
             return Err(error);
         }
         let previous_active = workspace.active_tab.clone();
@@ -1964,6 +1966,9 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                 .get(session_id)
                 .expect("workspace still exists after compensation commit");
             emit_control_changed(app, session_id, &workspace.active_tab, control.snapshot());
+            // The compensation can change the active tab (the removed tab may
+            // have been active), so the shown-workspace mirror follows.
+            self.sync_shown_download_page(app);
         }
         Ok(true)
     }
@@ -2202,6 +2207,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             "App handle is not ready; cannot reconcile failed browser restore".to_string()
         })?;
         self.quarantine_workspace_for_failed_restore(session_id)?;
+        // Quarantine revokes the failed session's visibility, so the mirror
+        // must stop naming it for the same reason an ordinary session close
+        // does: a stale page would admit downloads into a dead session.
+        self.sync_shown_download_page(app);
         self.reap_quarantined_for_session(app, session_id)?;
         Ok(self.has_sessions())
     }
@@ -2301,6 +2310,10 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             && !self.workspaces.contains_key(session_id)
         {
             self.active_session = None;
+            // The mirror must stop naming the closed session, or a download
+            // from a remaining hidden session would be admitted against the
+            // dead page and its notice dropped by every surviving session.
+            self.sync_shown_download_page(app);
         }
         let has_remaining = self.has_sessions();
         if errors.is_empty() {
@@ -3170,6 +3183,7 @@ fn handle_download_event(webview: tauri::Webview<tauri::Wry>, event: DownloadEve
                 // the engine's cancellation report for it must be spent as
                 // noise instead of failing a live same-URL transfer.
                 None => {
+                    eprintln!("[browser] Download denied: no shown workspace to attribute it to");
                     downloads.note_refusal(&url);
                     false
                 }
@@ -3272,8 +3286,19 @@ fn ensure_download_surface<P: PlatformWebviewConfig>(
 fn forget_tab_surface(app: Option<&tauri::AppHandle>, label: &str) {
     super::unregister_browser_core_webview_binding(label);
     if let Some(app) = app {
-        app.state::<super::super::BrowserDownloads>()
-            .unregister_page(label);
+        let downloads = app.state::<super::super::BrowserDownloads>();
+        // On the engines whose download delegate dies with the webview (macOS,
+        // Windows), a closed tab can no longer deliver completions for its
+        // in-flight downloads: settle them now, so the record does not hold a
+        // live slot until restart and its URL's completion batch does not wait
+        // forever for a report that will never come. Linux is excluded: its
+        // completions arrive through the never-closed download surface and
+        // survive tab close.
+        #[cfg(not(target_os = "linux"))]
+        if let Some(page) = downloads.page_for_label(label) {
+            downloads.reports_lost(Some(app), &page);
+        }
+        downloads.unregister_page(label);
     }
 }
 

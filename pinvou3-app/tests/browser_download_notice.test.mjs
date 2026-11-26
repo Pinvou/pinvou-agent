@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { browserEn, browserJa, browserZh } from '../src/shared/i18n/browser.js';
 import {
+  DOWNLOAD_NOT_RETRYABLE,
   downloadFinishedNotice,
   downloadNoticeCanDiscard,
   downloadNoticeCanSaveAs,
@@ -26,6 +27,12 @@ const OUTCOMES = ['saved', 'cancelled', 'failed', 'unsaved'];
 function finished(outcome, t = browserEn, downloadId = 'id1') {
   return downloadFinishedNotice(t, { downloadId, fileName: 'x.bin', outcome });
 }
+
+const started = (downloadId) => ({
+  type: 'report',
+  notice: downloadStartedNotice(browserEn, { downloadId, fileName: `${downloadId}.bin` }),
+});
+const reported = (outcome, downloadId) => ({ type: 'report', notice: finished(outcome, browserEn, downloadId) });
 
 test('a started download tells the user to choose a place in the save dialog', () => {
   const notice = downloadStartedNotice(browserZh, { downloadId: 'id1', fileName: '报告.pdf' });
@@ -91,11 +98,6 @@ test('an unknown outcome or missing field never renders a broken notice', () => 
 });
 
 test("one download's outcome cannot hide another that still waits for the user", () => {
-  const started = (downloadId) => ({
-    type: 'report',
-    notice: downloadStartedNotice(browserEn, { downloadId, fileName: `${downloadId}.bin` }),
-  });
-  const reported = (outcome, downloadId) => ({ type: 'report', notice: finished(outcome, browserEn, downloadId) });
 
   let state = downloadNoticesReducer(undefined, started('a'));
   state = downloadNoticesReducer(state, started('b'));
@@ -121,11 +123,6 @@ test("one download's outcome cannot hide another that still waits for the user",
 });
 
 test('an unsaved download keeps the notice slot until it is dismissed', () => {
-  const started = (downloadId) => ({
-    type: 'report',
-    notice: downloadStartedNotice(browserEn, { downloadId, fileName: `${downloadId}.bin` }),
-  });
-  const reported = (outcome, downloadId) => ({ type: 'report', notice: finished(outcome, browserEn, downloadId) });
 
   let state = downloadNoticesReducer(undefined, started('a'));
   state = downloadNoticesReducer(state, reported('unsaved', 'a'));
@@ -177,9 +174,78 @@ test('BrowserView renders the notice from copy and wires the retry to the host',
     browserView,
     /\{t\.browserDownloadSaveAs\}/,
   );
-  // A failed retry reports through the shared error banner.
+  // A failed retry reports through the shared error banner, keyed by the
+  // shared wire constant rather than a copy of the string.
   assert.match(
     browserView,
-    /String\(e\)\.includes\('download_not_retryable'\) \? t\.browserDownloadNotRetryable : e,/,
+    /String\(e\)\.includes\(DOWNLOAD_NOT_RETRYABLE\) \? t\.browserDownloadNotRetryable : e,/,
   );
+  // An `unsaved` notice renders no dismiss button: dismissing it would
+  // orphan the record with no way back to its Save as / Discard actions.
+  assert.match(
+    browserView,
+    /\{downloadNotice\.status !== 'unsaved' && \(\s*<button\s+type="button"\s+data-testid="browser-download-notice-dismiss"/,
+  );
+  // Mount-time backfill re-reports the backend's live `unsaved` records.
+  assert.match(browserView, /invokeTauri\('browser_download_pending'\)\.then/);
+  assert.match(browserView, /type: 'backfill', notices/);
+  // `limit` and `unavailable` keep their dedicated copy; `staging` keeps the
+  // staging copy; an unknown future reason gets the generic one instead of a
+  // wrong staging claim.
+  assert.match(
+    browserView,
+    /payload\.reason === 'limit'[\s\S]{0,200}?payload\.reason === 'unavailable'[\s\S]{0,200}?payload\.reason === 'staging'[\s\S]{0,200}?: t\.browserDownloadBlockedGeneric\(payload\.source \|\| ''\)\);/,
+  );
+});
+
+test('the not-retryable wire code is exported once and described in every language', () => {
+  assert.equal(DOWNLOAD_NOT_RETRYABLE, 'download_not_retryable');
+  for (const [language, dictionary] of Object.entries(DICTIONARIES)) {
+    assert.equal(typeof dictionary.browserDownloadNotRetryable, 'string', language);
+    assert.ok(dictionary.browserDownloadNotRetryable.length > 0, language);
+    // The generic blocked copy exists everywhere for unknown future reasons.
+    assert.equal(typeof dictionary.browserDownloadBlockedGeneric, 'function', language);
+    assert.ok(!dictionary.browserDownloadBlockedGeneric('').includes('undefined'), language);
+  }
+});
+
+test('a mount-time backfill fills only the notices this session does not know', () => {
+  // An `unsaved` notice cannot be dismissed (the UI hides the X), so a key
+  // missing from the state always means "never seen here" and is filled.
+  // Records this session already knows keep their fresher local entry.
+  let state = downloadNoticesReducer(undefined, reported('cancelled', 'a'));
+  const snapshot = [finished('unsaved', browserEn, 'b')];
+  state = downloadNoticesReducer(state, { type: 'backfill', notices: snapshot });
+  assert.equal(state.a.status, 'cancelled', 'known records keep their local entry');
+  assert.equal(state.b.status, 'unsaved', 'unseen records are filled');
+  assert.equal(latestDownloadNotice(state).status, 'unsaved');
+
+  // A record that reported after the query ran keeps its fresher entry.
+  state = downloadNoticesReducer(undefined, reported('cancelled', 'x'));
+  state = downloadNoticesReducer(state, { type: 'backfill', notices: [finished('unsaved', browserEn, 'x')] });
+  assert.equal(state.x.status, 'cancelled');
+
+  // Empty, malformed, and all-known snapshots change nothing (same reference).
+  const known = downloadNoticesReducer(undefined, reported('unsaved', 'k'));
+  assert.equal(downloadNoticesReducer(known, { type: 'backfill', notices: [] }), known);
+  assert.equal(downloadNoticesReducer(known, { type: 'backfill' }), known);
+  assert.equal(
+    downloadNoticesReducer(known, { type: 'backfill', notices: [finished('unsaved', browserEn, 'k')] }),
+    known,
+  );
+  assert.deepEqual(downloadNoticesReducer(undefined, { type: 'backfill', notices: [] }), {});
+});
+
+test('the notice history stays bounded so one map entry per download cannot accumulate', () => {
+  let state;
+  for (let index = 0; index < 80; index += 1) {
+    state = downloadNoticesReducer(state, started(`d${index}`));
+  }
+  assert.equal(Object.keys(state).length <= 64, true);
+  // The most recent download survives trimming.
+  assert.ok('d79' in state);
+  // Updating a notice re-inserts it, so trimming never drops the freshest.
+  state = downloadNoticesReducer(state, reported('saved', 'd40'));
+  assert.ok('d40' in state);
+  assert.equal(latestDownloadNotice(state).downloadId, 'd40');
 });

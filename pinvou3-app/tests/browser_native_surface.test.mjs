@@ -1102,7 +1102,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // surface's own and cannot name the requesting tab.
   assert.match(
     nativeHost,
-    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*\/\/ No shown workspace[\s\S]{0,260}?None => \{\s*downloads\.note_refusal\(&url\);\s*false\s*\}\s*\}\s*\}/,
+    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*\/\/ No shown workspace[\s\S]{0,340}?None => \{\s*eprintln!\("\[browser\] Download denied: no shown workspace to attribute it to"\);\s*downloads\.note_refusal\(&url\);\s*false\s*\}\s*\}\s*\}/,
   );
   assert.doesNotMatch(downloadCallback[1], /download_session_id|download_tab_token/);
   assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)\.register_page\(\s*&label,\s*super::super::DownloadPage \{\s*session_id: session_id\.to_string\(\),\s*tab: tab_token\.to_string\(\),\s*\},\s*\);/);
@@ -1150,10 +1150,44 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   assert.match(nativeHost, /\.unregister_page\(label\);/);
   assert.match(nativeHost, /\.forget_all_pages\(\);/);
   assert.match(nativeHost, /\.forget_session_pages\(session_id\);/);
+  // On macOS and Windows the download delegate dies with the webview, so a
+  // closed tab's in-flight downloads can never report: forget settles them
+  // (freeing the live slot) and releases their seat in the URL's completion
+  // batch. Linux rides the never-closed surface and keeps reporting.
+  assert.match(
+    nativeHost,
+    /#\[cfg\(not\(target_os = "linux"\)\)\]\s*if let Some\(page\) = downloads\.page_for_label\(label\) \{\s*downloads\.reports_lost\(Some\(app\), &page\);\s*\}/,
+  );
   // The shown workspace is mirrored into the coordinator at every visibility
-  // transition.
+  // transition — including closing the shown session while others remain and
+  // quarantining a failed restore, where a stale mirror would admit
+  // downloads into a dead session and every notice would be dropped.
   assert.match(nativeHost, /fn sync_shown_download_page\(&self, app_handle: &tauri::AppHandle\) \{/);
   assert.match(nativeHost, /\.set_shown_page\(page\);/);
+  assert.match(
+    nativeHost,
+    /self\.active_session = None;\s*\/\/ The mirror must stop naming the closed session[\s\S]{0,220}?self\.sync_shown_download_page\(app\);/,
+  );
+  assert.match(
+    nativeHost,
+    /self\.quarantine_workspace_for_failed_restore\(session_id\)\?;\s*\/\/ Quarantine revokes[\s\S]{0,220}?self\.sync_shown_download_page\(app\);/,
+  );
+  // Compensation that removes a tab can change the active tab; the mirror
+  // follows there too.
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, &workspace\.active_tab, control\.snapshot\(\)\);\s*\/\/ The compensation can change the active tab[\s\S]{0,120}?self\.sync_shown_download_page\(app\);/,
+  );
+  // A tab webview that is closed without reaching the workspace (insert
+  // failure, staged-create rollback) still forgets its attribution page.
+  assert.match(
+    nativeHost,
+    /if let Err\(error\) = workspace\.tabs\.insert\(entry\) \{\s*if let Some\(webview\) = app\.get_webview\(&created_label\) \{\s*let _ = webview\.close\(\);\s*\}\s*forget_tab_surface\(Some\(app\), &created_label\);/,
+  );
+  assert.match(
+    nativeHost,
+    /if let Some\(label\) = staged_label \{\s*if let Some\(webview\) = app\.get_webview\(label\) \{\s*let _ = webview\.close\(\);\s*\}\s*forget_tab_surface\(Some\(app\), label\);/,
+  );
 
   // Without a staging file the download is still denied, and the notice
   // exposes the origin of a URL that may carry one-time tokens.
@@ -1240,7 +1274,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   );
   assert.match(
     tauriApp,
-    /commands::browser::browser_download_save_as,\s*commands::browser::browser_download_discard,\s*commands::startup::report_frontend_startup,/,
+    /commands::browser::browser_download_save_as,\s*commands::browser::browser_download_discard,\s*commands::browser::browser_download_pending,\s*commands::startup::report_frontend_startup,/,
   );
   assert.match(
     browserCommands,
@@ -1252,6 +1286,33 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
     browserCommands,
     /#\[tauri::command\(async\)\]\s*pub fn browser_download_discard\(\s*app: tauri::AppHandle,\s*download_id: String,\s*downloads: State<'_, BrowserDownloads>,\s*\) -> Result<\(\), String> \{\s*downloads\.discard\(&app, &download_id\);\s*Ok\(\(\)\)\s*\}/,
   );
+  // A notice whose event landed while the workspace was not mounted is
+  // re-reported on mount from the backend's live `unsaved` records.
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_pending\(downloads: State<'_, BrowserDownloads>\) -> Vec<Value> \{\s*downloads\.pending_unsaved\(\)\s*\}/,
+  );
+  // Refusal credits are bounded, so a storm of refused distinct URLs cannot
+  // grow them without limit.
+  assert.match(browserDownloads, /const MAX_REFUSAL_CREDITS: usize = 1024;/);
+  // A staged download waits in an owner-only directory: another local user
+  // on a shared host cannot read an in-flight transfer, and a directory that
+  // cannot be restricted refuses the download.
+  assert.match(
+    browserDownloads,
+    /if let Err\(error\) = crate::platform::os::try_make_private_dir\(&staging_dir\) \{[\s\S]{0,240}?emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);\s*return false;/,
+  );
+  // A staging root that cannot be made absolute (no working directory) puts
+  // downloads out of service instead of sending the engine to a
+  // cwd-relative path.
+  assert.match(
+    browserDownloads,
+    /let staging_root = absolute_staging_root_with\(\s*staging_root\.as_path\(\),\s*std::env::current_dir\(\)\.ok\(\)\.as_deref\(\),\s*\);\s*let usable = staging_root\.is_some\(\);[\s\S]{0,400}?unavailable: std::sync::atomic::AtomicBool::new\(!usable\),/,
+  );
+  // Per-tab engines lose completions when the owning webview dies; the
+  // coordinator settles such records and releases their batch seats.
+  assert.match(browserDownloads, /fn report_lost\(&mut self, id: &str, url: &str\) -> Vec<Effect> \{/);
+  assert.match(browserDownloads, /pub\(crate\) fn reports_lost\(&self, app: Option<&tauri::AppHandle>, page: &DownloadPage\) \{/);
 });
 
 test('download events and notices carry names and outcomes but no URL or local path', () => {
@@ -1281,7 +1342,7 @@ test('download events and notices carry names and outcomes but no URL or local p
   assert.match(browserView, /listenTauri\('browser:download-blocked'/);
   assert.match(
     browserView,
-    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: payload\.reason === 'unavailable'\s*\? t\.browserDownloadUnavailable\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlocked\(payload\.source \|\| ''\)/,
+    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: payload\.reason === 'unavailable'\s*\? t\.browserDownloadUnavailable\(payload\.source \|\| ''\)\s*: payload\.reason === 'staging'\s*\? t\.browserDownloadBlocked\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlockedGeneric\(payload\.source \|\| ''\)/,
   );
   assert.match(browserView, /listenTauri\('browser:download-started', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice: downloadStartedNotice\(t, payload\) \}\);/);
   assert.match(browserView, /listenTauri\('browser:download-finished', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice \}\);/);

@@ -192,3 +192,11 @@ pub fn browser_download_discard(
     downloads.discard(&app, &download_id);
     Ok(())
 }
+
+/// The live `unsaved` downloads as finished-event payloads. The workspace
+/// re-reports them on mount, so a notice whose event landed while it was not
+/// mounted (view switch, background session) can still reach its actions.
+#[tauri::command(async)]
+pub fn browser_download_pending(downloads: State<'_, BrowserDownloads>) -> Vec<Value> {
+    downloads.pending_unsaved()
+}

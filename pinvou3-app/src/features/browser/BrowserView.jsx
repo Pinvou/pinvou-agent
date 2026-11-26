@@ -27,6 +27,7 @@ import {
   shouldShowNativeBrowserSurface,
 } from './browser-display.mjs';
 import {
+  DOWNLOAD_NOT_RETRYABLE,
   downloadFinishedNotice,
   downloadNoticeCanDiscard,
   downloadNoticeCanSaveAs,
@@ -613,13 +614,17 @@ export function BrowserView({
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
       errorEventEpochRef.current += 1;
-      // `limit` means too many downloads are live; anything else means no
-      // staging file could be created.
+      // `limit` means too many downloads are live and `unavailable` that the
+      // download surface is out of service; `staging` means no staging file
+      // could be created. Anything else is an unknown future reason, so its
+      // copy stays generic instead of claiming a staging failure.
       setError(payload.reason === 'limit'
         ? t.browserDownloadBusy(payload.source || '')
         : payload.reason === 'unavailable'
           ? t.browserDownloadUnavailable(payload.source || '')
-          : t.browserDownloadBlocked(payload.source || ''));
+          : payload.reason === 'staging'
+            ? t.browserDownloadBlocked(payload.source || '')
+            : t.browserDownloadBlockedGeneric(payload.source || ''));
     }));
     // A download streams into private staging while the OS save dialog asks
     // where it belongs. Events carry the file name and outcome only.
@@ -636,6 +641,18 @@ export function BrowserView({
       const notice = downloadFinishedNotice(t, payload);
       if (notice) dispatchDownloadNotice({ type: 'report', notice });
     }));
+    // An `unsaved` notice whose event landed while this workspace was not
+    // mounted (view switch, background session) would otherwise strand its
+    // record with no UI to save or discard it: re-report the backend's live
+    // ones on mount. The reducer keeps entries this session already knows,
+    // so a stale snapshot cannot resurrect a dismissed or updated notice.
+    invokeTauri('browser_download_pending').then((payloads) => {
+      if (disposed || !Array.isArray(payloads)) return;
+      const notices = payloads
+        .map((payload) => downloadFinishedNotice(t, payload))
+        .filter(Boolean);
+      if (notices.length) dispatchDownloadNotice({ type: 'backfill', notices });
+    }).catch(() => {});
     guard('browser:persistence-warning', listenTauri('browser:persistence-warning', (event) => {
       if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
@@ -821,7 +838,7 @@ export function BrowserView({
       // surface it in the user's language instead of the raw code.
       reportErrorForOperation(
         operationEpoch,
-        String(e).includes('download_not_retryable') ? t.browserDownloadNotRetryable : e,
+        String(e).includes(DOWNLOAD_NOT_RETRYABLE) ? t.browserDownloadNotRetryable : e,
       );
     }
   }, [beginErrorOperation, downloadNotice, reportErrorForOperation, t.browserDownloadNotRetryable]);
@@ -1215,16 +1232,22 @@ export function BrowserView({
                 {t.browserDownloadDiscard}
               </button>
             )}
-            <button
-              type="button"
-              data-testid="browser-download-notice-dismiss"
-              title={t.winClose}
-              aria-label={t.winClose}
-              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
-              onClick={() => dispatchDownloadNotice({ type: 'dismiss', downloadId: downloadNotice.downloadId })}
-            >
-              <XIcon size={13} />
-            </button>
+            {/* An `unsaved` notice has no X: dismissing it would orphan the
+                record, which keeps holding a live slot and its staged file
+                with no event to ever re-raise it. Discard download is the
+                designed exit and reports the cancellation itself. */}
+            {downloadNotice.status !== 'unsaved' && (
+              <button
+                type="button"
+                data-testid="browser-download-notice-dismiss"
+                title={t.winClose}
+                aria-label={t.winClose}
+                className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={() => dispatchDownloadNotice({ type: 'dismiss', downloadId: downloadNotice.downloadId })}
+              >
+                <XIcon size={13} />
+              </button>
+            )}
           </div>
         </div>
       )}

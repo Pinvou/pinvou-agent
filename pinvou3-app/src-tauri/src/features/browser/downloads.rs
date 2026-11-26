@@ -50,6 +50,13 @@ const MAX_FILE_NAME_BYTES: usize = 120;
 /// A page that asks for more is denied with the `blocked` notice, so one
 /// page cannot grow staging or the serialized dialog queue without bound.
 const MAX_LIVE_DOWNLOADS: usize = 16;
+/// Refusal credits live until the engine's cancellation report for the
+/// refused download arrives. The engines report refused downloads (verified
+/// per WebKitGTK, WKDownload, and WebView2), so the map drains in practice;
+/// the cap only bounds a pathological page that gets thousands of distinct
+/// URLs refused. Past the cap a refusal's report votes as ordinary noise,
+/// which the outcome mix already tolerates.
+const MAX_REFUSAL_CREDITS: usize = 1024;
 /// Longer "extensions" are treated as part of the name, so truncating a long
 /// name cannot spend its whole budget on a suffix.
 const MAX_EXTENSION_BYTES: usize = 24;
@@ -383,7 +390,52 @@ impl Registry {
     /// cancellation report the engine still sends for it is consumed as noise
     /// (see `refusal_credits`).
     fn note_refusal(&mut self, url: &str) {
+        if self.refusal_credits.len() >= MAX_REFUSAL_CREDITS
+            && !self.refusal_credits.contains_key(url)
+        {
+            return;
+        }
         *self.refusal_credits.entry(url.to_string()).or_insert(0) += 1;
+    }
+
+    /// The ids and urls of every in-flight download attributed to `page`,
+    /// sorted for deterministic effect order.
+    fn in_flight_ids_of_page(&self, page: &DownloadPage) -> Vec<(String, String)> {
+        let mut found: Vec<(String, String)> = self
+            .downloads
+            .iter()
+            .filter(|(_, download)| {
+                download.transfer == Transfer::InFlight
+                    && download.notice.session_id == page.session_id
+                    && download.notice.tab == page.tab
+            })
+            .map(|(id, download)| (id.clone(), download.url.clone()))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// Settles a member whose engine report will never arrive (its per-tab
+    /// download delegate died with the webview): the record fails like any
+    /// other failed transfer, and its seat in an open batch is released
+    /// without a vote, so the batch resolves on its real reports alone.
+    /// Without this, the dead member holds its live slot until the app
+    /// restarts and keeps its URL's batch from ever resolving — stranding
+    /// every later same-URL transfer behind it.
+    fn report_lost(&mut self, id: &str, url: &str) -> Vec<Effect> {
+        let Some(download) = self.downloads.get_mut(id) else {
+            return Vec::new();
+        };
+        if download.transfer != Transfer::InFlight {
+            return Vec::new();
+        }
+        download.transfer = Transfer::Failed;
+        let mut effects = self.settle(id);
+        if let Some(batch) = self.pending_finishes.get_mut(url) {
+            batch.remaining = batch.remaining.saturating_sub(1);
+        }
+        effects.extend(self.resolve_finished_batch(url));
+        effects
     }
 
     /// Attributes a pathless completion by URL. The report joins the URL's
@@ -514,6 +566,22 @@ impl Registry {
         Ok(self.next_prompt().into_iter().collect())
     }
 
+    /// The live `unsaved` records as finished-event payloads, so the frontend
+    /// can re-report them on mount (see `BrowserDownloads::pending_unsaved`).
+    fn unsaved_payloads(&self) -> Vec<Value> {
+        let mut ids: Vec<&String> = self
+            .downloads
+            .iter()
+            .filter(|(_, download)| download.intent == Intent::Unsaved)
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|id| self.downloads.get(id))
+            .map(|download| finished_payload(&download.notice, Outcome::Unsaved))
+            .collect()
+    }
+
     /// Applies the result of a placement. Only a failure keeps the staged file.
     fn placed(&mut self, id: &str, placed: bool) -> Vec<Effect> {
         let placing = self
@@ -578,16 +646,23 @@ pub(crate) struct BrowserDownloads {
 impl BrowserDownloads {
     /// Creates the coordinator and deletes staging left by an earlier process.
     /// Call it before any browser WebView exists, so nothing under the root
-    /// belongs to a live transfer.
+    /// belongs to a live transfer. A staging root that cannot be made
+    /// absolute (the process working directory is gone) puts downloads out
+    /// of service instead of sending the engine to a cwd-relative path.
     pub(crate) fn new(staging_root: PathBuf) -> Self {
         discard_directory(&staging_root);
+        let staging_root = absolute_staging_root_with(
+            staging_root.as_path(),
+            std::env::current_dir().ok().as_deref(),
+        );
+        let usable = staging_root.is_some();
         Self {
-            staging_root: absolute_staging_root(staging_root),
+            staging_root: staging_root.unwrap_or_default(),
             registry: Mutex::new(Registry::default()),
             last_directory: Mutex::new(None),
             pages: Mutex::new(HashMap::new()),
             shown_page: Mutex::new(None),
-            unavailable: std::sync::atomic::AtomicBool::new(false),
+            unavailable: std::sync::atomic::AtomicBool::new(!usable),
         }
     }
 
@@ -644,6 +719,44 @@ impl BrowserDownloads {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether downloads were put out of service at construction (staging
+    /// root not absolute) or by a failed Linux download surface.
+    #[cfg(test)]
+    fn is_unavailable(&self) -> bool {
+        self.unavailable.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Settles every in-flight download attributed to `page` as one whose
+    /// engine report will never arrive. Called when a tab webview closes on
+    /// the engines whose download delegate dies with the webview (macOS,
+    /// Windows): the completion can no longer be delivered, so without this
+    /// the record would hold a live slot until restart and its URL's open
+    /// batch would wait forever, poisoning every later same-URL transfer.
+    /// Linux is excluded: its completions arrive through the never-closed
+    /// download surface and survive tab close.
+    pub(crate) fn reports_lost(&self, app: Option<&tauri::AppHandle>, page: &DownloadPage) {
+        let mut effects = {
+            let mut registry = self.registry.lock();
+            let lost = registry.in_flight_ids_of_page(page);
+            let mut effects = Vec::new();
+            for (id, url) in lost {
+                effects.extend(registry.report_lost(&id, &url));
+            }
+            effects
+        };
+        if let Some(app) = app {
+            self.perform(app, std::mem::take(&mut effects));
+        }
+    }
+
+    /// The live `unsaved` records as finished-event payloads. The frontend
+    /// re-reports them on mount, so a notice whose event landed while the
+    /// workspace was not mounted (a view switch or a background session) can
+    /// still reach its Save as / Discard actions.
+    pub(crate) fn pending_unsaved(&self) -> Vec<Value> {
+        self.registry.lock().unsaved_payloads()
+    }
+
     /// Records a download the app refused before admission, so the engine's
     /// cancellation report for it is spent as noise instead of failing a live
     /// same-URL transfer (see `Registry::refusal_credits`).
@@ -686,6 +799,19 @@ impl BrowserDownloads {
                 "[browser] Download staging directory unavailable: {}",
                 error.kind()
             );
+            emit_blocked(app, &page, url, "staging");
+            self.note_refusal(url);
+            return false;
+        }
+        // The staged bytes are private while they wait: the per-download
+        // directory is owner-only, so another local user on a shared host
+        // cannot read an in-flight transfer.
+        if let Err(error) = crate::platform::os::try_make_private_dir(&staging_dir) {
+            eprintln!(
+                "[browser] Download staging directory could not be restricted: {}",
+                error.kind()
+            );
+            let _ = std::fs::remove_dir(&staging_dir);
             emit_blocked(app, &page, url, "staging");
             self.note_refusal(url);
             return false;
@@ -852,12 +978,14 @@ fn dialog_directory(last: Option<&Path>, fallback: Option<PathBuf>) -> Option<Pa
 
 /// The engine writes the transfer itself and requires an absolute destination;
 /// a relative `PINVOU3_HOME` override would otherwise send it to a
-/// cwd-relative path that placement can never find again.
-fn absolute_staging_root(root: PathBuf) -> PathBuf {
+/// cwd-relative path that placement can never find again. Without a usable
+/// working directory there is no absolute form, and the caller must put
+/// downloads out of service rather than degrade.
+fn absolute_staging_root_with(root: &Path, current_dir: Option<&Path>) -> Option<PathBuf> {
     if root.is_absolute() {
-        return root;
+        return Some(root.to_path_buf());
     }
-    std::env::current_dir().unwrap_or_default().join(root)
+    current_dir.map(|current| current.join(root))
 }
 
 fn finished_payload(notice: &Notice, outcome: Outcome) -> Value {
@@ -933,8 +1061,9 @@ fn split_extension(name: &str) -> (&str, &str) {
 
 /// Control characters cannot render, and bidirectional controls (the Arabic
 /// letter mark, overrides, isolates, the left-to-right marks), word joiners,
-/// zero-width marks, the soft hyphen, and the byte-order mark render
-/// deceptively: a reversed suffix can make an executable look like a document.
+/// Hangul fillers, Mongolian variation selectors, zero-width marks, the soft
+/// hyphen, and the byte-order mark render deceptively: a reversed suffix can
+/// make an executable look like a document.
 fn is_forbidden_in_file_name(character: char) -> bool {
     character.is_control()
         || matches!(
@@ -943,7 +1072,7 @@ fn is_forbidden_in_file_name(character: char) -> bool {
         )
         || matches!(
             character as u32,
-            0x00AD | 0x200B..=0x200F
+            0x00AD | 0x115F..=0x1160 | 0x180B..=0x180E | 0x200B..=0x200F
                 | 0x202A..=0x202E
                 | 0x2060..=0x2069
                 | 0xFEFF
@@ -1271,6 +1400,9 @@ mod tests {
 
     #[test]
     fn downloads_are_capped_so_one_page_cannot_grow_staging_without_bound() {
+        // The documented product constant: the cap itself is pinned elsewhere
+        // by source, and here by value, so a change cannot pass unnoticed.
+        assert_eq!(MAX_LIVE_DOWNLOADS, 16);
         let mut registry = Registry::default();
         let many: Vec<String> = (0..MAX_LIVE_DOWNLOADS - 1)
             .map(|index| format!("d{index}"))
@@ -1313,12 +1445,14 @@ mod tests {
     fn a_relative_staging_root_is_made_absolute_for_the_engine() {
         // The engine requires an absolute destination; a relative PINVOU3_HOME
         // override would otherwise write the transfer to a cwd-relative path.
-        let absolute = absolute_staging_root(PathBuf::from("relative/downloads"));
+        let current = std::env::current_dir().expect("a working directory");
+        let absolute = absolute_staging_root_with(Path::new("relative/downloads"), Some(&current))
+            .expect("a usable working directory");
         assert!(absolute.is_absolute());
         assert!(absolute.ends_with("relative/downloads"));
         assert_eq!(
-            absolute_staging_root(PathBuf::from("/already/absolute")),
-            PathBuf::from("/already/absolute")
+            absolute_staging_root_with(Path::new("/already/absolute"), None),
+            Some(PathBuf::from("/already/absolute"))
         );
     }
 
@@ -1390,6 +1524,19 @@ mod tests {
         assert_eq!(
             sanitize_file_name(Some(OsStr::new("re\u{00AD}port.pdf"))),
             "re_port.pdf"
+        );
+        // Hangul fillers and Mongolian variation selectors are invisible too.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("a\u{115F}b.pdf"))),
+            "a_b.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("a\u{180B}b.pdf"))),
+            "a_b.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("a\u{180E}b.pdf"))),
+            "a_b.pdf"
         );
         assert_eq!(
             sanitize_file_name(Some(OsStr::new("\u{FEFF}a.pdf"))),
@@ -2108,6 +2255,182 @@ mod tests {
             vec![finished("a", Outcome::Saved)]
         );
         assert_eq!(registry.placed("a", false), vec![]);
+    }
+
+    #[test]
+    fn a_placement_result_never_applies_to_a_record_that_left_the_placing_state() {
+        let mut registry = registry_with(&["a"]);
+        finish_ok(&mut registry, "a");
+        registry.answer("a", Some(chosen("a")));
+        assert_eq!(
+            registry.placed("a", false),
+            vec![finished("a", Outcome::Unsaved)]
+        );
+        // The record is back in `unsaved` (waiting for a retry dialog): a
+        // late or duplicate placement result neither re-saves nor re-reports
+        // it, so the user never sees a second `unsaved` notice for one click.
+        assert_eq!(registry.placed("a", true), vec![]);
+        assert_eq!(registry.placed("a", false), vec![]);
+        assert!(registry.downloads.contains_key("a"));
+    }
+
+    #[test]
+    fn a_lost_tab_report_settles_its_record_and_releases_its_batch_seat() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        let page = DownloadPage {
+            session_id: "session".to_string(),
+            tab: "tab".to_string(),
+        };
+        assert_eq!(
+            registry.in_flight_ids_of_page(&page),
+            vec![
+                ("a".to_string(), URL_A.to_string()),
+                ("b".to_string(), URL_A.to_string())
+            ]
+        );
+        // a's tab closed (macOS, Windows): the completion can never arrive,
+        // so the record fails like any failed transfer.
+        assert_eq!(
+            registry.report_lost("a", URL_A),
+            vec![discard("a"), finished("a", Outcome::Failed)]
+        );
+        assert!(!registry.downloads.contains_key("a"));
+        assert_eq!(registry.downloads["b"].transfer, Transfer::InFlight);
+        // b's own report still resolves it: the lost member cannot hold the
+        // batch back.
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            vec![place("b", chosen("b"))]
+        );
+        assert!(registry.pending_finishes.is_empty());
+    }
+
+    #[test]
+    fn a_lost_member_does_not_fail_its_successful_sibling() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        // b reports success (pathless, macOS), which opens the batch and
+        // leaves one seat for a.
+        assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
+        // a's tab closes. Its seat is released without a vote, so b's lone
+        // success stays uniform and b is placed — not failed alongside the
+        // member whose completion was lost.
+        assert_eq!(
+            registry.report_lost("a", URL_A),
+            vec![
+                discard("a"),
+                finished("a", Outcome::Failed),
+                place("b", chosen("b")),
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        // b now sits in `placing` (the host executes the Place effect); the
+        // registry-level test ends here, the placement result is its business.
+        assert_eq!(registry.downloads["b"].intent, Intent::Placing);
+        // The next generation of the URL resolves on its own report alone:
+        // the lost member left nothing behind for it.
+        registry
+            .begin(record("c", URL_A))
+            .expect("within the live cap");
+        registry.answer("c", Some(chosen("c")));
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            vec![place("c", chosen("c"))]
+        );
+        assert!(registry.pending_finishes.is_empty());
+    }
+
+    #[test]
+    fn a_lost_member_without_a_report_leaves_no_batch_behind() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        // Lost before any report of its URL: nothing opened, nothing waits.
+        assert_eq!(
+            registry.report_lost("a", URL_A),
+            vec![discard("a"), finished("a", Outcome::Failed)]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        // A loss for an unknown id changes nothing.
+        assert_eq!(registry.report_lost("missing", URL_A), vec![]);
+        // And a loss after the transfer already reported changes nothing.
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        finish_ok(&mut registry, "b");
+        assert_eq!(registry.report_lost("b", URL_A), vec![]);
+    }
+
+    #[test]
+    fn refusal_credits_are_capped_so_a_storm_cannot_grow_them_without_bound() {
+        let mut registry = Registry::default();
+        for index in 0..MAX_REFUSAL_CREDITS {
+            registry.note_refusal(&format!("https://site.invalid/{index}"));
+        }
+        assert_eq!(registry.refusal_credits.len(), MAX_REFUSAL_CREDITS);
+        // A further refusal past the cap is not credited; its cancellation
+        // report then votes as ordinary noise, which the outcome mix
+        // already tolerates.
+        registry.note_refusal(&url("a"));
+        assert_eq!(registry.refusal_credits.len(), MAX_REFUSAL_CREDITS);
+        assert!(!registry.refusal_credits.contains_key(&url("a")));
+        // An already-credited URL keeps counting within its entry.
+        registry.note_refusal("https://site.invalid/0");
+        assert_eq!(registry.refusal_credits["https://site.invalid/0"], 2);
+    }
+
+    #[test]
+    fn unsaved_payloads_carry_only_unsaved_records() {
+        let mut registry = registry_with(&["a", "b"]);
+        finish_ok(&mut registry, "a");
+        registry.answer("a", Some(chosen("a")));
+        assert_eq!(
+            registry.placed("a", false),
+            vec![finished("a", Outcome::Unsaved)]
+        );
+        // b is still streaming and asking: it is not unsaved.
+        let payloads = registry.unsaved_payloads();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["downloadId"], json!("a"));
+        assert_eq!(payloads[0]["sessionId"], json!("session"));
+        assert_eq!(payloads[0]["outcome"], json!("unsaved"));
+        assert!(payloads[0].get("url").is_none());
+        assert!(payloads[0].get("destination").is_none());
+    }
+
+    #[test]
+    fn a_missing_working_directory_leaves_no_usable_staging_root() {
+        // Relative + no working directory: no absolute form exists, and the
+        // coordinator must come up out of service rather than degrade to a
+        // cwd-relative root the engine writes beside.
+        assert_eq!(
+            absolute_staging_root_with(Path::new("rel/downloads"), None),
+            None
+        );
+        assert_eq!(
+            absolute_staging_root_with(Path::new("rel/downloads"), Some(Path::new("/cwd"))),
+            Some(PathBuf::from("/cwd/rel/downloads"))
+        );
+        assert_eq!(
+            absolute_staging_root_with(Path::new("/already/absolute"), None),
+            Some(PathBuf::from("/already/absolute"))
+        );
     }
 
     #[test]

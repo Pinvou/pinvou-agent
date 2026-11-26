@@ -14,6 +14,15 @@ const OUTCOME_NOTICES = Object.freeze({
 
 const UNKNOWN_DOWNLOAD = 'unknown';
 
+// The backend rejects a retry with this bare code (see `ask_again` in
+// downloads.rs); the shared constant pins both sides of the wire string.
+export const DOWNLOAD_NOT_RETRYABLE = 'download_not_retryable';
+
+// Longest notice history kept: every download id would otherwise leave one
+// entry behind for the process lifetime, and the whole map is re-read on
+// each render to pick the visible notice.
+const MAX_DOWNLOAD_NOTICES = 64;
+
 export function downloadStartedNotice(t, payload) {
   return {
     status: 'started',
@@ -56,7 +65,25 @@ export function downloadNoticesReducer(state, action) {
       const key = notice.downloadId || UNKNOWN_DOWNLOAD;
       // Re-insert so the most recently updated download is shown last.
       const { [key]: _replaced, ...rest } = state || {};
-      return { ...rest, [key]: notice };
+      const next = { ...rest, [key]: notice };
+      return trimNotices(next);
+    }
+    // Mount-time backfill of the backend's live `unsaved` records. An id the
+    // UI already knows keeps its (fresher) local entry, so a stale snapshot
+    // can never resurrect a record the user already dismissed or that
+    // reported after the query ran.
+    case 'backfill': {
+      const notices = Array.isArray(action.notices) ? action.notices : [];
+      let next = state || {};
+      let changed = false;
+      for (const notice of notices) {
+        if (!notice) continue;
+        const key = notice.downloadId || UNKNOWN_DOWNLOAD;
+        if (key in next) continue;
+        next = { ...next, [key]: notice };
+        changed = true;
+      }
+      return changed ? next : state || {};
     }
     case 'dismiss': {
       const key = action.downloadId || UNKNOWN_DOWNLOAD;
@@ -69,6 +96,19 @@ export function downloadNoticesReducer(state, action) {
     default:
       return state || {};
   }
+}
+
+// Keeps the newest MAX_DOWNLOAD_NOTICES entries; key order is insertion
+// order, and `report` re-inserts on every update, so the oldest entries are
+// the least recently updated ones.
+function trimNotices(notices) {
+  const keys = Object.keys(notices);
+  if (keys.length <= MAX_DOWNLOAD_NOTICES) return notices;
+  const trimmed = { ...notices };
+  for (const key of keys.slice(0, keys.length - MAX_DOWNLOAD_NOTICES)) {
+    delete trimmed[key];
+  }
+  return trimmed;
 }
 
 // A finished-but-unplaced transfer needs the user's action, so it keeps the

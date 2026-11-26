@@ -1734,6 +1734,7 @@ pub fn run() {
             commands::browser::browser_activate_tab,
             commands::browser::browser_download_save_as,
             commands::browser::browser_download_discard,
+            commands::browser::browser_download_pending,
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
