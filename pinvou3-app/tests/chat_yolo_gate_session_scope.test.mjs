@@ -275,9 +275,10 @@ function extractFunction(source, name) {
     notify: () => {},
     // The shared per-lane closure accessor (the dispatch-sequence fence
     // lives there): the sandbox stubs the members the switch paths touch.
+    runSyncOnSession: (sid, fn) => fn(),
     pinvouSharedweb: () => ({
       beginModeSwitchAttempt: () => 1,
-      settleModeSwitchSuccess() {},
+      settleModeSwitchSuccess: () => true,
       handleModeSwitchFailure: async () => {},
     }),
   };
@@ -386,7 +387,7 @@ assert.doesNotMatch(
 //     在 Web 不得变成可达的进入-Auto 写入）。
 const webSetSessionMode = webBridge.slice(
   webBridge.indexOf('async function setSessionMode'),
-  webBridge.indexOf('async function setSessionMode') + 1200,
+  webBridge.indexOf('async function setSessionMode') + 1700,
 );
 assert.match(
   webSetSessionMode,
@@ -395,8 +396,8 @@ assert.match(
 );
 assert.match(
   webSetSessionMode,
-  /applyAuthoritativeModeState\(sid, st\)/,
-  'web setSessionMode must converge through the authoritative modeState write-back',
+  /if \(!pinvouSharedweb\(\)\.settleModeSwitchSuccess\(sid, switchAttempt\)\) \{ notify\(\); return; \}\s*\n\s*const st = outcome && outcome\.state \? outcome\.state : outcome;\s*\n\s*applyAuthoritativeModeState\(sid, st\)/,
+  'web setSessionMode must settle through the acceptance gate, then converge through the authoritative modeState write-back',
 );
 assert.match(
   webSetSessionMode.slice(0, webSetSessionMode.indexOf('try {')),

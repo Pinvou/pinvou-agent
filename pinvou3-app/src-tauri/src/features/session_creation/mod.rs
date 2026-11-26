@@ -445,7 +445,6 @@ fn resolve_created_title(
 /// session here. A never-chosen lane (None) still resolves through the
 /// unbound-plain Auto default downstream.
 fn apply_work_lane_mode_default(store: &SessionStore, id: &str, binding: Option<&std::path::Path>) {
-    use crate::core::mode_state::SerializableMode;
     if binding.is_some() {
         return;
     }

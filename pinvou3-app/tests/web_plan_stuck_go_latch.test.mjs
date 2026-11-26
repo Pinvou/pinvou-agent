@@ -162,12 +162,29 @@ test('web planStuckGo：切换被拒时卡片恢复可点、定向提示、不�
   assert.equal(settled.resolved, false, '被拒后卡片不得落已处理（保持可点可重试）');
   assert.equal(settled.submitting, false, '被拒后释放在途闩');
   assert.equal(chatArgs.length, 0, '被拒后不得发送补充指令 turn');
-  // 回执=生效状态（review P2）：被拒的切换现在先收敛权威状态再落
-  // 「已生效但引擎同步失败」的定向提示（mock 的回读成功），不再是
-  // 与生效状态相矛盾的朴素失败文案。卡片闩/无补充指令检查保持不变。
-  const notice = rt.view().chatItems.find(item => item.type === 'system' &&
+  // pre-write 拒绝判别（review P2 第四态）：回读仍是派发前模式（plan）⇒
+  // 命令在落地前被拒——朴素失败文案，不伪称「已生效」，编辑守卫不武装
+  // （没有任何未同步状态）。旧契约在这里钉的是被本判别纠正的误报：
+  // 读回成功但模式未变时仍报「已生效」。
+  const staleEffective = rt.view().chatItems.find(item => item.type === 'system' &&
     String(item.text || '').includes('模式已生效，但引擎实时同步失败'));
-  assert.ok(notice, '被拒路径落收敛回执（modeSyncFailedEffective，store 读回成功）');
+  assert.ok(!staleEffective, '读回==派发前模式不得伪称已生效（pre-write 拒绝判别）');
+  const plainFailure = rt.view().chatItems.find(item => item.type === 'system' &&
+    String(item.text || '').includes('store write failed'));
+  assert.ok(plainFailure, 'pre-write 拒绝落朴素失败回执');
+  // （编辑守卫的武装/释放由 approval_card_lane 的活体探针 (f)/(g) 对共享
+  // 基座直钉;web 门面不导出该内部位。）
+
+  // 对照腿：热同步失败形状——命令落地后回执失败，回读=新模式（yolo ≠
+  // 派发前 plan）⇒「已生效但引擎同步失败」收敛回执 + 编辑守卫武装。
+  rt.setHandler('exit_plan_to_yolo', () => Promise.reject(new Error('engine sync boom')));
+  rt.setHandler('get_mode_state', () => Promise.resolve({ mode: 'yolo', multi_agent: false }));
+  const card2 = await armPlanStuckCard(rt);
+  await rt.flat.planStuckGo(card2.id, 'chat-a');
+  await tick(); await tick();
+  const effective = rt.view().chatItems.find(item => item.type === 'system' &&
+    String(item.text || '').includes('模式已生效，但引擎实时同步失败'));
+  assert.ok(effective, '读回≠派发前模式 ⇒ 落「已生效但引擎实时同步失败」收敛回执');
 });
 
 console.log('web_plan_stuck_go_latch: ok');
