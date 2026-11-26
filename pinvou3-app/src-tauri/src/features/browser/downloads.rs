@@ -192,6 +192,13 @@ struct Registry {
     /// names its owner. One batch per URL counts its members down; see
     /// `transfer_finished`.
     pending_finishes: HashMap<String, UrlBatch>,
+    /// Pathless failure reports still expected from downloads the app refused
+    /// before admission (the live cap, unusable staging, or no shown
+    /// workspace on Linux): the engine cancels them and reports a pathless
+    /// failure that belongs to no member. One credit per refusal is spent on
+    /// the URL's first failure report, so the noise can neither open nor vote
+    /// in a batch of live same-URL transfers.
+    refusal_credits: HashMap<String, usize>,
 }
 
 /// The transfers of one URL whose completions cannot be told apart. Every
@@ -372,11 +379,38 @@ impl Registry {
         effects
     }
 
+    /// Records that a download of `url` was refused before admission, so the
+    /// cancellation report the engine still sends for it is consumed as noise
+    /// (see `refusal_credits`).
+    fn note_refusal(&mut self, url: &str) {
+        *self.refusal_credits.entry(url.to_string()).or_insert(0) += 1;
+    }
+
     /// Attributes a pathless completion by URL. The report joins the URL's
     /// open batch, or opens one that counts every in-flight transfer of the
     /// URL down; uniform outcomes attribute cleanly, and disagreeing ones all
     /// fail closed instead of guessing.
     fn vote_pathless_finish(&mut self, url: &str, success: bool) -> Vec<Effect> {
+        // Refusal noise first: a refused transfer can only ever report a
+        // failure, so a pending credit is spent on this report and it can
+        // neither open a batch nor vote. Spending happens before the
+        // candidates check, so a report whose members are already gone still
+        // consumes the credit instead of leaving it to eat a live member's
+        // report in the URL's next generation.
+        if !success {
+            let spends_credit = self.refusal_credits.get_mut(url).is_some_and(|credit| {
+                if *credit > 0 {
+                    *credit -= 1;
+                    true
+                } else {
+                    false
+                }
+            });
+            if spends_credit {
+                self.refusal_credits.retain(|_, credit| *credit > 0);
+                return Vec::new();
+            }
+        }
         let in_flight = |download: &Download| download.transfer == Transfer::InFlight;
         let candidates = self
             .downloads
@@ -535,6 +569,10 @@ pub(crate) struct BrowserDownloads {
     /// instead. A download that arrives while no workspace is shown is
     /// refused.
     shown_page: Mutex<Option<DownloadPage>>,
+    /// Set once when the Linux download surface cannot be created: every
+    /// further request is refused with the `unavailable` reason instead of
+    /// being admitted through the degraded per-tab handlers.
+    unavailable: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserDownloads {
@@ -549,6 +587,7 @@ impl BrowserDownloads {
             last_directory: Mutex::new(None),
             pages: Mutex::new(HashMap::new()),
             shown_page: Mutex::new(None),
+            unavailable: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -596,6 +635,22 @@ impl BrowserDownloads {
         *self.shown_page.lock() = page;
     }
 
+    /// Puts downloads out of service for the rest of the process: used when
+    /// the Linux download surface cannot be created, where a per-tab fallback
+    /// would mis-attribute every download and cancel them all once the first
+    /// tab closes. Refusals then carry the `unavailable` reason.
+    pub(crate) fn mark_unavailable(&self) {
+        self.unavailable
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Records a download the app refused before admission, so the engine's
+    /// cancellation report for it is spent as noise instead of failing a live
+    /// same-URL transfer (see `Registry::refusal_credits`).
+    pub(crate) fn note_refusal(&self, url: &Url) {
+        self.registry.lock().note_refusal(url.as_str());
+    }
+
     /// `DownloadEvent::Requested`. Runs on the native UI thread, so it only
     /// creates the staging directory and registers the transfer. Returns
     /// whether the engine may write `destination`.
@@ -606,9 +661,19 @@ impl BrowserDownloads {
         url: &Url,
         destination: &mut PathBuf,
     ) -> bool {
+        // Out of service (Linux download surface could not be created): a
+        // per-tab fallback would mis-attribute every download and cancel them
+        // all once the first tab closes, so this fails closed instead.
+        if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("[browser] Download denied: downloads are unavailable");
+            emit_blocked(app, &page, url, "unavailable");
+            self.note_refusal(url);
+            return false;
+        }
         if !self.registry.lock().has_capacity() {
             eprintln!("[browser] Download denied: too many live downloads");
             emit_blocked(app, &page, url, "limit");
+            self.note_refusal(url);
             return false;
         }
         let file_name = sanitize_file_name(destination.file_name());
@@ -622,6 +687,7 @@ impl BrowserDownloads {
                 error.kind()
             );
             emit_blocked(app, &page, url, "staging");
+            self.note_refusal(url);
             return false;
         }
         let staged_file = staging_dir.join(&file_name);
@@ -647,6 +713,7 @@ impl BrowserDownloads {
                 // The authoritative cap gate inside `begin`; the pre-check
                 // above keeps the common refusal free of staging I/O.
                 Err(CapacityFull) => {
+                    registry.note_refusal(url.as_str());
                     drop(registry);
                     let _ = std::fs::remove_dir(&staging_dir);
                     eprintln!("[browser] Download denied: too many live downloads");
@@ -707,9 +774,16 @@ impl BrowserDownloads {
                     staged_file,
                     destination,
                 } => {
+                    // A destination under the staging root would be renamed
+                    // and then deleted together with its staging directory
+                    // while reporting `saved`, so it fails the placement
+                    // instead: the staged file stays and the record reports
+                    // `unsaved` for another attempt.
+                    let rejected = destination_inside_staging(&destination, &self.staging_root);
                     let app = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let placed = place_staged_file(&staged_file, &destination, &id).is_ok();
+                        let placed =
+                            !rejected && place_staged_file(&staged_file, &destination, &id).is_ok();
                         if placed {
                             discard_directory(&staging_dir);
                         }
@@ -820,6 +894,10 @@ fn sanitize_file_name(raw: Option<&OsStr>) -> String {
         trimmed
     };
     let (stem, extension) = split_extension(name);
+    // Checking before the cut keeps the one-byte "_" prefix inside the
+    // budget for long reserved stems; checking again after the cut catches a
+    // cut that strips padding around a reserved name ("CON" + spaces + "zzz"
+    // cuts to "CON"). A stem that already carries the prefix is left alone.
     let stem = if starts_with_reserved_device_name(stem) {
         format!("_{stem}")
     } else {
@@ -839,6 +917,11 @@ fn sanitize_file_name(raw: Option<&OsStr>) -> String {
     } else {
         stem
     };
+    let stem = if !stem.starts_with('_') && starts_with_reserved_device_name(stem) {
+        format!("_{stem}")
+    } else {
+        stem.to_string()
+    };
     format!("{stem}{extension}")
 }
 
@@ -848,7 +931,8 @@ fn split_extension(name: &str) -> (&str, &str) {
         .map_or((name, ""), |dot| (&name[..dot], &name[dot..]))
 }
 
-/// Control characters cannot render, and bidirectional overrides, isolates,
+/// Control characters cannot render, and bidirectional controls (the Arabic
+/// letter mark, overrides, isolates, the left-to-right marks), word joiners,
 /// zero-width marks, the soft hyphen, and the byte-order mark render
 /// deceptively: a reversed suffix can make an executable look like a document.
 fn is_forbidden_in_file_name(character: char) -> bool {
@@ -859,15 +943,21 @@ fn is_forbidden_in_file_name(character: char) -> bool {
         )
         || matches!(
             character as u32,
-            0x00AD | 0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069 | 0xFEFF
+            0x00AD | 0x200B..=0x200F
+                | 0x202A..=0x202E
+                | 0x2060..=0x2069
+                | 0xFEFF
+                | 0x061C
         )
 }
 
-/// Windows refuses these stems even with an extension and in any case. Classic
-/// Win32 reads the device name from the segment before the first dot, so
-/// `CON.tar.gz` is refused even though the full stem does not match.
+/// Windows refuses these stems even with an extension and in any case. It
+/// reads the device name from the segment before the first dot — and ignores
+/// trailing spaces there — so `CON.tar.gz` and `CON  .txt` are both devices.
 fn starts_with_reserved_device_name(stem: &str) -> bool {
-    is_reserved_device_name(stem) || stem.split('.').next().is_some_and(is_reserved_device_name)
+    stem.split('.')
+        .next()
+        .is_some_and(|segment| is_reserved_device_name(segment.trim_end()))
 }
 
 /// Windows refuses these stems even with an extension and in any case.
@@ -920,6 +1010,14 @@ fn download_source(url: &Url) -> String {
     }
 }
 
+/// A destination under the staging root would be renamed into a directory
+/// the placement cleanup then deletes, so such a choice fails the placement.
+/// `Path::starts_with` compares whole components, so a sibling directory
+/// whose name merely shares a prefix stays allowed.
+fn destination_inside_staging(destination: &Path, staging_root: &Path) -> bool {
+    destination.starts_with(staging_root)
+}
+
 /// Moves a finished transfer to the user's path.
 fn place_staged_file(staged_file: &Path, destination: &Path, id: &str) -> io::Result<()> {
     place_staged_file_with(
@@ -928,8 +1026,21 @@ fn place_staged_file(staged_file: &Path, destination: &Path, id: &str) -> io::Re
         &format!(".pinvou-{id}.part"),
         |from, to| std::fs::rename(from, to),
         |source, target| io::copy(source, target),
-        |staged| std::fs::File::open(staged).and_then(|file| file.sync_all()),
+        sync_staged_bytes,
     )
+}
+
+/// Flushes the staged bytes to the disk through a writable handle. Windows's
+/// `FlushFileBuffers` refuses a handle that was not opened for writing, so a
+/// plain read-only `File::open` would fail every placement there before the
+/// rename is even attempted; Linux and macOS flush a read-only handle fine,
+/// which is why a read-only open went unnoticed in local testing.
+fn sync_staged_bytes(staged: &Path) -> io::Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(staged)
+        .and_then(|file| file.sync_all())
 }
 
 /// `rename`, `copy`, and `sync` are injected so tests can stand in for a
@@ -1232,6 +1343,347 @@ mod tests {
         // A cut that ends on dots drops them; the short extension survives.
         let dotted = format!("a{}.x", ".".repeat(200));
         assert_eq!(sanitize_file_name(Some(OsStr::new(&dotted))), "a.x");
+    }
+
+    #[test]
+    fn reserved_device_names_are_avoided_after_trimming_and_cutting() {
+        // Windows strips trailing spaces before the dot, so the padding is
+        // part of the device candidate.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("CON  .txt"))),
+            "_CON  .txt"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("NUL  .pdf"))),
+            "_NUL  .pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("com1 .exe"))),
+            "_com1 .exe"
+        );
+        // A cut that strips the padding can land on a bare device name; the
+        // check therefore repeats on the final stem.
+        let padded = format!("CON{}zzz", " ".repeat(117));
+        assert_eq!(sanitize_file_name(Some(OsStr::new(&padded))), "_CON");
+        // The classic segment-before-the-first-dot cases stay covered.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("CON.tar.gz"))),
+            "_CON.tar.gz"
+        );
+        // Superscript digits are device aliases too.
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("com\u{00B9}.txt"))),
+            "_com\u{00B9}.txt"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("prn.lpt.aux"))),
+            "_prn.lpt.aux"
+        );
+    }
+
+    #[test]
+    fn forbidden_characters_and_reserved_names_are_pinned_individually() {
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("a\\b*c\"d<e>f|g"))),
+            "a_b_c_d_e_f_g"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("re\u{00AD}port.pdf"))),
+            "re_port.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("\u{FEFF}a.pdf"))),
+            "_a.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("\u{2060}j.pdf"))),
+            "_j.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new("\u{061C}x.pdf"))),
+            "_x.pdf"
+        );
+        assert_eq!(sanitize_file_name(Some(OsStr::new("PRN.txt"))), "_PRN.txt");
+        assert_eq!(sanitize_file_name(Some(OsStr::new("aux"))), "_aux");
+        assert_eq!(sanitize_file_name(Some(OsStr::new("nul"))), "_nul");
+        // A 24-byte extension stays an extension; one byte more is part of
+        // the stem and is cut with it.
+        let kept = format!("{}.{}", "y".repeat(200), "e".repeat(23));
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new(&kept))),
+            format!(
+                "{}.{}",
+                "y".repeat(MAX_FILE_NAME_BYTES - 24),
+                "e".repeat(23)
+            )
+        );
+        let demoted = format!("{}.{}", "y".repeat(200), "e".repeat(24));
+        assert_eq!(
+            sanitize_file_name(Some(OsStr::new(&demoted))),
+            "y".repeat(MAX_FILE_NAME_BYTES)
+        );
+    }
+
+    #[test]
+    fn a_refused_transfers_cancellation_never_fails_a_live_transfer() {
+        let mut registry = registry_with(&["a"]);
+        // The refusal happened before admission: no record exists for it, but
+        // the engine still reports a pathless failure for the URL. The credit
+        // spends that report instead of failing the live member.
+        registry.note_refusal(&url("a"));
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // The live member still resolves normally afterwards.
+        assert_eq!(finish_ok(&mut registry, "a"), Vec::<Effect>::new());
+        assert_eq!(registry.downloads["a"].transfer, Transfer::Succeeded);
+        assert_eq!(
+            registry.answer("a", Some(chosen("a"))),
+            vec![place("a", chosen("a"))]
+        );
+        assert!(registry.refusal_credits.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_credit_is_spent_on_a_failure_not_a_success() {
+        let mut registry = registry_with(&["a"]);
+        registry.note_refusal(&url("a"));
+        // A success report is never refusal noise: it resolves the single
+        // member, and the credit survives for the noise report to come.
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, true),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["a"].transfer, Transfer::Succeeded);
+        assert_eq!(registry.refusal_credits[&url("a")], 1);
+        assert_eq!(
+            registry.answer("a", Some(chosen("a"))),
+            vec![place("a", chosen("a"))]
+        );
+        // The noise failure afterwards is spent, not voted.
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            Vec::<Effect>::new()
+        );
+        assert!(registry.refusal_credits.is_empty());
+    }
+
+    #[test]
+    fn refusal_noise_cannot_touch_another_url_or_the_next_generation() {
+        let mut registry = registry_with(&["a", "b"]);
+        registry.note_refusal(&url("a"));
+        // The noise report is spent even though another URL has live members.
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // With the credit spent, a's own failure report is a member report
+        // again, and b of another URL is never involved.
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            vec![discard("a"), finished("a", Outcome::Failed)]
+        );
+        assert_eq!(registry.downloads["b"].transfer, Transfer::InFlight);
+        // b itself resolves through its written path, so the URL has no
+        // live member when the next generation begins.
+        assert_eq!(finish_ok(&mut registry, "b"), Vec::<Effect>::new());
+        // A credit noted in that state is still spent before the next
+        // generation's member reports, so that report resolves it.
+        registry.note_refusal(&url("b"));
+        registry
+            .begin(record("c", &url("b")))
+            .expect("within the live cap");
+        assert_eq!(
+            registry.transfer_finished(&url("b"), None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            registry.transfer_finished(&url("b"), None, false),
+            vec![discard("c"), finished("c", Outcome::Failed)]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        assert!(registry.refusal_credits.is_empty());
+    }
+
+    #[test]
+    fn refusal_noise_swaps_a_failure_report_without_changing_the_verdict() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        registry.note_refusal(URL_A);
+        // A member failure, the noise, and a member success — the noise
+        // arrives between them: the verdict stays the member outcome mix
+        // (disagreement fails both closed), exactly as without the noise.
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            vec![
+                discard("a"),
+                finished("a", Outcome::Failed),
+                discard("b"),
+                finished("b", Outcome::Failed),
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        assert!(registry.refusal_credits.is_empty());
+    }
+
+    #[test]
+    fn refusal_noise_never_poisons_uniform_member_successes() {
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        registry.note_refusal(URL_A);
+        // Both members succeed; their reports resolve the batch before the
+        // noise failure arrives, which is then spent on the credit.
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            vec![place("a", chosen("a")), place("b", chosen("b"))]
+        );
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, false),
+            Vec::<Effect>::new()
+        );
+        assert!(registry.refusal_credits.is_empty());
+    }
+
+    #[test]
+    fn pathless_completions_of_one_url_never_touch_another_urls_transfers() {
+        let mut registry = Registry::default();
+        for id in ["a1", "a2"] {
+            registry
+                .begin(record(id, &url("a")))
+                .expect("within the live cap");
+        }
+        for id in ["b1", "b2"] {
+            registry
+                .begin(record(id, &url("b")))
+                .expect("within the live cap");
+        }
+        // The first failure waits in its own URL's batch; it must not count
+        // the other URL's transfers as members.
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            Vec::<Effect>::new()
+        );
+        for id in ["a1", "a2", "b1", "b2"] {
+            assert_eq!(registry.downloads[id].transfer, Transfer::InFlight);
+        }
+        // The other URL's failure resolves only its own two members.
+        assert_eq!(
+            registry.transfer_finished(&url("b"), None, false),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            registry.transfer_finished(&url("b"), None, false),
+            vec![
+                discard("b1"),
+                finished("b1", Outcome::Failed),
+                discard("b2"),
+                finished("b2", Outcome::Failed),
+            ]
+        );
+        // a1/a2 are still waiting for their own second report.
+        for id in ["a1", "a2"] {
+            assert_eq!(registry.downloads[id].transfer, Transfer::InFlight);
+        }
+        assert_eq!(
+            registry.transfer_finished(&url("a"), None, false),
+            vec![
+                discard("a1"),
+                finished("a1", Outcome::Failed),
+                discard("a2"),
+                finished("a2", Outcome::Failed),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_written_path_matches_only_its_own_staged_file() {
+        let mut registry = Registry::default();
+        for id in ["a", "b"] {
+            let mut download = record(id, &url(id));
+            // Two transfers of different URLs whose suggestions share a file
+            // name: only the staging directory tells them apart.
+            download.notice.file_name = "same.bin".to_string();
+            download.staged_file = PathBuf::from("/staging").join(id).join("same.bin");
+            registry.begin(download).expect("within the live cap");
+        }
+        let b_path = PathBuf::from("/staging").join("b").join("same.bin");
+        // The written path resolves b only; a keeps streaming.
+        assert_eq!(
+            registry.transfer_finished(&url("b"), Some(&b_path), true),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["b"].transfer, Transfer::Succeeded);
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // a frees the dialog, handing it to the queued b, which then places.
+        assert_eq!(
+            registry.answer("a", Some(chosen("a"))),
+            vec![Effect::Prompt(Notice {
+                id: "b".to_string(),
+                session_id: "session".to_string(),
+                tab: "tab".to_string(),
+                file_name: "same.bin".to_string(),
+            })]
+        );
+        assert_eq!(
+            registry.answer("b", Some(chosen("b"))),
+            vec![Effect::Place {
+                id: "b".to_string(),
+                staging_dir: PathBuf::from("/staging").join("b"),
+                staged_file: b_path,
+                destination: chosen("b"),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unknown_path_report_never_joins_a_url_batch() {
+        let mut registry = registry_with(&["a"]);
+        // A completion whose written path matches no record is stale noise;
+        // it must not consume the URL's batch vote.
+        assert_eq!(
+            registry.transfer_finished(
+                URL_A,
+                Some(&PathBuf::from("/staging/ghost/ghost.bin")),
+                true
+            ),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["a"].transfer, Transfer::InFlight);
+        // The member's own report still resolves the batch.
+        assert_eq!(
+            registry.transfer_finished(URL_A, None, true),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(registry.downloads["a"].transfer, Transfer::Succeeded);
     }
 
     #[test]
@@ -1719,7 +2171,16 @@ mod tests {
 
     /// A sync stand-in that exercises the real flush on the real file.
     fn sync_staged(staged_file: &Path) -> io::Result<()> {
-        std::fs::File::open(staged_file).and_then(|file| file.sync_all())
+        sync_staged_bytes(staged_file)
+    }
+
+    #[test]
+    fn staged_bytes_sync_through_a_writable_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged_file = staged(temp.path(), b"contents");
+        // Windows refuses FlushFileBuffers on a read-only handle, so the
+        // production sync must hold the file open for writing.
+        sync_staged_bytes(&staged_file).expect("the staged file syncs");
     }
 
     /// Stands in for a destination on another volume, where a rename cannot work.
@@ -1870,6 +2331,23 @@ mod tests {
         assert!(!destination.exists());
         assert!(entries(&folder).is_empty());
         assert_eq!(std::fs::read(&staged_file).unwrap(), b"contents");
+    }
+
+    #[test]
+    fn a_destination_inside_the_staging_root_is_rejected_for_placement() {
+        let root = PathBuf::from("/home/u/.pinvou3/browser/downloads");
+        assert!(destination_inside_staging(&root.join("id/file.bin"), &root));
+        assert!(destination_inside_staging(&root, &root));
+        assert!(!destination_inside_staging(
+            &PathBuf::from("/home/u/Downloads/a.bin"),
+            &root
+        ));
+        // Component-wise: a sibling whose name merely shares a prefix is
+        // outside the root and stays allowed.
+        assert!(!destination_inside_staging(
+            &PathBuf::from("/home/u/.pinvou3/browser/downloads-backup/a.bin"),
+            &root
+        ));
     }
 
     #[test]

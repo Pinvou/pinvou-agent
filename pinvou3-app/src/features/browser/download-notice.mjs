@@ -72,9 +72,10 @@ export function downloadNoticesReducer(state, action) {
 }
 
 // A finished-but-unplaced transfer needs the user's action, so it keeps the
-// single notice slot even when later download events arrive; the staged file
-// is otherwise swept at the next start with its Save as… affordance lost.
-// Everything else shows the most recently updated download.
+// single notice slot even when later download events arrive. Until it is
+// saved or discarded, its record keeps holding one of the live download
+// slots, and its staged file is lost when the app closes. Everything else
+// shows the most recently updated download.
 export function latestDownloadNotice(state) {
   const notices = Object.values(state || {});
   if (!notices.length) return null;

@@ -180,6 +180,6 @@ test('BrowserView renders the notice from copy and wires the retry to the host',
   // A failed retry reports through the shared error banner.
   assert.match(
     browserView,
-    /invokeTauri\('browser_download_save_as'[\s\S]{0,160}catch \(e\) \{\s*reportErrorForOperation\(operationEpoch, e\);/,
+    /String\(e\)\.includes\('download_not_retryable'\) \? t\.browserDownloadNotRetryable : e,/,
   );
 });

@@ -617,7 +617,9 @@ export function BrowserView({
       // staging file could be created.
       setError(payload.reason === 'limit'
         ? t.browserDownloadBusy(payload.source || '')
-        : t.browserDownloadBlocked(payload.source || ''));
+        : payload.reason === 'unavailable'
+          ? t.browserDownloadUnavailable(payload.source || '')
+          : t.browserDownloadBlocked(payload.source || ''));
     }));
     // A download streams into private staging while the OS save dialog asks
     // where it belongs. Events carry the file name and outcome only.
@@ -814,9 +816,15 @@ export function BrowserView({
     try {
       await invokeTauri('browser_download_save_as', { downloadId: downloadNotice.downloadId });
     } catch (e) {
-      reportErrorForOperation(operationEpoch, e);
+      // The host rejects a retry with a bare code when the record left the
+      // retryable state (another placement already finished, for example);
+      // surface it in the user's language instead of the raw code.
+      reportErrorForOperation(
+        operationEpoch,
+        String(e).includes('download_not_retryable') ? t.browserDownloadNotRetryable : e,
+      );
     }
-  }, [beginErrorOperation, downloadNotice, reportErrorForOperation]);
+  }, [beginErrorOperation, downloadNotice, reportErrorForOperation, t.browserDownloadNotRetryable]);
   const discardDownload = useCallback(async () => {
     if (!downloadNoticeCanDiscard(downloadNotice)) return;
     const operationEpoch = beginErrorOperation();

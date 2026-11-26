@@ -1102,7 +1102,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // surface's own and cannot name the requesting tab.
   assert.match(
     nativeHost,
-    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*None => false,\s*\}\s*\}/,
+    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*\/\/ No shown workspace[\s\S]{0,260}?None => \{\s*downloads\.note_refusal\(&url\);\s*false\s*\}\s*\}\s*\}/,
   );
   assert.doesNotMatch(downloadCallback[1], /download_session_id|download_tab_token/);
   assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)\.register_page\(\s*&label,\s*super::super::DownloadPage \{\s*session_id: session_id\.to_string\(\),\s*tab: tab_token\.to_string\(\),\s*\},\s*\);/);
@@ -1182,8 +1182,8 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
     browserDownloads,
     /fn emit_blocked\(app: &AppHandle, page: &DownloadPage, url: &Url, reason: &str\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*"reason": reason,\s*\}\),/,
   );
-  assert.match(browserDownloads, /if !self\.registry\.lock\(\)\.has_capacity\(\) \{\s*eprintln!\("\[browser\] Download denied: too many live downloads"\);\s*emit_blocked\(app, &page, url, "limit"\);\s*return false;/);
-  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*return false;/);
+  assert.match(browserDownloads, /if !self\.registry\.lock\(\)\.has_capacity\(\) \{\s*eprintln!\("\[browser\] Download denied: too many live downloads"\);\s*emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/);
+  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);\s*return false;/);
   assert.match(browserDownloads, /\(scheme, Some\(host\)\) => format!\("\{scheme\}:\/\/\{host\}\{port\}"\)/);
 
   // The engine streams into a fresh private directory under the staging root.
@@ -1206,7 +1206,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // Placement and cleanup never block the UI thread.
   assert.match(
     browserDownloads,
-    /spawn_blocking\(move \|\| \{\s*let placed = place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
+    /let rejected = destination_inside_staging\(&destination, &self\.staging_root\);\s*let app = app\.clone\(\);\s*tauri::async_runtime::spawn_blocking\(move \|\| \{\s*let placed =\s*!rejected && place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
   );
   // A cross-volume copy streams through a sibling named after the download,
   // so a process killed mid-copy leaves one attributable `.part` behind, and
@@ -1281,7 +1281,7 @@ test('download events and notices carry names and outcomes but no URL or local p
   assert.match(browserView, /listenTauri\('browser:download-blocked'/);
   assert.match(
     browserView,
-    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlocked\(payload\.source \|\| ''\)/,
+    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: payload\.reason === 'unavailable'\s*\? t\.browserDownloadUnavailable\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlocked\(payload\.source \|\| ''\)/,
   );
   assert.match(browserView, /listenTauri\('browser:download-started', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice: downloadStartedNotice\(t, payload\) \}\);/);
   assert.match(browserView, /listenTauri\('browser:download-finished', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice \}\);/);
@@ -1296,4 +1296,69 @@ test('download events and notices carry names and outcomes but no URL or local p
     browserView,
     /dispatchPersistenceWarning\(\{ type: 'clear' \}\);\s*dispatchDownloadNotice\(\{ type: 'reset' \}\);/,
   );
+});
+
+test('download round-3 fixes are pinned: writable-handle sync, refusal accounting, unavailable degradation, placement guard', () => {
+  // The placement flush opens the staged file for writing: Windows refuses
+  // FlushFileBuffers on a read-only handle, so a plain File::open would fail
+  // every placement there.
+  assert.match(browserDownloads, /fn sync_staged_bytes\(staged: &Path\) -> io::Result<\(\)> \{\s*std::fs::OpenOptions::new\(\)\s*\.read\(true\)\s*\.write\(true\)\s*\.open\(staged\)/);
+  assert.doesNotMatch(browserDownloads, /File::open\(staged\)\.and_then/);
+
+  // A refused download's engine-side cancellation report is spent on a
+  // per-URL credit instead of voting in the batch; every refusal path notes
+  // the credit, and the no-shown-workspace refusal in the host does too.
+  assert.match(browserDownloads, /refusal_credits: HashMap<String, usize>,/);
+  assert.match(browserDownloads, /fn note_refusal\(&mut self, url: &str\) \{/);
+  assert.match(
+    browserDownloads,
+    /pub\(crate\) fn requested\([\s\S]{0,900}?emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/,
+  );
+  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);/);
+  assert.match(browserDownloads, /registry\.note_refusal\(url\.as_str\(\)\);/);
+  assert.match(
+    browserDownloads,
+    /if !success \{[\s\S]{0,200}?refusal_credits[\s\S]{0,600}?return Vec::new\(\);\s*\}\s*\}/,
+  );
+  assert.match(nativeHost, /None => \{[\s\S]{0,220}?downloads\.note_refusal\(&url\);\s*false\s*\}/);
+
+  // A Linux download surface that cannot be created puts downloads out of
+  // service (fail closed) instead of attaching per-tab handlers that would
+  // mis-attribute and later cancel everything silently.
+  assert.match(
+    nativeHost,
+    /fn ensure_download_surface[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,600}?true\s*\}/,
+  );
+  assert.match(
+    browserDownloads,
+    /unavailable\s*\.load\(std::sync::atomic::Ordering::Relaxed\)\s*\{\s*eprintln!\("\[browser\] Download denied: downloads are unavailable"\);\s*emit_blocked\(app, &page, url, "unavailable"\);\s*self\.note_refusal\(url\);/,
+  );
+  assert.match(nativeHost, /WebviewBuilder::new\(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External\(url\)\)\.focused\(false\);/);
+
+  // The device check repeats on the final stem: a cut can strip padding
+  // around a reserved name, and Windows ignores trailing spaces before the
+  // dot when it reads the device segment.
+  assert.match(
+    browserDownloads,
+    /!stem\.starts_with\('_'\) && starts_with_reserved_device_name\(stem\)/,
+  );
+  assert.match(browserDownloads, /is_reserved_device_name\(segment\.trim_end\(\)\)/);
+
+  // A destination under the staging root fails the placement instead of
+  // being renamed into a directory the cleanup then deletes.
+  assert.match(browserDownloads, /fn destination_inside_staging\(destination: &Path, staging_root: &Path\) -> bool \{/);
+  assert.match(browserDownloads, /let rejected = destination_inside_staging\(&destination, &self\.staging_root\);/);
+
+  // The shown workspace mirror is refreshed when a tab switch commits, not
+  // only at session visibility transitions.
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, tab_token, control\.snapshot\(\)\);\s*self\.sync_shown_download_page\(app\);/,
+  );
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, &workspace\.active_tab, snapshot\);\s*self\.sync_shown_download_page\(app\);/,
+  );
+  // Every tab close routes the attribution page away with the binding.
+  assert.doesNotMatch(nativeHost, /super::unregister_browser_core_webview_binding\(&entry\.label\)/);
 });

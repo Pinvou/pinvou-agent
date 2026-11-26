@@ -606,7 +606,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         app: &tauri::AppHandle,
         session_id: &str,
     ) -> Result<(), String> {
-        reconcile_quarantined_close(&mut self.quarantined_tabs, session_id, |entry| {
+        reconcile_quarantined_close(&mut self.quarantined_tabs, session_id, Some(app), |entry| {
             if let Some(webview) = app.get_webview(&entry.label) {
                 webview.close().map_err(|error| {
                     format!("Failed to close quarantined system WebView: {error}")
@@ -1043,6 +1043,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         self.staged_tabs.remove(&key);
         let snapshot = control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
+        self.sync_shown_download_page(app);
         if let Err(error) = self.persist_restore_workspace(app, session_id) {
             eprintln!("[browser] New tab committed but restore-manifest refresh failed: {error}");
         }
@@ -1202,6 +1203,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         // emitting and never overwrite updated UI with an old Agent snapshot.
         let snapshot = control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
+        self.sync_shown_download_page(app);
         if let Err(error) = self.persist_workspace(session_id) {
             eprintln!("[browser] Failed to persist mapping after user-created tab: {error}");
         }
@@ -1483,6 +1485,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         };
         if let Some(app) = app {
             emit_control_changed(app, session_id, previous_tab, snapshot);
+            self.sync_shown_download_page(app);
         }
         Ok(true)
     }
@@ -1636,6 +1639,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             // releases. Emit the current snapshot so a late Agent event cannot
             // overwrite the updated User owner in the UI.
             emit_control_changed(app, session_id, tab_token, control.snapshot());
+            self.sync_shown_download_page(app);
         }
         if owner != NativeControlOwner::Agent {
             if let Err(error) = self.persist_workspace(session_id) {
@@ -2080,6 +2084,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         forget_tab_surface(Some(app), &entry.label);
         let snapshot = workspace.control.snapshot();
         emit_control_changed(app, session_id, &workspace.active_tab, snapshot);
+        self.sync_shown_download_page(app);
         // WebView close is an irreversible physical commit. A later snapshot
         // failure must not disguise success as failure, or retry reports that the
         // tab is absent. Preserve success and let later state refresh repair it.
@@ -2326,6 +2331,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             &mut self.staged_tabs,
             &mut self.staged_user_tabs,
             session_id,
+            Some(app),
             |entry| {
                 if let Some(webview) = app.get_webview(&entry.label) {
                     webview
@@ -2644,6 +2650,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             self.staged_tabs.remove(&staged_key);
             self.staged_user_tabs.remove(&staged_key);
             emit_control_changed(app, session_id, &active_tab, snapshot);
+            self.sync_shown_download_page(app);
             if let Err(error) = self.persist_restore_workspace(app, session_id) {
                 eprintln!(
                     "[browser] User tab published but restore-manifest refresh failed: {error}"
@@ -3159,7 +3166,13 @@ fn handle_download_event(webview: tauri::Webview<tauri::Wry>, event: DownloadEve
         DownloadEvent::Requested { url, destination } => {
             match downloads.page_for_request(webview.label()) {
                 Some(page) => downloads.requested(app, page, &url, destination),
-                None => false,
+                // No shown workspace (Linux): the download is refused, and
+                // the engine's cancellation report for it must be spent as
+                // noise instead of failing a live same-URL transfer.
+                None => {
+                    downloads.note_refusal(&url);
+                    false
+                }
             }
         }
         DownloadEvent::Finished { url, path, success } => {
@@ -3214,10 +3227,18 @@ fn ensure_download_surface<P: PlatformWebviewConfig>(
         return true;
     }
     let Ok(url) = tauri::Url::parse("about:blank") else {
+        app.state::<super::super::BrowserDownloads>()
+            .mark_unavailable();
         return false;
     };
-    let builder = WebviewBuilder::new(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External(url));
+    // Unfocused: wry would otherwise `grab_focus` the 1x1 surface when it
+    // builds it. (It also `show_all`s unconditionally for child webviews —
+    // tauri exposes no visible flag there — so the hide below stays needed.)
+    let builder =
+        WebviewBuilder::new(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External(url)).focused(false);
     let Ok(builder) = platform.configure_builder(builder, data_directory) else {
+        app.state::<super::super::BrowserDownloads>()
+            .mark_unavailable();
         return false;
     };
     let Ok(webview) = window.add_child(
@@ -3226,8 +3247,10 @@ fn ensure_download_surface<P: PlatformWebviewConfig>(
         PhysicalSize::new(1, 1),
     ) else {
         eprintln!(
-            "[browser] Download surface unavailable; downloads fall back to per-tab handlers"
+            "[browser] Download surface unavailable; downloads are refused with the unavailable reason"
         );
+        app.state::<super::super::BrowserDownloads>()
+            .mark_unavailable();
         return false;
     };
     // The surface is never attached to the visible slot and never shown; it
@@ -3235,8 +3258,10 @@ fn ensure_download_surface<P: PlatformWebviewConfig>(
     if webview.hide().is_err() {
         let _ = webview.close();
         eprintln!(
-            "[browser] Download surface could not be hidden; downloads fall back to per-tab handlers"
+            "[browser] Download surface could not be hidden; downloads are refused with the unavailable reason"
         );
+        app.state::<super::super::BrowserDownloads>()
+            .mark_unavailable();
         return false;
     }
     true
@@ -3907,6 +3932,7 @@ fn show_active_workspace(app: &tauri::AppHandle, workspace: &Workspace) -> Resul
 
 fn reconcile_workspace_close(
     workspace: &mut Workspace,
+    app: Option<&tauri::AppHandle>,
     mut close_entry: impl FnMut(&SurfaceEntry) -> Result<(), String>,
 ) -> Result<(), String> {
     let tokens = workspace
@@ -3926,7 +3952,7 @@ fn reconcile_workspace_close(
             .expect("close list came from the same workspace snapshot");
         match close_entry(&entry) {
             Ok(()) => {
-                super::unregister_browser_core_webview_binding(&entry.label);
+                forget_tab_surface(app, &entry.label);
                 remove_tab_from_workspace(workspace, &token);
             }
             Err(error) => errors.push(format!("{}: {error}", entry.label)),
@@ -3947,6 +3973,7 @@ fn reconcile_staged_close(
     staged_tabs: &mut HashMap<(String, String), SurfaceEntry>,
     staged_user_tabs: &mut HashMap<(String, String), bool>,
     session_id: &str,
+    app: Option<&tauri::AppHandle>,
     mut close_entry: impl FnMut(&SurfaceEntry) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut keys = staged_tabs
@@ -3966,7 +3993,7 @@ fn reconcile_staged_close(
             .expect("pending staging close list came from the same mapping snapshot");
         match close_entry(&entry) {
             Ok(()) => {
-                super::unregister_browser_core_webview_binding(&entry.label);
+                forget_tab_surface(app, &entry.label);
                 staged_tabs.remove(&key);
                 staged_user_tabs.remove(&key);
             }
@@ -3991,6 +4018,7 @@ fn reconcile_staged_close(
 fn reconcile_quarantined_close(
     quarantined_tabs: &mut HashMap<(String, String), SurfaceEntry>,
     session_id: &str,
+    app: Option<&tauri::AppHandle>,
     mut close_entry: impl FnMut(&SurfaceEntry) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut keys = quarantined_tabs
@@ -4010,7 +4038,7 @@ fn reconcile_quarantined_close(
             .expect("quarantine list came from the same mapping snapshot");
         match close_entry(&entry) {
             Ok(()) => {
-                super::unregister_browser_core_webview_binding(&entry.label);
+                forget_tab_surface(app, &entry.label);
                 quarantined_tabs.remove(&key);
             }
             Err(error) => errors.push(format!("{}: {error}", entry.label)),
@@ -4031,7 +4059,7 @@ fn reconcile_quarantined_close(
 }
 
 fn close_workspace(app: &tauri::AppHandle, workspace: &mut Workspace) -> Result<(), String> {
-    reconcile_workspace_close(workspace, |entry| {
+    reconcile_workspace_close(workspace, Some(app), |entry| {
         if let Some(webview) = app.get_webview(&entry.label) {
             webview
                 .close()
@@ -4790,7 +4818,7 @@ mod tests {
             .unwrap();
         workspace.active_tab = "1111111111111111".to_string();
 
-        let first = reconcile_workspace_close(workspace, |entry| {
+        let first = reconcile_workspace_close(workspace, None, |entry| {
             if entry.label == "test-webview-b" {
                 Err("injected close failure".to_string())
             } else {
@@ -4803,7 +4831,10 @@ mod tests {
         assert_eq!(workspace.active_tab, "1111111111111111");
         assert_eq!(workspace.tabs.token_at(0), Some("1111111111111111"));
 
-        assert_eq!(reconcile_workspace_close(workspace, |_| Ok(())), Ok(()));
+        assert_eq!(
+            reconcile_workspace_close(workspace, None, |_| Ok(())),
+            Ok(())
+        );
         assert!(workspace.tabs.is_empty());
         assert!(workspace.active_tab.is_empty());
     }
@@ -4833,6 +4864,7 @@ mod tests {
             &mut surface.staged_tabs,
             &mut surface.staged_user_tabs,
             "session-a",
+            None,
             |entry| {
                 if entry.label == "staged-b" {
                     Err("injected close failure".to_string())
@@ -4854,6 +4886,7 @@ mod tests {
                 &mut surface.staged_tabs,
                 &mut surface.staged_user_tabs,
                 "session-a",
+                None,
                 |_| Ok(()),
             ),
             Ok(())
@@ -4899,14 +4932,14 @@ mod tests {
         )]);
 
         for _ in 0..2 {
-            let result = reconcile_quarantined_close(&mut quarantined, "session-a", |_| {
+            let result = reconcile_quarantined_close(&mut quarantined, "session-a", None, |_| {
                 Err("injected close failure".to_string())
             });
             assert!(result.is_err());
             assert_eq!(quarantined.len(), 1);
         }
         assert_eq!(
-            reconcile_quarantined_close(&mut quarantined, "session-a", |_| Ok(())),
+            reconcile_quarantined_close(&mut quarantined, "session-a", None, |_| Ok(())),
             Ok(())
         );
         assert!(quarantined.is_empty());
@@ -4958,21 +4991,27 @@ mod tests {
                 .all(|entry| !entry.is_published())
         );
 
-        let first =
-            reconcile_quarantined_close(&mut surface.quarantined_tabs, "session-a", |entry| {
+        let first = reconcile_quarantined_close(
+            &mut surface.quarantined_tabs,
+            "session-a",
+            None,
+            |entry| {
                 if entry.label == "restored-second" {
                     Err("injected post-build close failure".to_string())
                 } else {
                     Ok(())
                 }
-            });
+            },
+        );
         assert!(first.is_err());
         assert_eq!(surface.quarantined_tabs.len(), 1);
         assert!(!surface.has_session("session-a"));
         assert!(surface.owns_session_resources("session-a"));
 
         assert_eq!(
-            reconcile_quarantined_close(&mut surface.quarantined_tabs, "session-a", |_| Ok(())),
+            reconcile_quarantined_close(&mut surface.quarantined_tabs, "session-a", None, |_| Ok(
+                ()
+            )),
             Ok(())
         );
         assert!(!surface.owns_session_resources("session-a"));
