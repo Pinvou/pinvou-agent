@@ -1114,6 +1114,10 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
     const prepared = await run('prepare-publish', async () => {
       const localDocuments = [];
       let offset = 0;
+      // 溢出判定（review P2）：只有「确认短页」才能证明枚举完整。安全帽
+      // 跑满仍是整页 = 无法证明（后端没有同口径的集合大小上限可比对），
+      // 按不完整如实报错，绝不按「完整」准备发布。
+      let capped = true;
       for (let pages = 0; pages < KB_PUBLISH_PAGE_CAP; pages += 1) {
         const page = await invokeTauri('kb_documents', {
           collectionId: localCollection.id,
@@ -1121,10 +1125,18 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
           offset,
         }) || [];
         localDocuments.push(...page);
-        if (page.length < KB_PUBLISH_PAGE_SIZE) break;
+        if (page.length < KB_PUBLISH_PAGE_SIZE) {
+          capped = false;
+          break;
+        }
         offset += page.length;
       }
       if (!localDocuments?.length) throw new Error(t.remoteKbPublishEmpty);
+      if (capped) {
+        throw new Error(t.remoteKbPublishEnumerationCapped
+          .split('{count}').join(String(localDocuments.length))
+          .split('{cap}').join(String(KB_PUBLISH_PAGE_CAP * KB_PUBLISH_PAGE_SIZE)));
+      }
       return { localCollection, localDocuments };
     });
     if (!prepared) return;

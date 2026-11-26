@@ -743,6 +743,7 @@ export default defineConfig(({ mode }) => {
     react(),
     copyRuntimeAssets(),
     enforceLazyChunks(),
+    enforceMainEntryBudget(mode),
     conditionalPlatformScripts(webBuild),
     bundleClassicStartup(webBuild),
   ],

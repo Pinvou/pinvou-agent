@@ -835,6 +835,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // kb_documents 分页状态(offset 续页):hasMore 以「整页返回」推断,
       // hasMore=false 表示后面没有更多页。刷新路径(loadDocs/loadColls)重置回第 0 页。
       const [docsPaging, setDocsPaging] = useState({ gen: 0, collId: null, offset: 0, hasMore: false, loading: false });
+      // Which collection's rows `docs` actually HOLDS (review P2, loaded
+      // identity distinct from the in-flight stamp): updated only when a
+      // reset page lands. The entry stamp alone could not gate the render —
+      // stamping B while `docs` still holds A admitted A's rows under B's
+      // heading, and a rejected B request left them there indefinitely.
+      const [docsLoadedCollId, setDocsLoadedCollId] = useState(null);
       const [allDocsPaging, setAllDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
       const [idx, setIdx] = useState(null);
       const [importError, setImportError] = useState('');
@@ -896,6 +902,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           if (generation !== docsGenerationRef.current) return;
           setDocs(page);
+          // The loaded identity moves ONLY with landed rows: a failed switch
+          // leaves it on the old collection, so the render gate keeps the
+          // table empty under the new heading (the old rows are never
+          // mis-owned); a same-collection refresh keeps it matching and the
+          // rows survive.
+          setDocsLoadedCollId(cid);
           setDocsPaging({ gen: generation, collId: cid, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
@@ -1872,12 +1884,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     </div>
                     {(() => {
                       // Render gate (review P2, stale rows): only the
-                      // collection the docs table was last stamped for may
-                      // paint its rows under the focused heading — a failed
-                      // or superseded switch shows the honest empty state
-                      // instead of another collection's rows.
+                      // collection whose rows actually LANDED may paint under
+                      // the focused heading — identity moves on success, so a
+                      // failed or superseded switch shows the honest empty
+                      // state and old rows are never mis-owned by the new
+                      // heading (old rows survive only same-collection
+                      // refreshes).
                       const rows = activeColl
-                        ? (docsPaging.collId === activeColl.id ? docs : [])
+                        ? (docsLoadedCollId === activeColl.id ? docs : [])
                         : allDocs;
                       if (rows.length === 0) return <div className={`text-center py-12 ${muted} text-[14px]`}>{activeColl ? t.kbCollEmpty : t.kbNoCollFiles}</div>;
                       return (

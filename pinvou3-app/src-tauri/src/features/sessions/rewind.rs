@@ -485,11 +485,18 @@ impl SessionStore {
         let cut = turn_prompt_indices[keep_turns as usize];
         let original_revision = transcript_revision(&session.messages)?;
         let truncated_revision = transcript_revision(&session.messages[..cut])?;
+        // 预留最终记录的完整尺寸（review P2）：两个编排器都在恢复工作区之后
+        // 把真实 PreRestore checkpoint id 以 Some 传入 truncate——预检若按
+        // None 序列化，测得的长度偏短，一条接近 8 MiB 上限的记录会在预检
+        // 通过后于权威落点超限，重新制造「工作区已改、对话未动、无 Undo、
+        // 重试必然复现」的死锁形态。checkpoint id 的合法上界是 64 个 ASCII
+        // 字符（code_checkpoints::validate_checkpoint_id），按上界预留：
+        // 预检的拒绝边界 ≥ 权威落点的边界（宁严勿松）。
         let record = RewoundTurnsRecord {
             rewound_at: Utc::now().to_rfc3339(),
             original_revision,
             kept_turns: keep_turns,
-            pre_restore_checkpoint_id: None,
+            pre_restore_checkpoint_id: Some("P".repeat(64)),
             truncated_revision,
             removed_messages: session.messages[cut..].to_vec(),
         };
@@ -929,6 +936,47 @@ mod tests {
         assert_eq!(evicted, 1);
         assert_eq!(shedding.len(), 3, "single-record sessions all survive");
         assert_eq!(shedding["sess-new"].len(), 1);
+    }
+
+    /// 预检的 id 预留边界（review P2）：同一被截内容，按 None 计量的序列化
+    /// 长度可在单条上限之下，而按 Some(64 字符上界 id) 计量即可越限——这正是
+    /// 「预检通过、权威落点在恢复工作区之后拒绝」的临界带。预留使预检边界
+    /// 严格不松于权威落点。
+    #[test]
+    fn precheck_admission_reserves_the_checkpoint_id_size() {
+        let base_record = |id: Option<&str>, pad: usize| RewoundTurnsRecord {
+            rewound_at: "2026-11-26T00:00:00+00:00".to_string(),
+            original_revision: String::new(),
+            kept_turns: 1,
+            pre_restore_checkpoint_id: id.map(|s| s.to_string()),
+            truncated_revision: String::new(),
+            removed_messages: vec![Message {
+                role: "user".into(),
+                content: vec![deepseek_tui::models::ContentBlock::Text {
+                    text: "x".repeat(pad),
+                    cache_control: None,
+                }],
+            }],
+        };
+        // 确定性标定：序列化长度对 pad 线性（文本字符 1:1 进 JSON 字符串），
+        // 先测零内容开销，再把 pad 精确放到「None 计量低于上限 30 字节、
+        // 64 字符 id 计量越限」的临界带——不做步进搜索（±1000 步进对不上
+        // ~90 字节的 id 开销窗口，会无限振荡）。
+        let overhead = rewound_record_serialized_len(&base_record(None, 0));
+        let pad = MAX_REWIND_RECORD_BYTES - overhead - 30;
+        let none_len = rewound_record_serialized_len(&base_record(None, pad));
+        let id_len = rewound_record_serialized_len(&base_record(Some(&"P".repeat(64)), pad));
+        assert!(
+            none_len < MAX_REWIND_RECORD_BYTES && id_len > MAX_REWIND_RECORD_BYTES,
+            "the near-cap band must exist: None measures {none_len}, with-id measures {id_len}, cap {MAX_REWIND_RECORD_BYTES}"
+        );
+        // 64 是 checkpoint id 的合法上界（code_checkpoints
+        // ::validate_checkpoint_id），预留面因此 ≥ 权威落点的真实面。
+        let code = include_str!("../../features/code_checkpoints/mod.rs");
+        assert!(
+            code.contains("id.len() > 64"),
+            "the checkpoint id length bound this reservation relies on is still 64"
+        );
     }
 
     /// The restore consumer must pop exactly the record it consumed

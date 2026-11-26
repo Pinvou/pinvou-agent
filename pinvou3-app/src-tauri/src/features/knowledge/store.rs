@@ -1637,7 +1637,6 @@ mod tests {
     /// (column already present) must take the duplicate-column arm without
     /// surfacing an error. Without the migration every walk disclosure write
     /// on an existing user store would fail.
-    #[test]
     /// 迁移收敛（review P2，同时打开）：输家状态可静态复现——列已存在但
     /// user_version 仍钉在 v4（另一进程 ALTER 已提交、版本写尚未发生的
     /// 窗口，或输家在 BEGIN IMMEDIATE 上等到赢家提交后的情形）。重开必须
@@ -1683,6 +1682,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
     fn v4_database_gains_the_skipped_by_excluder_column_on_open() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

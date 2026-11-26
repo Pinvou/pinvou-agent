@@ -16,19 +16,41 @@ test('review P2 stale rows: loadDocs stamps the in-flight target at entry', () =
   );
 });
 
-test('review P2 stale rows: the rows render gate admits only the stamped collection', () => {
+test('review P2 stale rows: rows paint only for the collection that actually landed', () => {
+  // Loaded identity (set only when a reset page lands) gates the render —
+  // the in-flight stamp alone would admit the old rows under the new
+  // heading (stamp B while docs holds A) and a rejected B request would
+  // leave them there indefinitely.
   assert.match(
     knowledgeView,
-    /const rows = activeColl\s*\n\s*\? \(docsPaging\.collId === activeColl\.id \? docs : \[\]\)\s*\n\s*: allDocs;/,
+    /const rows = activeColl\s*\n\s*\? \(docsLoadedCollId === activeColl\.id \? docs : \[\]\)\s*\n\s*: allDocs;/,
     'foreign rows must never paint under the focused heading (failed switch shows the honest empty state)',
+  );
+  assert.match(
+    knowledgeView,
+    /setDocsLoadedCollId\(cid\);/,
+    'the loaded identity moves only with landed rows',
+  );
+});
+
+test('review P2 publish enumeration: exhausting the page cap fails loudly', () => {
+  assert.match(
+    remoteView,
+    /if \(capped\) \{\s*\n\s*throw new Error\(t\.remoteKbPublishEnumerationCapped/,
+    'hitting the page cap must raise the explicit overflow error instead of preparing a supposedly complete publish',
   );
 });
 
 test('review P2 full enumeration: preparePublish pages kb_documents until a short page', () => {
   assert.match(
     remoteView,
-    /for \(let pages = 0; pages < KB_PUBLISH_PAGE_CAP; pages \+= 1\) \{[\s\S]{0,400}?invokeTauri\('kb_documents', \{[\s\S]{0,200}?offset,\s*\n\s*\}\) \|\| \[\];[\s\S]{0,200}?if \(page\.length < KB_PUBLISH_PAGE_SIZE\) break;\s*\n\s*offset \+= page\.length;/,
-    'publish preparation must enumerate with an advancing offset (limit: 0 is backend-clamped to an implicit 500-row page and silently truncated large collections)',
+    /for \(let pages = 0; pages < KB_PUBLISH_PAGE_CAP; pages \+= 1\) \{[\s\S]{0,400}?invokeTauri\('kb_documents', \{[\s\S]{0,200}?offset,\s*\n\s*\}\) \|\| \[\];[\s\S]{0,200}?if \(page\.length < KB_PUBLISH_PAGE_SIZE\) \{\s*\n\s*capped = false;\s*\n\s*break;/,
+    'publish preparation must enumerate with an advancing offset until a CONFIRMED short page (limit: 0 is backend-clamped to an implicit 500-row page)',
+  );
+  assert.match(
+    remoteView,
+    /let capped = true;/,
+    'a cap-exhausted loop must default to overflow (only a confirmed short page proves completeness)',
   );
   assert.doesNotMatch(
     remoteView,
