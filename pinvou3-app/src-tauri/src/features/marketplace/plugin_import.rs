@@ -1592,6 +1592,18 @@ pub fn import_plugin_package_gated(
             .map_err(|e| format!("技能 '{skill_name}' 的 {rel} 缺失或不可读，拒收: {e}"))?;
         let declared_size = entry.size();
         let buf = read_zip_entry_bounded(&mut entry, declared_size, &rel)?;
+        // 审读尺寸契约（review P2，写入侧同 discovery）：发现通道对超过
+        // AUDIT_MAX_SKILL_MD_BYTES 的 SKILL.md 直接跳过该技能——统一插件导入
+        // 若不设同一上限，就会落库一个钉定引擎永远跳过的技能。与
+        // read_skill_name_for_import 同一口径的拒绝文案。
+        if buf.len() as u64
+            > crate::features::marketplace::skill_marketplace::MAX_SKILL_MD_READ_BYTES
+        {
+            return Err(format!(
+                "技能 '{skill_name}' 的 SKILL.md 超过 {} KiB 审读上限，无法导入（请精简 SKILL.md 后重试）",
+                crate::features::marketplace::skill_marketplace::MAX_SKILL_MD_READ_BYTES / 1024
+            ));
+        }
         if let Some(fm_name) =
             crate::features::marketplace::skill_marketplace::read_skill_name_from_str(
                 std::str::from_utf8(&buf).unwrap_or(""),

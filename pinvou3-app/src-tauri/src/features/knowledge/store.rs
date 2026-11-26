@@ -581,32 +581,50 @@ impl Store {
             // table_info) instead of string-matching SQLite's error text: a
             // fresh v5 database already has the column from the CREATE TABLE
             // and skips the ALTER, a pre-v5 store takes it, and any real
-            // fault still propagates. Known one-time race: the desktop app
-            // and the CLI opening the SAME pre-v5 store concurrently can
-            // both observe column-absent; the loser's ALTER fails loudly
-            // ("duplicate column name"), that open errors, and the next
-            // open takes the steady-state branch — no corruption, no
-            // silent recovery. Accepted for a one-time migration window.
-            let column_present = {
-                let mut stmt = w.prepare("PRAGMA table_info(knowledge_import_jobs)")?;
-                let mut rows = stmt.query([])?;
-                let mut found = false;
-                while let Some(row) = rows.next()? {
-                    let name: String = row.get(1)?;
-                    if name.eq_ignore_ascii_case("skipped_by_excluder") {
-                        found = true;
-                        break;
+            // fault still propagates. Concurrency (review P2): the check →
+            // ALTER → version write now run inside one BEGIN IMMEDIATE —
+            // same convergence shape as the files_au replacement above — so
+            // the desktop app and the CLI opening the SAME pre-v5 store
+            // concurrently no longer race a column-absent observation: the
+            // loser blocks on BEGIN IMMEDIATE within busy_timeout, then its
+            // in-transaction check sees the winner's committed column and
+            // skips the ALTER; both opens converge instead of the loser
+            // failing with "duplicate column name" until the next open. A
+            // mid-batch failure (or a >5s lock holder timing out loudly,
+            // same as before) rolls the transaction back explicitly — a
+            // stranded txn would break every later transaction on this
+            // connection and hold the write lock against the other process
+            // until close. `PRAGMA user_version` is transactional in SQLite,
+            // so the version stamp cannot land without the column.
+            let migration_result = (|| -> rusqlite::Result<()> {
+                w.execute_batch("BEGIN IMMEDIATE;")?;
+                let column_present = {
+                    let mut stmt = w.prepare("PRAGMA table_info(knowledge_import_jobs)")?;
+                    let mut rows = stmt.query([])?;
+                    let mut found = false;
+                    while let Some(row) = rows.next()? {
+                        let name: String = row.get(1)?;
+                        if name.eq_ignore_ascii_case("skipped_by_excluder") {
+                            found = true;
+                            break;
+                        }
                     }
+                    found
+                };
+                if !column_present {
+                    w.execute_batch(
+                        "ALTER TABLE knowledge_import_jobs \
+                         ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
+                    )?;
                 }
-                found
-            };
-            if !column_present {
-                w.execute_batch(
-                    "ALTER TABLE knowledge_import_jobs \
-                     ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
-                )?;
+                w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                w.execute_batch("COMMIT;")?;
+                Ok(())
+            })();
+            if let Err(err) = migration_result {
+                let _ = w.execute_batch("ROLLBACK");
+                return Err(err);
             }
-            w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
@@ -1620,6 +1638,51 @@ mod tests {
     /// surfacing an error. Without the migration every walk disclosure write
     /// on an existing user store would fail.
     #[test]
+    /// 迁移收敛（review P2，同时打开）：输家状态可静态复现——列已存在但
+    /// user_version 仍钉在 v4（另一进程 ALTER 已提交、版本写尚未发生的
+    /// 窗口，或输家在 BEGIN IMMEDIATE 上等到赢家提交后的情形）。重开必须
+    /// 在事务内看到列已在、跳过 ALTER、补钉版本并成功打开——不再出现
+    /// "duplicate column name" 的硬失败。
+    #[test]
+    fn stale_version_store_with_column_present_reopens() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_v4_race_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE knowledge_import_jobs (\
+               id              TEXT PRIMARY KEY,\
+               collection_id   INTEGER NOT NULL,\
+               roots_json      TEXT NOT NULL,\
+               state           TEXT NOT NULL,\
+               created_at      INTEGER NOT NULL,\
+               updated_at      INTEGER NOT NULL,\
+               finished_at     INTEGER,\
+               skipped_by_excluder INTEGER NOT NULL DEFAULT 0\
+             );\
+             PRAGMA user_version=4;",
+        )
+        .unwrap();
+        drop(c);
+
+        let store = Store::open(&path).expect("reopen must converge, not fail on duplicate column");
+        let conn = store.conn_arc();
+        let version: i64 = conn
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn v4_database_gains_the_skipped_by_excluder_column_on_open() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

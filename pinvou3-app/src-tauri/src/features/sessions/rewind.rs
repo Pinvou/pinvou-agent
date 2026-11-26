@@ -369,30 +369,34 @@ fn rewound_record_serialized_len(record: &RewoundTurnsRecord) -> usize {
 /// 全局预算执行（r11 review M6，只在 truncate 追加点调用）：把 map 收紧到
 /// `budget` 字节内。淘汰次序：各会话 vec 只追加（push 在尾部），队首即该
 /// 会话最老记录，全局取 `rewound_at` 最小者（RFC3339 UTC，字典序 == 时间序）。
-/// `protected_id` 的最后一条（刚写入的新备份）永不淘汰——备份是被截对话唯一
-/// 留存，预算不得把本次回退的备份挤掉；受单条上限约束它必然 ≤
-/// `MAX_REWIND_RECORD_BYTES` < 预算，循环因此必然终止。返回淘汰条数。
+/// 每个会话的最后一条（含刚写入的新备份）永不淘汰——那是该会话唯一的
+/// Undo 凭据；受单条上限约束单条必然 ≤ `MAX_REWIND_RECORD_BYTES` < 预算。
+/// 淘汰完所有可淘汰记录仍超预算 ⇒ Err（调用方在写任何持久状态之前如实
+/// 拒绝）。成功时返回淘汰条数。
 fn enforce_rewound_map_budget(
     map: &mut HashMap<String, Vec<RewoundTurnsRecord>>,
     budget: usize,
-    protected_id: &str,
-) -> usize {
+) -> anyhow::Result<usize> {
     // 计量失败（serde 只在非有限浮点上失败，实践不可达）时大声跳过而不是
     // 静默按 0 处理——0 会让预算看似恒满足，本轮淘汰静默失效（r12 review）。
     let mut total: usize = match serde_json::to_vec_pretty(&*map) {
         Ok(bytes) => bytes.len(),
         Err(error) => {
             eprintln!("[sessions] rewind map budget skipped (serialize failed): {error:#}");
-            return 0;
+            return Ok(0);
         }
     };
+    // 淘汰政策收紧（review P2，回收记录保全）：任何会话的最后一条备份都是
+    // 它唯一的 Undo 凭据——先前「全局最老先淘汰」会把别的会话仅有的恢复
+    // 记录在本轮回退提交之前挤掉，且 sidecar 落盘先于 transcript 持久化，
+    // 若后者失败，别会话的记录已经没了而本次回退又未提交。现在只有持有
+    // 多条记录的会话可供淘汰（各留最后一条）；淘汰后仍超预算 ⇒ 返回
+    // Err，调用方在写任何持久状态之前如实拒绝本次回退。
     let mut evicted = 0usize;
     while total > budget {
         let oldest = map
             .iter()
-            .filter(|(id, records)| {
-                !records.is_empty() && !(id.as_str() == protected_id && records.len() == 1)
-            })
+            .filter(|(_id, records)| records.len() > 1)
             .min_by(|a, b| a.1[0].rewound_at.cmp(&b.1[0].rewound_at).then(a.0.cmp(b.0)))
             .map(|(id, _)| id.clone());
         let Some(id) = oldest else {
@@ -411,7 +415,14 @@ fn enforce_rewound_map_budget(
             map.remove(&id);
         }
     }
-    evicted
+    if total > budget {
+        bail!(
+            "回退备份预算不足：即使淘汰所有可淘汰的旧备份（各会话最后一条保留），仍需 {} 字节 > {} 字节预算，已中止回退（transcript 未改动）；请删除或分叉旧会话释放备份预算",
+            total,
+            budget
+        );
+    }
+    Ok(evicted)
 }
 
 /// 从某会话的记录队列尾部弹出「正是本次反悔消费掉的那条」（r11 review M5）：
@@ -452,6 +463,66 @@ impl SessionStore {
     /// （备份是被截对话唯一的留存，不能裸截）。
     ///
     /// `pre_restore_checkpoint_id`：编排命令在恢复代码步骤拿到的本次回退专属
+    /// 备份准入预检（review P2，编排次序）：在不动任何内存/磁盘状态的前提下，
+    /// 按 truncate_to_user_turn 的同一构造口径构建临时记录，跑同一组准入检查
+    /// （单条上限 + 全局预算余量，含「各会话最后一条保留」后的可淘汰量）。
+    /// 编排命令在恢复工作区之前调用它——「超限拒绝」因此发生在任何不可逆
+    /// 变更之前，不再出现「工作区已回滚、对话截断被拒、无 Undo 条目、重试
+    /// 必然复现」的死锁形态。truncate 落点处的检查保持为权威（预检与落点
+    /// 之间另一位写者可能改变条件——两处检查同口径，拒绝语义不变）。
+    pub fn precheck_rewind_truncate(&self, id: &str, keep_turns: u32) -> Result<()> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for turn rewind precheck"))?;
+        let turn_prompt_indices: Vec<usize> =
+            deepseek_tui::user_turn_prompt_indices(&session.messages);
+        let total_turns = turn_prompt_indices.len() as u32;
+        if keep_turns >= total_turns {
+            bail!("会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾（无可截内容）");
+        }
+        let cut = turn_prompt_indices[keep_turns as usize];
+        let original_revision = transcript_revision(&session.messages)?;
+        let truncated_revision = transcript_revision(&session.messages[..cut])?;
+        let record = RewoundTurnsRecord {
+            rewound_at: Utc::now().to_rfc3339(),
+            original_revision,
+            kept_turns: keep_turns,
+            pre_restore_checkpoint_id: None,
+            truncated_revision,
+            removed_messages: session.messages[cut..].to_vec(),
+        };
+        let record_len = rewound_record_serialized_len(&record);
+        if record_len == usize::MAX {
+            bail!("回退备份序列化失败，已中止回退（transcript 未改动）");
+        }
+        if record_len > MAX_REWIND_RECORD_BYTES {
+            bail!(
+                "被截段落的回退备份序列化后约 {} MiB，超过 {} MiB 单条上限，已中止回退（transcript 未改动）；更大的裁剪请删除或分叉会话",
+                record_len.div_ceil(1024 * 1024),
+                MAX_REWIND_RECORD_BYTES / (1024 * 1024),
+            );
+        }
+        // 预算余量（同一淘汰口径的静态投影）：当前 map 总量 + 新记录
+        // ≤ 预算 + 可淘汰量（各会话除最后一条外的记录之和）。
+        let backups = load_rewound_turns_map_for_read()?;
+        let total: usize = serde_json::to_vec_pretty(&backups)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX);
+        let evictable: usize = backups
+            .values()
+            .flat_map(|records| records.iter().rev().skip(1))
+            .map(rewound_record_serialized_len)
+            .sum();
+        if total.saturating_add(record_len) > MAX_REWIND_TURNS_MAP_BYTES.saturating_add(evictable) {
+            bail!(
+                "回退备份预算不足：即使淘汰所有可淘汰的旧备份（各会话最后一条保留），新备份无法全部入簿，已中止回退（transcript 未改动）；请删除或分叉旧会话释放备份预算"
+            );
+        }
+        Ok(())
+    }
+
     /// 回滚点（降级回退传 None），随记录落盘，供 undo 精确配对。
     pub fn truncate_to_user_turn(
         &self,
@@ -526,9 +597,12 @@ impl SessionStore {
                 let overflow = records.len() - MAX_REWIND_BACKUPS_PER_SESSION;
                 records.drain(..overflow);
             }
-            // 全局字节预算（r11 review M6）：执行在唯一增长点，刚写入的记录
-            // 受保护，其余按最老先淘汰到预算内。
-            enforce_rewound_map_budget(&mut backups, MAX_REWIND_TURNS_MAP_BYTES, id);
+            // 全局字节预算（r11 review M6）：执行在唯一增长点；各会话最后
+            // 一条备份永不淘汰（review P2，回收记录保全），淘汰后仍超预算
+            // 则整体拒绝——此处 transcript 仍未落盘，「transcript 未改动」
+            // 语义保持。
+            enforce_rewound_map_budget(&mut backups, MAX_REWIND_TURNS_MAP_BYTES)
+                .context("回退备份预算不足，已中止截断")?;
             persist_rewound_turns_map(&backups).context("回退备份写入失败，已中止截断")?;
         }
 
@@ -809,7 +883,7 @@ mod tests {
         // Generous budget: the map stays untouched.
         let mut generous = map.clone();
         assert_eq!(
-            enforce_rewound_map_budget(&mut generous, usize::MAX, "sess-new"),
+            enforce_rewound_map_budget(&mut generous, usize::MAX).expect("fits"),
             0
         );
         assert_eq!(
@@ -818,48 +892,43 @@ mod tests {
             "a generous budget must not evict anything"
         );
 
-        // Mid budget, derived not guessed: all four records serialize to
-        // the same byte count (identical shape, same-length timestamps —
-        // the probe below uses a same-length placeholder so its serialized
-        // size matches exactly), so budget = map_total − 2×record is
-        // exactly the post-two-evictions size — oldest-first evicts
-        // sess-old then sess-mid and stops with sess-new's front AND
-        // protected tail intact. Newest-first would evict sess-new's front
-        // first and end with sess-old surviving instead: a different final
-        // set.
+        // 回收记录保全（review P2）：sess-old 与 sess-mid 各只持一条备份——
+        // 那是它们唯一的 Undo 凭据，任何预算都不得把它们挤掉。只有
+        // sess-new（两条）的队首可淘汰；淘汰一条后仍超预算 ⇒ Err 溢出，
+        // 调用方在写任何持久状态之前如实拒绝本次回退。
+        let mut mid = map.clone();
+        let overflow = enforce_rewound_map_budget(&mut mid, 1).expect_err("must overflow");
+        assert!(
+            format!("{overflow:#}").contains("预算不足"),
+            "overflow names the budget refusal: {overflow:#}"
+        );
+        assert_eq!(
+            mid["sess-old"].len(),
+            1,
+            "another session's only Undo record survives the budget"
+        );
+        assert_eq!(mid["sess-mid"].len(), 1, "same preservation for sess-mid");
+        assert_eq!(
+            mid["sess-new"].len(),
+            1,
+            "only the multi-record session sheds its oldest"
+        );
+        assert_eq!(
+            mid["sess-new"][0].rewound_at, "2026-12-02T00:00:00+00:00",
+            "the protected session keeps its newest backup"
+        );
+
+        // 大预算 + 多记录会话：旧政策语义（最老先淘汰）在本会话多条记录间
+        // 保持——sess-new 的队首被淘汰以让位新记录，单记录会话不动。
+        let mut shedding = map.clone();
         let record_bytes =
             rewound_record_serialized_len(&padded_rewound_record("0000-00-00T00:00:00+00:00", 400));
-        // The budget counts PRETTY bytes (the persisted format), so the
-        // measurement here must be pretty too.
         let map_total = serde_json::to_vec_pretty(&map).expect("serialize").len();
-        let mut mid = map.clone();
-        let evicted =
-            enforce_rewound_map_budget(&mut mid, map_total - 2 * record_bytes, "sess-new");
-        assert_eq!(evicted, 2);
-        assert!(mid.contains_key("sess-new"), "protected session survives");
-        assert_eq!(
-            mid["sess-new"]
-                .iter()
-                .map(|r| r.rewound_at.as_str())
-                .collect::<Vec<_>>(),
-            ["2026-12-01T00:00:00+00:00", "2026-12-02T00:00:00+00:00"],
-            "oldest-first keeps the new session whole"
-        );
-        assert_eq!(mid.len(), 1, "emptied sessions are removed from the map");
-
-        // Budget below one record: everything evictable goes except the
-        // protected just-written record (sess-new's tail). Note sess-new's
-        // FRONT (2026-12-01) is evictable while a newer sibling exists —
-        // only the tail is the protected backup — so 3 evictions run, and
-        // the loop then stops with only the protected record left even
-        // though it alone exceeds the budget (the protected record may not
-        // be evicted; the per-record cap bounds its size).
-        let evicted = enforce_rewound_map_budget(&mut map, 1, "sess-new");
-        assert_eq!(evicted, 3);
-        let remaining = map.get("sess-new").expect("protected session survives");
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].rewound_at, "2026-12-02T00:00:00+00:00");
-        assert_eq!(map.len(), 1, "emptied sessions are removed from the map");
+        let evicted = enforce_rewound_map_budget(&mut shedding, map_total - record_bytes)
+            .expect("fits after shedding one");
+        assert_eq!(evicted, 1);
+        assert_eq!(shedding.len(), 3, "single-record sessions all survive");
+        assert_eq!(shedding["sess-new"].len(), 1);
     }
 
     /// The restore consumer must pop exactly the record it consumed

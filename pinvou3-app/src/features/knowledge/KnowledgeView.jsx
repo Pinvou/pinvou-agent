@@ -883,6 +883,15 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const allDocsGenerationRef = useRef(0);
       const loadDocs = async (cid) => {
         const generation = ++docsGenerationRef.current;
+        // Stamp the in-flight target at entry (review P2, stale rows under a
+        // new heading): openColl flips the heading and starts the load in the
+        // same event, so React batches this stamp into the same commit — a
+        // FAILED switch can then no longer leave the previous collection's
+        // rows (with live delete actions) rendering under the new heading;
+        // the render gate below holds the table empty until THIS
+        // collection's page lands. Same-collection refresh failures keep the
+        // stamp matching, so their rows survive.
+        setDocsPaging((p) => ({ ...p, gen: generation, collId: cid }));
         try {
           const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           if (generation !== docsGenerationRef.current) return;
@@ -1862,7 +1871,14 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       </div>}
                     </div>
                     {(() => {
-                      const rows = activeColl ? docs : allDocs;
+                      // Render gate (review P2, stale rows): only the
+                      // collection the docs table was last stamped for may
+                      // paint its rows under the focused heading — a failed
+                      // or superseded switch shows the honest empty state
+                      // instead of another collection's rows.
+                      const rows = activeColl
+                        ? (docsPaging.collId === activeColl.id ? docs : [])
+                        : allDocs;
                       if (rows.length === 0) return <div className={`text-center py-12 ${muted} text-[14px]`}>{activeColl ? t.kbCollEmpty : t.kbNoCollFiles}</div>;
                       return (
                       <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>

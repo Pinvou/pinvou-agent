@@ -5903,7 +5903,7 @@ impl AcpPool {
             let (id, modes, options) = new_acp_session(&connection, &workspace, backend).await?;
             (id, modes, options, false)
         };
-        restore_config_values(
+        let restore_failed = restore_config_values(
             &connection,
             &acp_session_id,
             &mut mode_state,
@@ -5912,9 +5912,20 @@ impl AcpPool {
             backend,
         )
         .await;
-        let current_model_id = current_config_value(&config_options, "model");
+        // 超时保全（review P2）：未知态失败的选择以保存值为准——否则一次
+        // 30s 超时就让对端陈旧值经 set_acp_session 覆盖用户保存的
+        // model/mode/config，下一次 spawn 还会把陈旧值当 desired（等值跳过
+        // 使真选择永不再试）。model 的观测值同样不回写（None 保住记录里的
+        // 保存值不被陈旧观测覆盖）。
+        let observed_values = config_values_from_options(&config_options, &mode_state);
+        let config_values =
+            keep_desired_for_failed(&observed_values, &desired_config_values, &restore_failed);
+        let current_model_id = if restore_failed.contains("model") {
+            None
+        } else {
+            current_config_value(&config_options, "model")
+        };
         let models = codex_models(&config_options);
-        let config_values = config_values_from_options(&config_options, &mode_state);
         let prompt_capabilities = initialized.agent_capabilities.prompt_capabilities.clone();
         // Round-49 review: the index mutator polls the cross-process section
         // lock and rewrites the whole session-agents.json — blocking worker,
@@ -6274,6 +6285,10 @@ async fn apply_saved_mode(
     .await
 }
 
+/// 恢复保存的选择，返回**未知态失败**的配置 id 集（review P2，超时保全）：
+/// 配置/模式请求超时（或其它错误）时对端的实际状态未知——调用方不得把
+/// 对端的陈旧值当作已恢复事实覆盖保存选择。「不再支持」的主动丢弃不算
+/// 失败（有意的值退役，6364-6371 的口径）。
 async fn restore_config_values(
     connection: &ConnectionTo<Agent>,
     acp_session_id: &str,
@@ -6281,7 +6296,7 @@ async fn restore_config_values(
     config_options: &mut Vec<SessionConfigOption>,
     values: &HashMap<String, String>,
     backend: AgentBackend,
-) {
+) -> HashSet<String> {
     let mut desired = values.iter().collect::<Vec<_>>();
     desired.sort_by(|(left, _), (right, _)| {
         let priority = |config_id: &str| match config_id {
@@ -6344,6 +6359,10 @@ async fn restore_config_values(
                 .is_some_and(|state| state.current_mode_id.to_string() != mode_id.as_str())
         {
             if let Err(error) = apply_saved_mode(connection, acp_session_id, modes, mode_id).await {
+                // 超时/失败 ⇒ 模式的对端实际状态未知——与配置超时同入
+                // failed 集（review P2）；先前的实现只记日志，调用方随后
+                // 用陈旧的 mode_state 覆盖了保存选择。
+                failed.insert("mode".to_string());
                 eprintln!(
                     "[pinvou3-app] skipped {} saved ACP mode {}: {error:#}",
                     backend.display_name(),
@@ -6369,6 +6388,69 @@ async fn restore_config_values(
                 value_id
             );
         }
+    }
+    failed
+}
+
+/// 超时保全（review P2）：对未知态失败的配置 id，用保存的选择覆盖对端
+/// 观察值——陈旧的 observed 值不得进入落盘的 config_values。纯函数便于
+/// 单测（failed 保 desired，成功者取 observed）。
+fn keep_desired_for_failed(
+    observed: &HashMap<String, String>,
+    desired: &HashMap<String, String>,
+    failed: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut merged = observed.clone();
+    for (id, value) in desired {
+        if failed.contains(id) {
+            merged.insert(id.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod restore_timeout_overlay_tests {
+    use super::keep_desired_for_failed;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn failed_ids_keep_desired_others_take_observed() {
+        let observed = HashMap::from([
+            ("model".to_string(), "stale-model".to_string()),
+            ("mode".to_string(), "stale-mode".to_string()),
+            ("effort".to_string(), "observed-effort".to_string()),
+        ]);
+        let desired = HashMap::from([
+            ("model".to_string(), "saved-model".to_string()),
+            ("mode".to_string(), "saved-mode".to_string()),
+            ("effort".to_string(), "saved-effort".to_string()),
+        ]);
+        let failed = HashSet::from(["model".to_string(), "mode".to_string()]);
+        let merged = keep_desired_for_failed(&observed, &desired, &failed);
+        assert_eq!(
+            merged.get("model").unwrap(),
+            "saved-model",
+            "unknown-state model keeps the saved choice"
+        );
+        assert_eq!(
+            merged.get("mode").unwrap(),
+            "saved-mode",
+            "unknown-state mode keeps the saved choice"
+        );
+        assert_eq!(
+            merged.get("effort").unwrap(),
+            "observed-effort",
+            "a successfully restored value takes the observed state"
+        );
+    }
+
+    #[test]
+    fn empty_failed_set_is_a_passthrough() {
+        let observed = HashMap::from([("model".to_string(), "observed".to_string())]);
+        let desired = HashMap::from([("model".to_string(), "saved".to_string())]);
+        let merged = keep_desired_for_failed(&observed, &desired, &HashSet::new());
+        assert_eq!(merged.get("model").unwrap(), "observed");
     }
 }
 

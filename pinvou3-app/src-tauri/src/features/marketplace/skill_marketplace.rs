@@ -1423,6 +1423,16 @@ impl SkillMarketplaceManager {
                 // 「命令 Err 但 extra 已写入」的中间态。引号/反斜杠经无损渲染器
                 // 正常回写（与 Restore 路径同一口径），不再是拒绝形态。
                 let new_content = rewrite_frontmatter_description(&content, desc)?;
+                // 审读尺寸契约（review P2，写入侧同读侧）：描述编辑可以把已
+                // 近顶的 SKILL.md 推过 AUDIT 上限——读侧会从此跳过该技能、恢复
+                // 动作拒开。在备份/落盘之前拒绝（「校验失败不动任何东西」契约
+                // 保持：备份 key 与 SKILL.md 均不触碰）。
+                if new_content.len() as u64 > MAX_SKILL_MD_READ_BYTES {
+                    return Err(format!(
+                        "改写后的 SKILL.md 将超过 {} KiB 审读上限，已拒绝保存（请缩短描述或精简 SKILL.md）",
+                        MAX_SKILL_MD_READ_BYTES / 1024
+                    ));
+                }
                 // 首次回写前备份引擎口径原值（含「原本没有」空串哨兵）——
                 // 清覆盖时据此恢复，frontmatter 默认值不因覆盖过一次而丢失。
                 // 互斥（同锁 RMW）+ 时机（首写前）保证不会备份到自己的回写值。
@@ -1456,6 +1466,15 @@ impl SkillMarketplaceManager {
                         // 任何生产路径产出的备份都能回读。
                         restore_frontmatter_description(&content, &backup)?
                     };
+                    // 同款尺寸契约（恢复路径）：备份原值的无损渲染推过上限时
+                    // 拒绝，文件保持不动（否则恢复后读侧拒开、恢复动作永久
+                    // 失败）。
+                    if new_content.len() as u64 > MAX_SKILL_MD_READ_BYTES {
+                        return Err(format!(
+                            "恢复后的 SKILL.md 将超过 {} KiB 审读上限，已拒绝恢复（请手工精简 SKILL.md）",
+                            MAX_SKILL_MD_READ_BYTES / 1024
+                        ));
+                    }
                     self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
                 }
                 // 恢复完成（或本就是原值）→ 清备份 key，回到「从未回写过」状态。
@@ -2011,7 +2030,8 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
 /// unreadable file, consistent with discovery's "skill skipped" semantics.
 /// Aliased to the fork gate's own const (the dependency is in this crate's
 /// graph) so the two gates cannot drift (r5 review).
-const MAX_SKILL_MD_READ_BYTES: u64 = deepseek_tui::skills::audit::AUDIT_MAX_SKILL_MD_BYTES;
+pub(crate) const MAX_SKILL_MD_READ_BYTES: u64 =
+    deepseek_tui::skills::audit::AUDIT_MAX_SKILL_MD_BYTES;
 
 fn read_skill_md_capped(md_path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(md_path).ok()?;

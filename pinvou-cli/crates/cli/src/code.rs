@@ -5883,6 +5883,19 @@ fn checkpoints_rewind(
     }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
 
+    // Backup admission precheck (review P2, orchestration order): run the
+    // transcript backup's full admission (per-record cap + global budget
+    // headroom) BEFORE the workspace restore, mirroring the desktop
+    // orchestrator. Previously an oversized rewind restored the files
+    // first, then failed deterministically in the truncation backup —
+    // workspace and conversation out of sync, no Undo entry, retry
+    // reproducing the same refusal.
+    store
+        .precheck_rewind_truncate(session, keep_turns)
+        .map_err(|error| {
+            CliError::failed(format!("code checkpoints rewind: backup precheck failed, aborting before any change: {error:#}"))
+        })?;
+
     // 1) Restore the code snapshot (restore_checkpoint forces a PreRestore
     //    rollback point and returns it for the undo bookkeeping).
     let undo =
