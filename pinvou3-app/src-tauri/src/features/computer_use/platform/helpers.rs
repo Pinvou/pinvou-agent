@@ -1223,8 +1223,7 @@ mod tests {
         let mut out = String::new();
         append_tree_truncation_footers(false, true, false, 0, MAX_TREE_DEPTH - 4, &mut out);
         assert_eq!(
-            out,
-            "... (truncated by depth; pass a larger max_depth to see more)\n",
+            out, "... (truncated by depth; pass a larger max_depth to see more)\n",
             "below-ceiling depth truncation keeps the raise-advice wording"
         );
         // Below the ceiling, raising the caller's budget is real advice and
