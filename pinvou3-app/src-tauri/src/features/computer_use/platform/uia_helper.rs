@@ -715,23 +715,25 @@ impl UiaHelperClient {
                         // below: finish_exchange returns the transport-level
                         // Response, which must convert to the tree outcome
                         // before returning from `tree`.
+                        // `?` has already unwrapped the transport Result —
+                        // what remains is the bare Response STRUCT (not a
+                        // Result), so the arms match its fields directly.
                         let response = self.finish_exchange(id, &line)?;
                         match response {
-                            Ok(Response {
+                            Response {
                                 ok: true,
                                 tree: Some(tree),
                                 ..
-                            }) => return Ok(UiaHelperOutcome::Ok(tree)),
-                            Ok(Response {
+                            } => return Ok(UiaHelperOutcome::Ok(tree)),
+                            Response {
                                 ok: false,
                                 error: Some(error),
                                 ..
-                            }) => return Ok(UiaHelperOutcome::Soft(error)),
+                            } => return Ok(UiaHelperOutcome::Soft(error)),
                             // A malformed frame is TRANSPORT corruption.
-                            Ok(_) => Err(HelperTransportError::Unparsable(
+                            Response { .. } => Err(HelperTransportError::Unparsable(
                                 "the tree response carried no tree and no error".to_string(),
                             )),
-                            Err(error) => Err(error),
                         }
                     }
                     Err(HelperTransportError::Timeout) => continue,
