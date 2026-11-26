@@ -4375,17 +4375,31 @@
   // and a late success can neither retract a newer failure's recovery.
   const modeSyncAttempt = new Map();
   const modeSyncSettled = new Map();
+  // Which failure armed the guard (review P2, pre-write rejection): the
+  // rejection arm may legitimately RELEASE the marker it armed itself, but
+  // must never release an older failure's still-unresolved guard.
+  const modeSyncUnresolvedArmedBy = new Map();
   function beginModeSwitchAttempt(sid) {
     const next = (modeSyncAttempt.get(sid) || 0) + 1;
     modeSyncAttempt.set(sid, next);
     return next;
   }
+  // Settlement acceptance (review P2, delayed-success ordering): returns
+  // whether THIS attempt is still the newest unsettled result. Callers must
+  // consult it BEFORE any projection, notice, card completion or follow-up
+  // send — a stale success's effects (old state write-back, obsolete
+  // durability notice, card commit, queued follow-up turn) must not land
+  // after a newer switch already settled. The fence and the projection run
+  // in the same synchronous continuation, so acceptance and effects are
+  // atomic with respect to other switch tasks.
   function settleModeSwitchSuccess(sid, attempt) {
-    if ((modeSyncSettled.get(sid) || 0) > attempt) return;
+    if ((modeSyncSettled.get(sid) || 0) > attempt) return false;
     modeSyncSettled.set(sid, attempt);
     modeSyncUnresolvedSids.delete(sid);
+    modeSyncUnresolvedArmedBy.delete(sid);
+    return true;
   }
-  async function handleModeSwitchFailure(sid, error, failCopy, attempt) {
+  async function handleModeSwitchFailure(sid, error, failCopy, attempt, preMode) {
     // A stale rejection (a newer-dispatched result already settled) is
     // dropped wholesale: the newer settlement's own receipt governs the
     // display, and re-arming here would re-block a repaired session.
@@ -4396,12 +4410,34 @@
     // while the readback is still pending — and stay armed if the readback
     // itself fails (a failed lookup never proves the sync repaired).
     modeSyncUnresolvedSids.add(sid);
+    // First writer wins: a second failure while an older marker is still
+    // held must NOT re-stamp the arming attempt — the rejection arm's
+    // own-marker release would then wrongly discharge the older guard.
+    if (!modeSyncUnresolvedArmedBy.has(sid)) modeSyncUnresolvedArmedBy.set(sid, attempt);
     try {
       const currentMode = await invoke("get_mode_state", { sessionId: sid });
       // Fence: a newer-dispatched settlement supersedes this recovery —
       // the newer settlement's own receipt governs, and re-applying a
       // stale read here would misreport the session's effective state.
       if ((modeSyncSettled.get(sid) || 0) > attempt) return;
+      // Pre-write rejection vs applied-but-unsynchronized (review P2): the
+      // caller captures the session's authoritative mode at dispatch time.
+      // A readback still showing that pre-dispatch mode proves the command
+      // rejected BEFORE landing — nothing is unsynchronized, so the receipt
+      // is the plain failure (no "effective" claim) and the edit-resend
+      // guard releases; only the attempt that armed the marker may release
+      // it, so an older failure's genuine guard survives. A CHANGED readback
+      // is the hot-sync failure shape: the mode landed, the receipt tracks
+      // the effective state, and the guard stays.
+      const effectiveMode = currentMode && (currentMode.mode || "auto");
+      if (preMode != null && effectiveMode === preMode) {
+        if (modeSyncUnresolvedArmedBy.get(sid) === attempt) {
+          modeSyncUnresolvedSids.delete(sid);
+          modeSyncUnresolvedArmedBy.delete(sid);
+        }
+        addSystemItemFor(sid, failCopy + error);
+        return;
+      }
       applyAuthoritativeModeState(sid, currentMode);
       addSystemItemFor(sid, bt("modeSyncFailedEffective") + error);
     } catch {
@@ -4422,8 +4458,15 @@
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     const switchAttempt = beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       const outcome = await invoke("set_plan_mode_next", { sessionId: sid });
+      // Settlement acceptance BEFORE any projection or notice (review P2):
+      // a stale success — a newer switch already settled — must not write
+      // its old state back or emit its durability note; the settle fence and
+      // the effects below run in one synchronous continuation.
+      if (!settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
@@ -4431,8 +4474,7 @@
         // persisted — an unsaved note, not a failure.
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      settleModeSwitchSuccess(sid, switchAttempt);
-    } catch (e) { await handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt); }
+    } catch (e) { await handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
     notify();
   }
 

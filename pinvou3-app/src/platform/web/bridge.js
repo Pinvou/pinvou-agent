@@ -1945,6 +1945,23 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
           bg.loadedFromDisk = true;
           bg.sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
           draftOutcome.createdSessionId = meta.id;
+          // Materialization-abort parity (review P2, background-default):
+          // the abort leg used to return BEFORE the lane-default block, so a
+          // background-registered session kept the backend Auto resolution
+          // even under an explicit work default — the same symptom as the
+          // tool-creation mirror. Apply the default to meta.id server-side
+          // (the per-session record); the background buffer's display state
+          // converges on the next switch (get_mode_state). Fire-and-forget:
+          // the abort leg must not hold the caller's send on a mode round
+          // trip, and a failed application degrades to the Auto fallback.
+          const abortLaneDefault = state.modeDefaults
+            && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
+          if (["plan", "yolo", "auto"].includes(abortLaneDefault)) {
+            (abortLaneDefault === "plan"
+              ? invoke("set_plan_mode_next", { sessionId: meta.id })
+              : invoke("set_session_mode", { sessionId: meta.id, mode: abortLaneDefault })
+            ).catch(function () {});
+          }
           return null;
         }
         switchActiveTo(meta.id, { fresh: true });
@@ -1967,24 +1984,31 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         // switched away during the awaits above, and a mode command against the current active session would target the wrong object.
         if (["plan", "yolo", "auto"].includes(laneDefault)) {
           const laneAttempt = pinvouSharedweb().beginModeSwitchAttempt(meta.id);
+          let lanePreMode = null;
+          runSyncOnSession(meta.id, function () { lanePreMode = state.modeState && state.modeState.mode; });
           try {
             const laneOutcome = laneDefault === "plan"
               ? await invoke("set_plan_mode_next", { sessionId: meta.id })
               : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
-            const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
-            applyAuthoritativeModeState(meta.id, laneModeState);
-            if (laneOutcome && laneOutcome.persist_error) {
-              runSyncOnSession(meta.id, function () {
-                addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
-              });
+            // Settlement acceptance BEFORE any projection or notice (review
+            // P2): a stale success — a newer switch already settled on this
+            // freshly created session — must not write the default back over
+            // it; the creation flow itself continues below.
+            if (pinvouSharedweb().settleModeSwitchSuccess(meta.id, laneAttempt)) {
+              const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
+              applyAuthoritativeModeState(meta.id, laneModeState);
+              if (laneOutcome && laneOutcome.persist_error) {
+                runSyncOnSession(meta.id, function () {
+                  addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
+                });
+              }
             }
-            pinvouSharedweb().settleModeSwitchSuccess(meta.id, laneAttempt);
           } catch (laneModeError) {
             // Convergence (review P2, receipt-equals-effective): the same
             // failed-hot-sync shape as every other switch surface — re-read
             // the authoritative state so the receipt tracks the effective
             // mode and mark the session for the edit-resend guard.
-            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt);
+            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt, lanePreMode);
           }
         }
         await syncActivePersona();
@@ -5651,17 +5675,22 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       // The invoke targets sid directly at issue time; after the await, the
       // result is written back to the same sid and modeSyncSeq is bumped.
       const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      // Settlement acceptance BEFORE any projection or notice (review P2):
+      // a stale success — a newer switch already settled — must not write
+      // its old state back or emit its durability note.
+      if (!pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
-    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); }
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); }
     notify();
   }
   // tri-mode unified mode switch (review P2: the web face's Auto→Yolo escape used to be a dead button —
@@ -5682,6 +5711,8 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       : state.activeSessionId;
     if (!sid) return;
     const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       const args = { sessionId: sid, mode };
       // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
@@ -5691,6 +5722,10 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       // `st.mode || 'auto'` an undefined mode — a Plan/Yolo switch displayed
       // Auto and reset the ask display — and dropped the durability note.
       const outcome = await invoke("set_session_mode", args);
+      // Settlement acceptance BEFORE any projection or notice (review P2):
+      // a stale success — a newer switch already settled — must not write
+      // its old state back or emit its durability/ask notes.
+      if (!pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
@@ -5703,8 +5738,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
-    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt); }
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -5735,17 +5769,27 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
     if (stuck && stuck.submitting) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     const switchAttempt = pinvouSharedweb().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      // Settlement acceptance BEFORE projection/notice/card completion
+      // (review P2): a stale success must neither write its old state back
+      // nor commit this card nor queue the follow-up turn — a newer switch
+      // already owns the session's posture. The card stays actionable-free
+      // (it belongs to the pre-switch plan posture a newer switch resolved).
+      if (!pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt)) {
+        patchItemByIdFor(sid, itemId, { submitting: false }); notify();
+        return;
+      }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedweb().settleModeSwitchSuccess(sid, switchAttempt);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); notify();
+      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();

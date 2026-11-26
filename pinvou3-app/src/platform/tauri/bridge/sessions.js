@@ -565,7 +565,32 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
         // 仍为 null 但导航 token 已前移——两种导航都中止物化（三审 P1）。
         if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
           state.pendingDraftMultiAgent = false;
+          // Materialization-abort parity (review P2, background-default): the
+          // abort leg used to drop the mode intent entirely — a background-
+          // registered session kept the backend Auto resolution even under an
+          // explicit work-lane default (unbound) or a draft-staged mode
+          // (bound). Apply the same mode the committed leg would have
+          // applied, server-side (the per-session record); the background
+          // buffer's display state converges on the next switch
+          // (get_mode_state). Fire-and-forget: the abort leg must not hold
+          // the caller's send on a mode round trip, and a failed application
+          // degrades to the Auto fallback.
+          const abortStagedMode = state.pendingDraftMode;
           state.pendingDraftMode = null;
+          const abortLaneDefault = boundWorkspace
+            ? null
+            : (state.modeDefaults && state.modeDefaults[state.modeLane === "code" ? "code" : "work"]);
+          const abortMode = boundWorkspace
+            ? (["plan", "yolo", "auto"].includes(abortStagedMode) ? abortStagedMode : null)
+            : (["plan", "yolo", "auto"].includes(abortLaneDefault) ? abortLaneDefault : null);
+          if (abortMode) {
+            (abortMode === "plan"
+              ? invoke("set_plan_mode_next", { sessionId: meta.id })
+              : abortMode === "yolo" && boundWorkspace
+              ? invoke("exit_plan_to_yolo", { sessionId: meta.id })
+              : invoke("set_session_mode", { sessionId: meta.id, mode: abortMode })
+            ).catch(function () {});
+          }
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
           draftOutcome.createdSessionId = meta.id;

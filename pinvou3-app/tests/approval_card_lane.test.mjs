@@ -1394,14 +1394,16 @@ try {
     const tauriInteraction = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
     assert.match(sharedBase, /function beginModeSwitchAttempt\(sid\) \{\s*\n\s*const next = \(modeSyncAttempt\.get\(sid\) \|\| 0\) \+ 1;\s*\n\s*modeSyncAttempt\.set\(sid, next\);\s*\n\s*return next;/,
       'attempt 身份必须在命令派发前分配（dispatch 序严格递增，晚到响应才有栅栏可比）');
-    assert.match(sharedBase, /async function handleModeSwitchFailure\(sid, error, failCopy, attempt\) \{[\s\S]{0,300}?if \(\(modeSyncSettled\.get\(sid\) \|\| 0\) > attempt\) return;\s*\n\s*modeSyncSettled\.set\(sid, attempt\);[\s\S]{0,800}?modeSyncUnresolvedSids\.add\(sid\);/,
-      '失败恢复必须先按派发序栅栏挡陈旧拒绝（晚于较新结算到达的拒绝不得重新武装），再在回读 await 前武装标记');
-    assert.match(sharedBase, /function settleModeSwitchSuccess\(sid, attempt\) \{\s*\n\s*if \(\(modeSyncSettled\.get\(sid\) \|\| 0\) > attempt\) return;\s*\n\s*modeSyncSettled\.set\(sid, attempt\);\s*\n\s*modeSyncUnresolvedSids\.delete\(sid\);/,
-      '成功结算必须按派发序栅栏（陈旧成功不得撤销较新失败的恢复标记）');
+    assert.match(sharedBase, /async function handleModeSwitchFailure\(sid, error, failCopy, attempt, preMode\) \{[\s\S]{0,300}?if \(\(modeSyncSettled\.get\(sid\) \|\| 0\) > attempt\) return;\s*\n\s*modeSyncSettled\.set\(sid, attempt\);[\s\S]{0,800}?modeSyncUnresolvedSids\.add\(sid\);[\s\S]{0,300}?if \(!modeSyncUnresolvedArmedBy\.has\(sid\)\) modeSyncUnresolvedArmedBy\.set\(sid, attempt\);/,
+      '失败恢复必须先按派发序栅栏挡陈旧拒绝，再在回读 await 前武装标记；武装者记录 first-writer-wins（第二次失败不得重盖 older 的武装者,否则拒绝臂会误释放 older 守卫）');
+    assert.match(sharedBase, /function settleModeSwitchSuccess\(sid, attempt\) \{\s*\n\s*if \(\(modeSyncSettled\.get\(sid\) \|\| 0\) > attempt\) return false;\s*\n\s*modeSyncSettled\.set\(sid, attempt\);\s*\n\s*modeSyncUnresolvedSids\.delete\(sid\);\s*\n\s*modeSyncUnresolvedArmedBy\.delete\(sid\);\s*\n\s*return true;/,
+      '成功结算必须按派发序栅栏并返回受理结果（陈旧成功不得撤销较新失败的恢复标记,调用方据此在投影前放弃效果）');
     assert.match(sharedBase, /\} catch \{[\s\S]{0,300}?addSystemItemFor\(sid, failCopy \+ error\);/,
       '回读也失败（会话已删/桥断）必须保持朴素失败文案——不得伪称已生效');
-    assert.match(sharedBase, /settleModeSwitchSuccess\(sid, switchAttempt\);\s*\n\s*\} catch \(e\) \{ await handleModeSwitchFailure\(sid, e, bt\("switchModeFailed"\), switchAttempt\); \}/,
-      '共享 setPlanModeNext 成功臂按桩结算、失败臂按桩栅栏收敛');
+    assert.match(sharedBase, /const effectiveMode = currentMode && \(currentMode\.mode \|\| "auto"\);\s*\n\s*if \(preMode != null && effectiveMode === preMode\) \{[\s\S]{0,400}?modeSyncUnresolvedSids\.delete\(sid\);\s*\n\s*modeSyncUnresolvedArmedBy\.delete\(sid\);\s*\n\s*\}\s*\n\s*addSystemItemFor\(sid, failCopy \+ error\);\s*\n\s*return;/,
+      'pre-write 拒绝判别（review P2）：回读仍等于派发前权威模式 ⇒ 命令在落地前被拒——朴素失败文案、不伪称已生效、仅解除本次武装的编辑守卫');
+    assert.match(sharedBase, /if \(!settleModeSwitchSuccess\(sid, switchAttempt\)\) \{ notify\(\); return; \}[\s\S]{0,200}?applyAuthoritativeModeState\(sid, st\);[\s\S]{0,300}?\} catch \(e\) \{ await handleModeSwitchFailure\(sid, e, bt\("switchModeFailed"\), switchAttempt, preSwitchMode\); \}/,
+      '共享 setPlanModeNext 成功臂必须先取结算受理门再投影/落注记（陈旧成功零效果）,失败臂携带派发前模式供拒绝判别');
     for (const [laneName, laneSource] of [
       ['tauri', tauriInteraction],
       ['web', web],
@@ -1416,9 +1418,15 @@ try {
       assert.ok(fenceHits >= 4, `${laneName} 每个切换面失败都必须按桩栅栏收敛（实得 ${fenceHits} 处）`);
       assert.match(laneSource, /editResendSyncBlocked\(sid\)\) \{[\s\S]{0,200}?addSystemItemFor\(sid, bt\("editResendSyncPending"\)\);[\s\S]{0,100}?notify\(\);\s*\n\s*return;/,
         `${laneName} editLastTurn 必须在未解决同步失败上拒收编辑重发（可重试文案）`);
+      const preModeHits = (laneSource.match(/= state\.modeState && state\.modeState\.mode;/g) || []).length;
+      assert.ok(preModeHits >= 4, `${laneName} 每个切换面都必须在派发前捕获会话权威模式（pre-write 拒绝判别,实得 ${preModeHits} 处）`);
+      const acceptGateHits = (laneSource.match(/settleModeSwitchSuccess\((?:sid|meta\.id), (?:switchAttempt|laneAttempt)\)\) \{/g) || []).length;
+      assert.ok(acceptGateHits >= 3, `${laneName} 成功臂必须以结算受理门包裹投影/注记/卡片动作（陈旧成功零效果,实得 ${acceptGateHits} 处）`);
+      const preModeFenceHits = (laneSource.match(/handleModeSwitchFailure\((?:meta\.id, laneModeError, bt\("switchModeFailed"\), laneAttempt, lanePreMode|sid, e, bt\("(?:switchModeFailed|exitPlanFailed)"\), switchAttempt, preSwitchMode)/g) || []).length;
+      assert.ok(preModeFenceHits >= 3, `${laneName} 失败臂必须把派发前模式传给拒绝判别（实得 ${preModeFenceHits} 处）`);
     }
-    assert.match(web, /\} catch \(laneModeError\) \{[\s\S]{0,400}?await pinvouSharedweb\(\)\.handleModeSwitchFailure\(meta\.id, laneModeError, bt\("switchModeFailed"\), laneAttempt\);/,
-      'web lane-default 物化的切换失败臂同样必须收敛');
+    assert.match(web, /\} catch \(laneModeError\) \{[\s\S]{0,400}?await pinvouSharedweb\(\)\.handleModeSwitchFailure\(meta\.id, laneModeError, bt\("switchModeFailed"\), laneAttempt, lanePreMode\);/,
+      'web lane-default 物化的切换失败臂同样必须收敛并携带派发前模式');
     const syncEffHits = (web.match(/modeSyncFailedEffective:/g) || []).length;
     assert.ok(syncEffHits >= 3, `modeSyncFailedEffective 文案必须三语齐备（实得 ${syncEffHits} 处）`);
     const askHits = (web.match(/modeAskPersistFailed:/g) || []).length;
@@ -1502,6 +1510,36 @@ try {
         '晚到的命令拒绝不得重新武装已修复的会话（派发序栅栏）');
       assert.equal(notes.length, notesBeforeLate,
         '晚到的拒绝不落任何文案（较新结算的回执为准）');
+      // (e) 结算受理门（review P2 成功侧排序）：陈旧成功 settlement 返回
+      // false——调用方在投影/注记/卡片提交前据此放弃全部效果；最新 attempt
+      // 返回 true 正常受理。
+      assert.equal(shared.settleModeSwitchSuccess('s1', staleAttempt), false,
+        '晚到成功结算必须被受理门拒绝（调用方在投影前放弃效果）');
+      assert.equal(shared.settleModeSwitchSuccess('s1', attemptOf()), true,
+        '最新派发的成功结算正常受理');
+      // (f) pre-write 拒绝判别（review P2 第四态对照）：先制造一笔真实
+      // 生效-未同步失败（读回模式 ≠ 派发前模式）武装守卫；随后一笔较新的
+      // pre-write 拒绝（读回模式 == 派发前模式）只解除**自己武装**的守卫,
+      // 不得释放 older 失败的真实守卫。
+      modeReadGate = () => Promise.resolve({ mode: 'yolo' });
+      const realUnsyncAttempt = attemptOf();
+      await shared.handleModeSwitchFailure('s1', new Error('real unsync'), 'switchModeFailed: ', realUnsyncAttempt, 'plan');
+      assert.equal(shared.editResendSyncBlocked('s1'), true,
+        '生效-未同步（读回≠派发前）必须武装编辑守卫');
+      assert.ok(notes.at(-1).includes('modeSyncFailedEffective'),
+        '生效-未同步落「已生效但引擎同步失败」收敛文案');
+      modeReadGate = () => Promise.resolve({ mode: 'plan' });
+      await shared.handleModeSwitchFailure('s1', new Error('pre-write boom'), 'switchModeFailed: ', attemptOf(), 'plan');
+      assert.equal(shared.editResendSyncBlocked('s1'), true,
+        'pre-write 拒绝（读回==派发前）只解除自己的守卫,older 失败的真实守卫保留');
+      assert.ok(notes.at(-1).includes('switchModeFailed: ') && !notes.at(-1).includes('modeSyncFailedEffective'),
+        'pre-write 拒绝落朴素失败文案（不伪称已生效）');
+      // (g) 孤立 pre-write 拒绝：无 prior 失败时,守卫在读回证明未落地后
+      // 完全解除（不再无谓阻塞编辑/重发）。
+      modeReadGate = () => Promise.resolve({ mode: 'auto' });
+      await shared.handleModeSwitchFailure('s3', new Error('pre-write boom'), 'switchModeFailed: ', shared.beginModeSwitchAttempt('s3'), 'auto');
+      assert.equal(shared.editResendSyncBlocked('s3'), false,
+        '孤立 pre-write 拒绝在读回证明未落地后解除守卫（不无谓阻塞编辑/重发）');
     }
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；

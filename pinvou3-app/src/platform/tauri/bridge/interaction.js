@@ -354,19 +354,24 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedtauriInt
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     const switchAttempt = pinvouSharedtauriInteraction().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       // The invoke targets sid directly at issue time; after the await, the
       // result is written back to the same sid (the protocol fingerprint is
       // computed from the call text; parameterizing it requires recomputing the
       // interaction-feature digest in step).
       const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      // Settlement acceptance BEFORE any projection or notice (review P2):
+      // a stale success — a newer switch already settled — must not write
+      // its old state back or emit its durability note.
+      if (!pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt);
-    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); }
+    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -470,21 +475,30 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     if (stuck && (stuck.submitting || stuck.resolved)) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     const switchAttempt = pinvouSharedtauriInteraction().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       // Direct invoke (the planStuckGoAuto pattern): the shared exitPlanToYolo
       // wrapper swallows failures internally (exitPlanFailed system item),
       // so a rejected switch is undetectable through it — commit-marking
       // needs the rejection to keep the card actionable.
       const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      // Settlement acceptance BEFORE projection/notice/card completion
+      // (review P2): a stale success must neither write its old state back
+      // nor commit this card nor queue the follow-up turn — a newer switch
+      // already owns the session's posture; the card stays un-resolved.
+      if (!pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt)) {
+        patchItemByIdFor(sid, itemId, { submitting: false }); notify();
+        return;
+      }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-      pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt);
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt); notify();
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
@@ -517,8 +531,18 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     if (stuck && (stuck.submitting || stuck.resolved)) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     const switchAttempt = pinvouSharedtauriInteraction().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       const outcome = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      // Settlement acceptance BEFORE projection/notice/card completion
+      // (review P2): a stale success must neither write its old state back
+      // nor commit this card nor queue the follow-up turn; the card stays
+      // un-resolved and the follow-up send is skipped below.
+      if (!pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt)) {
+        patchItemByIdFor(sid, itemId, { submitting: false }); notify();
+        return;
+      }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
@@ -531,11 +555,10 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-      pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt);
       patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt); notify(); return;
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); notify(); return;
     }
     try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
     catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
@@ -550,6 +573,8 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       : state.activeSessionId;
     if (!sid) return;
     const switchAttempt = pinvouSharedtauriInteraction().beginModeSwitchAttempt(sid);
+    let preSwitchMode = null;
+    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
     try {
       const args = { sessionId: sid, mode };
       // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
@@ -559,6 +584,10 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       // the mode is EFFECTIVE but not persisted — an "unsaved" note, not a
       // failure (the chip stays on the new mode; a reopen restores the old).
       const outcome = await invoke("set_session_mode", args);
+      // Settlement acceptance BEFORE any projection or notice (review P2):
+      // a stale success — a newer switch already settled — must not write
+      // its old state back or emit its durability/ask notes.
+      if (!pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
       const st = outcome && outcome.state ? outcome.state : outcome;
       applyAuthoritativeModeState(sid, st);
       if (outcome && outcome.persist_error) {
@@ -571,8 +600,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-      pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt);
-    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt); }
+    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
     notify();
   }
   // Per-session "ask on guardrail hit" toggle: optimistic flip (the backend hot-syncs the engine's
