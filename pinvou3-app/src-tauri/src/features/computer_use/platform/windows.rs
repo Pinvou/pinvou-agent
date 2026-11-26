@@ -1254,6 +1254,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             writer.truncated_by_depth,
             false,
             writer.next_index,
+            max_depth,
             &mut out,
         );
         Ok(out)

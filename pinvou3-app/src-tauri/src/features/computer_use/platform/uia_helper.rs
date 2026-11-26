@@ -302,6 +302,7 @@ fn helper_tree(
         writer.truncated_by_depth,
         top_cap_bound,
         writer.next_index,
+        max_depth,
         &mut out,
     );
     Ok(out)
@@ -709,7 +710,30 @@ impl UiaHelperClient {
                 }
                 let slice = CANCEL_POLL_SLICE.min(deadline - now);
                 match self.take_line(slice) {
-                    Ok(line) => return self.finish_exchange(id, &line),
+                    Ok(line) => {
+                        // Same adjudication as the non-cancellable match
+                        // below: finish_exchange returns the transport-level
+                        // Response, which must convert to the tree outcome
+                        // before returning from `tree`.
+                        let response = self.finish_exchange(id, &line)?;
+                        match response {
+                            Ok(Response {
+                                ok: true,
+                                tree: Some(tree),
+                                ..
+                            }) => return Ok(UiaHelperOutcome::Ok(tree)),
+                            Ok(Response {
+                                ok: false,
+                                error: Some(error),
+                                ..
+                            }) => return Ok(UiaHelperOutcome::Soft(error)),
+                            // A malformed frame is TRANSPORT corruption.
+                            Ok(_) => Err(HelperTransportError::Unparsable(
+                                "the tree response carried no tree and no error".to_string(),
+                            )),
+                            Err(error) => Err(error),
+                        }
+                    }
                     Err(HelperTransportError::Timeout) => continue,
                     Err(error) => return Err(error),
                 }

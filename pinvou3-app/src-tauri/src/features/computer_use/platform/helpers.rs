@@ -101,6 +101,7 @@ pub(crate) fn append_tree_truncation_footers(
     truncated_by_depth: bool,
     cap_bounded: bool,
     emitted_nodes: u32,
+    depth_budget: u32,
     out: &mut String,
 ) {
     // Cap-aware advice (review P3): at the stack's own hard ceiling the old
@@ -125,10 +126,21 @@ pub(crate) fn append_tree_truncation_footers(
         }
     }
     if truncated_by_depth {
-        let _ = writeln!(
-            out,
-            "... (truncated by depth — this stack's hard ceiling; a larger max_depth is rejected by the parser)"
-        );
+        // Same at-ceiling distinction as the node footer (review follow-up):
+        // a caller whose max_depth budget sat BELOW the stack clamp also
+        // truncates by depth — for that caller raising max_depth is real
+        // advice, and the ceiling wording would be wrong.
+        if depth_budget >= MAX_TREE_DEPTH {
+            let _ = writeln!(
+                out,
+                "... (truncated by depth — this stack's hard ceiling; a larger max_depth is rejected by the parser)"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "... (truncated by depth; pass a larger max_depth to see more)"
+            );
+        }
     }
     if cap_bounded {
         let _ = writeln!(
@@ -1196,7 +1208,7 @@ mod tests {
         // is a hard parse error now (review P3: the old advice manufactured
         // the raise-rejected loop).
         let mut out = String::new();
-        append_tree_truncation_footers(true, true, true, MAX_TREE_NODES, &mut out);
+        append_tree_truncation_footers(true, true, true, MAX_TREE_NODES, MAX_TREE_DEPTH, &mut out);
         assert_eq!(
             out,
             format!(
@@ -1207,6 +1219,14 @@ mod tests {
             ),
             "at-cap truncation renders the ceiling wording in node/depth/cap order"
         );
+        // Below-ceiling depth budget: raising max_depth is real advice.
+        let mut out = String::new();
+        append_tree_truncation_footers(false, true, false, 0, MAX_TREE_DEPTH - 4, &mut out);
+        assert_eq!(
+            out,
+            "... (truncated by depth; pass a larger max_depth to see more)\n",
+            "below-ceiling depth truncation keeps the raise-advice wording"
+        );
         // Below the ceiling, raising the caller's budget is real advice and
         // keeps the historical wording (byte-stable with the pre-change
         // below-cap shape).
@@ -1215,13 +1235,13 @@ mod tests {
         // admits up to 10000, so a walk that stopped under the 2000-node
         // stack ceiling still leaves real headroom to advise about).
         let mut out = String::new();
-        append_tree_truncation_footers(true, false, false, 1_500, &mut out);
+        append_tree_truncation_footers(true, false, false, 1_500, MAX_TREE_DEPTH, &mut out);
         assert_eq!(
             out, "... (truncated at 1500 nodes; pass a larger max_nodes to see more)\n",
             "below-cap truncation keeps the raise-advice wording"
         );
         let mut out = String::new();
-        append_tree_truncation_footers(false, false, false, 0, &mut out);
+        append_tree_truncation_footers(false, false, false, 0, MAX_TREE_DEPTH, &mut out);
         assert!(
             out.is_empty(),
             "a clean walk appends nothing (the physical stack passes \

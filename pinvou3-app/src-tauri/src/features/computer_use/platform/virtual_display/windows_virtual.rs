@@ -4502,6 +4502,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             writer.truncated_by_depth,
             top_cap_bound,
             writer.next_index,
+            max_depth,
             &mut out,
         );
         Ok(out)
