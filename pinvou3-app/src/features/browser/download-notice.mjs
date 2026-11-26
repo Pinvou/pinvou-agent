@@ -63,9 +63,11 @@ export function downloadNoticesReducer(state, action) {
       const notice = action.notice;
       if (!notice) return state || {};
       const key = notice.downloadId || UNKNOWN_DOWNLOAD;
-      // Re-insert so the most recently updated download is shown last.
-      const { [key]: _replaced, ...rest } = state || {};
-      const next = { ...rest, [key]: notice };
+      // Copy, remove, and re-insert so the most recently updated download is
+      // shown last.
+      const next = { ...state };
+      delete next[key];
+      next[key] = notice;
       return trimNotices(next);
     }
     // Mount-time backfill of the backend's live `unsaved` records. An id the
@@ -88,8 +90,9 @@ export function downloadNoticesReducer(state, action) {
     case 'dismiss': {
       const key = action.downloadId || UNKNOWN_DOWNLOAD;
       if (!(key in (state || {}))) return state || {};
-      const { [key]: _dismissed, ...rest } = state;
-      return rest;
+      const next = { ...state };
+      delete next[key];
+      return next;
     }
     case 'reset':
       return {};
