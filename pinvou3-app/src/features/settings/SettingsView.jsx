@@ -616,6 +616,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // base URL 同款镜像(复审 M5):探测在飞时改 URL,resolve 后的旧端点结果
       // 必须作废,不允许在 URL B 的表单头/落库 payload 下展示 URL A 的列表。
       const baseUrlRef = useRef(baseUrl);
+      // 测试连接的生效输入镜像(r14 P3):resolve 时刻栅栏比对的现值来源——
+      // 运行中的 handleTest 闭包持有旧渲染的 state,直接读会永远等于快照。
+      const testInputsRef = useRef({ key: apiKey, noAuth, keyAction });
+      testInputsRef.current = { key: apiKey, noAuth, keyAction };
       baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
       // wire 模型 ID 同款镜像(复审 M2):端点事实按模型探得,测试在飞时换了模型
       // (目录切换/手输 ID/候选行填充),旧模型的数字不得填进新模型的空字段。
@@ -851,13 +855,19 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         // resolve 时刻守卫(复审 M5):点击瞬间快照 base URL,resolve 时发现
         // 表单已改走就整份丢弃——结果(含失败结果)属于旧端点,静默丢弃,
-        // 不打扰用户。
+        // 不打扰用户。同 URL 的生效输入(r14 P3:pending 测试不得在凭据变化
+        // 后重绘过期状态)一并快照比对——key/免鉴权/凭据动作任一变化,迟到
+        // 的响应整份丢弃(输入变化时 G2 effect 已清掉已显示结果,此处补上
+        // 「不回填」的另一半)。
         const probedBaseUrl = baseUrl.trim();
+        const probedInputs = { key: apiKey.trim(), noAuth, keyAction };
         try {
           // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
           // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          const liveInputs = testInputsRef.current;
+          if (liveInputs.key.trim() !== probedInputs.key || liveInputs.noAuth !== probedInputs.noAuth || liveInputs.keyAction !== probedInputs.keyAction) return;
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
           // round-3 审 M2:端点事实按**已保存记录**的 model 字段探得并匹配
           // (后端经 fact_model 回带这个名字),编辑表单里未保存的 model-ID
@@ -869,6 +879,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           if (!factModel || modelRef.current.trim() === factModel) applyProbedFacts(result);
         } catch (e) {
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          const liveInputsCatch = testInputsRef.current;
+          if (liveInputsCatch.key.trim() !== probedInputs.key || liveInputsCatch.noAuth !== probedInputs.noAuth || liveInputsCatch.keyAction !== probedInputs.keyAction) return;
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setTesting(false); }

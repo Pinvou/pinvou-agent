@@ -294,8 +294,13 @@ assert.match(
   'handleTest must snapshot the base URL at click time',
 );
 assert.match(
-  handleTestSource,
-  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;\s*setTestResult\(normalizeConnectionTestResult\(result, isCodingPlan\)\);/,
+  settingsViewSource,
+  /const testInputsRef = useRef\(\{ key: apiKey, noAuth, keyAction \}\);\s*testInputsRef\.current = \{ key: apiKey, noAuth, keyAction \};/,
+  'the effective-input mirror must live on a per-render-synced ref — the running handleTest closure holds the old render state and would compare the fence against itself (r14 P3)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;\s*const liveInputs = testInputsRef\.current;\s*if \(liveInputs\.key\.trim\(\) !== probedInputs\.key \|\| liveInputs\.noAuth !== probedInputs\.noAuth \|\| liveInputs\.keyAction !== probedInputs\.keyAction\) return;\s*setTestResult\(normalizeConnectionTestResult\(result, isCodingPlan\)\);/,
   'a finished connection test whose base URL moved on must be discarded entirely BEFORE setTestResult on the resolve path (same silent semantics as handleFetchModels)',
 );
 assert.match(
@@ -1474,6 +1479,8 @@ function injectSource() {
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    // 测试连接延迟旋钮(⑦.9q):模拟在飞测试,验证迟到响应不重绘过期状态。
+    var modelTestDelay = 0;
     // probe_endpoint_models 候选(规格 §2.6):含一条与 ⑥.5g 已保存的
     // glm-5.3-flash @ https://example.com/v1 重复的行,用于钉「已保存」标记与
     // 批量去重(此前的 cloud-deepseek 已被更早的删除流程移除,不能当重复锚点);
@@ -1641,7 +1648,11 @@ function injectSource() {
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
-        case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'test_model_connection':
+          if (modelTestDelay) {
+            return new Promise(function (resolve) { setTimeout(function () { resolve(Object.assign({}, modelTestResponse)); }, modelTestDelay); });
+          }
+          return Promise.resolve(Object.assign({}, modelTestResponse));
         case 'probe_endpoint_models': return Promise.resolve(JSON.parse(JSON.stringify(probeEndpointListing)));
         case 'test_image_input_capability':
           return new Promise(function (resolve) {
@@ -1895,6 +1906,7 @@ function injectSource() {
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setModelTestDelay: function (ms) { modelTestDelay = Number(ms) || 0; },
       setProbeEndpointListing: function (next) { probeEndpointListing = JSON.parse(JSON.stringify(next || { status: 'listed', models: [] })); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
@@ -5917,6 +5929,34 @@ async function modalWidth(page, headingText) {
   rec('⑦.9p 世界恢复:deepseek-v4-pro 重加落库(后续 ⑦.img 场景依赖该行)',
     p14Restored.dialogClosed && p14Restored.landed >= 1,
     JSON.stringify(p14Restored));
+
+  // ===== ⑦.9q review round-14 P3 (a pending test repainting stale status):
+  // the credentials-change effect clears a DISPLAYED result, but an in-flight
+  // test resolving AFTER the change could repaint it. The resolve-time fence
+  // now snapshots the effective inputs (key/noAuth/keyAction) alongside the
+  // URL and drops the late response. Schedule: dispatch a 2s test on the
+  // deepseek edit form, change the key while it is in flight (the result
+  // clears per ⑦.9o), wait past the delay — the stale status must NOT
+  // reappear.
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestDelay(2000));
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await clickExact(page, '测试连接');
+  await sleep(300); // 测试在飞(2s 延迟)
+  const q9KeyInput = await page.$('[data-testid="model-api-key-input"]');
+  await q9KeyInput.type('x');
+  await sleep(300); // 输入变化:⑦.9o 效果清掉任何已显示结果
+  await sleep(2200); // 越过延迟:迟到响应抵达
+  const q9After = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return root ? root.innerText : '';
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestDelay(0));
+  rec('⑦.9q 在飞测试的迟到响应不得重绘过期状态:同 URL 凭据变化后,G2 清显示 + resolve 时刻输入栅栏丢弃迟到响应(状态保持默认提示)',
+    !q9After.includes('连接成功，服务可用'),
+    JSON.stringify({ staleRepaint: q9After.includes('连接成功，服务可用') }));
 
 
 
