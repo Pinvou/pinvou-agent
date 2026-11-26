@@ -19,10 +19,9 @@ export const QUOTE_CHIP_HEIGHT = 36;
  * A zero-size range rect (hidden/suspended WebView: the selection is still
  * valid but layout is not) falls back to a container-centered anchor instead
  * of dropping the quote action.
- *
- * @param {{ left: number, top: number, width: number, height: number }} containerRect
- * @param {{ left: number, top: number, width: number, height: number } | null} rangeRect
- * @returns {{ left: number, top: number }}
+ * @param {{ left: number, top: number, width: number, height: number }} containerRect - conversation container box
+ * @param {{ left: number, top: number, width: number, height: number } | null} rangeRect - live selection rect (null when layout is unavailable)
+ * @returns {{ left: number, top: number }} chip anchor point in container coordinates
  */
 export function quoteChipPosition(containerRect, rangeRect) {
   const hasWidth = rangeRect && rangeRect.width > 0;
@@ -74,10 +73,9 @@ export function sameRangeDescriptor(left, right) {
  * the selection genuinely changes (a new range — re-selecting counts) or
  * collapses, so the chip is only ever suppressed for the exact gesture the
  * user dismissed.
- *
  * @param {object | null} dismissed - latched descriptor from the Escape dismiss
  * @param {object | null} current - descriptor of the live selection (null when collapsed)
- * @returns {{ dismissed: object | null, suppress: boolean }}
+ * @returns {{ dismissed: object | null, suppress: boolean }} next latch state and whether to suppress the chip
  */
 export function resolveDismissedSelection(dismissed, current) {
   if (!dismissed) return { dismissed: null, suppress: false };

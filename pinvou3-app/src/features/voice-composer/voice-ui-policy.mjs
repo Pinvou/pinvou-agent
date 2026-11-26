@@ -1,6 +1,6 @@
 function normalizeVoiceMode(mode) {
   if (mode === 'task') return 'task';
-  if (mode === 'edit' || mode === 'voice_edit' || mode === 'draft_edit') return 'edit';
+  if (['edit', 'voice_edit', 'draft_edit'].includes(mode)) return 'edit';
   return 'dictation';
 }
 
@@ -73,7 +73,7 @@ function voiceAsrBusyState(voiceAsrSetup, chatCopy) {
   const pct = voiceAsrProgressPercent(setup);
   const label = cancelling
     ? chatCopy.cancelling
-    : chatCopy.downloadingModel(pct != null ? pct + '%' : '...');
+    : chatCopy.downloadingModel(pct == null ? '...' : pct + '%');
   return {
     busy,
     cancelling,

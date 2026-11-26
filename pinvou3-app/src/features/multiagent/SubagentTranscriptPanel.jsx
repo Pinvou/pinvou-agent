@@ -53,7 +53,7 @@ function CompactToolRow({ item, conversationCopy }) {
   let title = tool.title || tool.name || c.tool;
   let extra = '';
   if (item.type === 'command_execution') {
-    title = commandExecutionDetails(tool).summary;
+    title = commandExecutionDetails(tool)?.summary || c.tool;
   } else if (item.type === 'file_change') {
     const location = tool.locations && tool.locations[0];
     if (location && location.path) title = location.path;

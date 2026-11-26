@@ -56,7 +56,7 @@
     });
     if (!extensions.length) return true;
     const name = String(entry.name || "");
-    const extension = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    const extension = name.includes(".") ? (name.split(".").pop() || "").toLowerCase() : "";
     return extensions.includes(extension);
   }
 

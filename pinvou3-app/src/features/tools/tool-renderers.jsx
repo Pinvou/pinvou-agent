@@ -613,6 +613,7 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // CarefulBlockedCard — 🛑 危险操作被拦（人话化：底座英文技术原因→中文人话，技术详情折叠）
     // ==========================================
+    /** @type {Array<[RegExp, string]>} */
     const REASON_MAP = [
       [/root filesystem|delete all root|delete root/i, 'rsRoot'],
       [/home director/i, 'rsHome'],

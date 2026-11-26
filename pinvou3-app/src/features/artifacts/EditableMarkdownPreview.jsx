@@ -42,6 +42,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const latestDraftRef = useRef(initialText || '');
   const lastSavedRef = useRef(initialText || '');
   const savingPromiseRef = useRef(null);
+  /** @type {import('react').MutableRefObject<(() => Promise<boolean>) | null>} */
   const saveNowRef = useRef(null);
   const pendingSaveRef = useRef(false);
   const applyingHtmlRef = useRef(false);
@@ -53,6 +54,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const turndownRef = useRef(null);
   const turndownReadyRef = useRef(null);
   // applyMarkdownToDom 定义在下方;懒语言重放 effect 声明在其前,经 ref 取用。
+  /** @type {import('react').MutableRefObject<((markdown: string) => void) | null>} */
   const applyMarkdownToDomRef = useRef(null);
 
   const [draft, setDraft] = useState(initialText || '');

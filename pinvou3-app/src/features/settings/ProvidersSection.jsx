@@ -521,8 +521,8 @@ export function ProvidersSection({ t }) {
     try {
       // 删除当前 Provider 会触发后端自动恢复官方：官方默认模型无法预知，
       // 快照失效（传 null）；删非当前 Provider 不影响草稿快照
-      const deletingCurrent = Boolean(view && view.currentProviderId === deleteConfirm.id);
-      await invokeTauri('delete_acp_provider', { agent: activeAgent, providerId: deleteConfirm.id });
+      const deletingCurrent = Boolean(view && view.currentProviderId === deleteConfirm?.id);
+      await invokeTauri('delete_acp_provider', { agent: activeAgent, providerId: deleteConfirm?.id });
       if (deletingCurrent) {
         reseedDraftControlsAfterProviderSwitch(activeAgent, null);
         // 删除当前 Provider 即回到官方：同样探一次拿官方真实模型列表。
@@ -604,7 +604,7 @@ export function ProvidersSection({ t }) {
     try {
       const next = await invokeTauri('uninstall_acp_agent', {
         agent: activeAgent,
-        cleanup: uninstallConfirm.cleanup,
+        cleanup: uninstallConfirm?.cleanup,
       });
       // 另一渠道仍有安装时后端通过 status.error 告知（「已卸载但仍有另一份」）
       if (next && next.error) {
@@ -664,7 +664,7 @@ export function ProvidersSection({ t }) {
     done: copy.phaseDone,
     failed: copy.phaseFailed,
     cancelled: copy.phaseCancelled,
-  }[installPhase];
+  }[installPhase || ''];
   const showInstallLog =
     Boolean(installPhase) &&
     (installLog ? installLog.agent === activeAgent : busy === 'install:' + activeAgent);
@@ -1142,7 +1142,7 @@ export function ProvidersSection({ t }) {
                 改为全选让用户主动复制 */}
             <button type="button"
               data-testid="acp-provider-export-select"
-              onClick={event => { event.currentTarget.closest('div').previousElementSibling.select(); }}
+              onClick={event => { event.currentTarget.closest('div')?.previousElementSibling?.select(); }}
               className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold"
             >
               {copy.selectAll}

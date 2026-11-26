@@ -444,17 +444,19 @@ test('app lifecycle snapshots cannot resurrect state after activated or stopped 
   assert.match(appMain, /browserLifecycleStatusRequestEpochRef\.current = createBrowserSessionEpochTracker\(\)/);
   assert.match(
     appMain,
-    /listen\('browser:stopped'[\s\S]*?browserLifecycleEventEpochRef\.current\.advance\(sessionId \|\| null\)/,
+    /listen\('browser:stopped'[\s\S]*?browserLifecycleEventEpochRef\.current\??\.advance\(sessionId \|\| null\)/,
   );
   assert.match(
     appMain,
-    /browserLifecycleEventEpochRef\.current\.isCurrent\([\s\S]*?eventEpoch[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\.isCurrent\([\s\S]*?requestEpoch/,
+    /browserLifecycleEventEpochRef\.current\??\.isCurrent\([\s\S]*?eventEpoch[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\??\.isCurrent\([\s\S]*?requestEpoch/,
   );
   // The helper captures both epochs up front and revalidates both before
   // applying any snapshot to state (snapshots can never resurrect state).
+  // `current?.` / `current.` are both accepted: the null-safety spelling is
+  // behavior-equivalent on the lazy-init refs and the pin guards the wiring.
   assert.match(
     appMain,
-    /const eventEpoch = browserLifecycleEventEpochRef\.current\.snapshot\(sessionId\);[\s\S]*?const requestEpoch = browserLifecycleStatusRequestEpochRef\.current\.advance\([\s\S]*?browserLifecycleEventEpochRef\.current\.isCurrent\([\s\S]*?eventEpoch,[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\.isCurrent\([\s\S]*?requestEpoch,/,
+    /const eventEpoch = browserLifecycleEventEpochRef\.current\??\.snapshot\(sessionId\);[\s\S]*?const requestEpoch = browserLifecycleStatusRequestEpochRef\.current\??\.advance\([\s\S]*?browserLifecycleEventEpochRef\.current\??\.isCurrent\([\s\S]*?eventEpoch,[\s\S]*?browserLifecycleStatusRequestEpochRef\.current\??\.isCurrent\([\s\S]*?requestEpoch,/,
   );
 });
 

@@ -391,95 +391,9 @@ function setVoiceInputStatus(status, patch) { return pinvouSharedtauriVoice().se
 
 function emitVoiceDiagnostic(stage, level, message, userMessage, category) { return pinvouSharedtauriVoice().emitVoiceDiagnostic(stage, level, message, userMessage, category); }
 
-  // Stable VoiceCommandError codes from the Rust side → trilingual copy keys inside the
-  // bridge. Codes take precedence over rawMessage: the Rust message is Chinese engineering
-  // prose, meant for logs/diagnostics only, never passed straight to en/ja UIs
-  // (review leftover: ~12 Chinese strings still pass through).
-  const VOICE_ERROR_CODE_KEYS = {
-    asr_timeout: "voiceTimeout",
-    asr_no_speech: "voiceEmptyResult",
-    asr_engine_missing: "voiceRecognitionFailed",
-    asr_engine_start_failed: "voiceRecognitionFailed",
-    asr_engine_error: "voiceRecognitionFailed",
-    asr_runtime_error: "voiceRecognitionFailed",
-    asr_cli_failed: "voiceRecognitionFailed",
-    asr_parse_failed: "voiceRecognitionFailed",
-    asr_join_failed: "voiceInputFailed",
-    recording_too_long: "voiceRecordingTooLong",
-    audio_invalid: "voiceAudioInvalid",
-    audio_empty: "voiceAudioInvalid",
-    temp_file_unavailable: "voiceInputFailed",
-    temp_file_write_failed: "voiceInputFailed",
-    session_mismatch: "voiceContextMismatch",
-    session_load_failed: "voiceContextMismatch",
-  };
-
-  function normalizeVoiceError(err, fallbackStage) {
-    const name = String((err && err.name) || "");
-    const rawCategory = (err && err.category) || "";
-    const rawStage = (err && err.stage) || fallbackStage || "recording";
-    const rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
-    const constraint = String((err && err.constraint) || "");
-    const codeKey = (err && err.code && VOICE_ERROR_CODE_KEYS[err.code]) || "";
-    const emptyResultLike = /ASR empty result|empty result|backend returned no usable|no usable result|failed \(exit 6\)|exit 6/i.test(rawMessage);
-    if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
-      return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
-    }
-    if (rawCategory === "device_unavailable") {
-      return { category: "device_unavailable", stage: "device", message: rawMessage || bt("voiceNoDevice") };
-    }
-    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-      return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
-    }
-    // Chrome reports "microphone busy with another app" as NotReadableError / TrackStartError,
-    // distinct from "no device"; the browser message is English, so map it to dedicated
-    // trilingual copy.
-    if (name === "NotReadableError" || name === "TrackStartError") {
-      return { category: "device_unavailable", stage: "device", message: bt("voiceMicUnavailable") };
-    }
-    // WebKitGTK may report unsupported audio constraints as OverconstrainedError / "Invalid constraint".
-    // This is different from having no recording device: the device may exist, it just does
-    // not support channelCount, noise suppression, and similar configurations.
-    if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError" || /invalid constraint/i.test(rawMessage)) {
-      return {
-        category: "constraint_unsupported",
-        stage: "device",
-        message: bt("voiceConstraintUnsupported"),
-        diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
-      };
-    }
-    if (rawCategory === "empty_result" || emptyResultLike) {
-      return {
-        category: "empty_result",
-        stage: rawStage,
-        message: bt("voiceEmptyResult"),
-        diagnostic: rawMessage || "",
-      };
-    }
-    if (rawCategory === "context_mismatch") {
-      return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
-    }
-    if (rawCategory === "timeout") {
-      return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
-    }
-    if (rawCategory === "recognition_failed") {
-      // With a stable error code, map to trilingual copy by code and demote the Chinese
-      // original to diagnostics; only legacy errors without a code fall back to rawMessage
-      // (Chinese engineering prose only, kept for historical behavior).
-      if (codeKey) {
-        return { category: rawCategory, stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
-      }
-      return { category: rawCategory, stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
-    }
-    if (codeKey) {
-      return { category: rawCategory || "recording_failed", stage: rawStage, message: bt(codeKey), diagnostic: rawMessage };
-    }
-    return {
-      category: rawCategory || "recording_failed",
-      stage: rawStage,
-      message: rawMessage || bt("voiceInputFailed"),
-    };
-  }
+  // normalizeVoiceError（含 VOICE_ERROR_CODE_KEYS 码表）统一在
+  // shared/bridge-shared-helpers.js 的 tauriVoice/web cluster（翻译键两侧同值同名）。
+  function normalizeVoiceError(err, fallbackStage) { return pinvouSharedtauriVoice().normalizeVoiceError(err, fallbackStage); }
 
   function stopMediaTracks(stream) {
     if (!stream) return;

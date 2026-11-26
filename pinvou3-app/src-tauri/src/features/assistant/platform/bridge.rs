@@ -9843,8 +9843,11 @@ mod tests {
         // so the exclusion asserts below cannot be skewed by env pollution.
         // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
 
         let mut bridge = fixture_bridge();
@@ -10411,6 +10414,8 @@ mod tests {
         // and the rebuilt config carries no stale named table (DtConfig is
         // rebuilt from default(), so switching away cannot leave the
         // pinvou_responses entry behind).
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (locked_env, first
+        // statement of this test); env writes are serialized in-process.
         unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
         let mut g = fixture_bridge();
         set_active_model(

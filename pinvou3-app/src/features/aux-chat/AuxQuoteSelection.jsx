@@ -68,6 +68,10 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     const container = containerRef && containerRef.current;
     if (!sessionId || !container || typeof window === 'undefined' || !window.getSelection) return;
     const selection = window.getSelection();
+    if (!selection) {
+      hidePopover();
+      return;
+    }
     const descriptor = selectionRangeDescriptor(selection);
     const latch = resolveDismissedSelection(dismissedRangeRef.current, descriptor);
     dismissedRangeRef.current = latch.dismissed;
@@ -192,7 +196,7 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
         count: copy.quoteLimitCount,
         total: copy.quoteLimitTotal,
       };
-      setPopover({ ...popover, error: errorByReason[result.reason] || copy.quoteLimitSingle });
+      setPopover({ ...popover, error: (result.reason && errorByReason[result.reason]) || copy.quoteLimitSingle });
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
       hideTimerRef.current = setTimeout(hidePopover, 1800);
       return;
