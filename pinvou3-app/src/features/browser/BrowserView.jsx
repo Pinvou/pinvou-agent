@@ -208,6 +208,12 @@ export function BrowserView({
     setUrl('');
     setUrlInput('');
     setActiveSession(null);
+    // Defensive: every mount site keys this component by session id, so the
+    // reducer state dies with the unmount. If a future site ever reuses the
+    // component across sessions, the previous session's notices — including
+    // an `unsaved` one whose resolution event the old listeners can no
+    // longer deliver — must not leak into the new session's workspace.
+    dispatchDownloadNotice({ type: 'reset' });
   }, [sessionId]);
 
   useEffect(() => {

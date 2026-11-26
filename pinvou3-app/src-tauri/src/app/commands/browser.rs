@@ -10,8 +10,9 @@
 //!   OS save dialog is opening
 //! - `browser:download-finished`: a download was saved, cancelled, failed, or could not be
 //!   placed at the chosen path
-//! - `browser:download-blocked`: no staging file could be created, so the download was
-//!   cancelled
+//! - `browser:download-blocked`: a download could not start — no staging file could be created
+//!   (`staging`), too many downloads are live (`limit`), or the download service is out of
+//!   service (`unavailable`)
 
 use serde_json::Value;
 use tauri::State;

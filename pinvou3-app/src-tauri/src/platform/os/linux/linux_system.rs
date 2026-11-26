@@ -6,7 +6,7 @@ use super::linux_path;
 
 // Shared Unix helpers come from posix.rs, matching the Wave 3 linux_path.rs deduplication.
 pub use super::super::posix::{
-    bundled_node, make_private_dir, process_alive, try_make_private_dir,
+    bundled_node, create_private_dir, make_private_dir, process_alive, try_make_private_dir,
 };
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {

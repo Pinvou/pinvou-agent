@@ -1208,7 +1208,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   // so no stale batch survives a mixed generation.
   assert.match(
     browserDownloads,
-    /struct UrlBatch \{[\s\S]*?remaining: usize,[\s\S]*?outcomes: Vec<bool>,\s*\}/,
+    /struct UrlBatch \{[\s\S]*?remaining: usize,[\s\S]*?outcomes: Vec<bool>,[\s\S]*?anonymous_votes: usize,\s*\}/,
   );
   assert.match(browserDownloads, /fn vote_pathless_finish\(&mut self, url: &str, success: bool\) -> Vec<Effect> \{/);
   assert.match(browserDownloads, /fn resolve_finished_batch\(&mut self, url: &str\) -> Vec<Effect> \{/);
@@ -1400,7 +1400,7 @@ test('download round-3 fixes are pinned: writable-handle sync, refusal accountin
   assert.match(browserDownloads, /fn note_refusal\(&mut self, url: &str\) \{/);
   assert.match(
     browserDownloads,
-    /pub\(crate\) fn requested\([\s\S]{0,900}?emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/,
+    /pub\(crate\) fn requested\([\s\S]{0,1300}?emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/,
   );
   assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);/);
   assert.match(browserDownloads, /registry\.note_refusal\(url\.as_str\(\)\);/);
@@ -1419,7 +1419,7 @@ test('download round-3 fixes are pinned: writable-handle sync, refusal accountin
   );
   assert.match(
     browserDownloads,
-    /unavailable\s*\.load\(std::sync::atomic::Ordering::Relaxed\)\s*\{\s*eprintln!\("\[browser\] Download denied: downloads are unavailable"\);\s*emit_blocked\(app, &page, url, "unavailable"\);\s*self\.note_refusal\(url\);/,
+    /unavailable\s*\.load\(std::sync::atomic::Ordering::Relaxed\)\s*\{\s*eprintln!\("\[browser\] Download denied: downloads are unavailable"\);\s*let page = self\.shown_page\.lock\(\)\.clone\(\)\.unwrap_or\(page\);\s*emit_blocked\(app, &page, url, "unavailable"\);\s*self\.note_refusal\(url\);/,
   );
   assert.match(nativeHost, /WebviewBuilder::new\(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External\(url\)\)\.focused\(false\);/);
 

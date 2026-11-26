@@ -88,6 +88,12 @@ pub fn try_make_private_dir(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Windows has no mkdir mode; the user-profile ACLs provide the privacy
+/// boundary for app-owned directories created under it.
+pub fn create_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(path)
+}
+
 /// WebView2 在 paste 事件中原生携带图像条目，前端无需原生剪贴板兜底，
 /// 恒返回 `None`（能力位 `pasteImageClipboardRead` 在 Windows 为 false）。
 pub fn read_clipboard_image(_app: &tauri::AppHandle) -> Option<Vec<u8>> {

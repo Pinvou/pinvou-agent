@@ -236,6 +236,11 @@ struct UrlBatch {
     remaining: usize,
     /// One entry per reported member.
     outcomes: Vec<bool>,
+    /// Votes whose member could not be identified: a pathless completion
+    /// names only its URL (macOS always; Linux and Windows on failure), so
+    /// a later loss of a member cannot prove the member had not reported.
+    /// See `resolve_after_losses`.
+    anonymous_votes: usize,
 }
 
 impl Registry {
@@ -431,13 +436,23 @@ impl Registry {
         found
     }
 
-    /// Settles a member whose engine report will never arrive (its per-tab
+    /// Settles one member whose engine report will never arrive (its per-tab
     /// download delegate died with the webview): the record fails like any
     /// other failed transfer, and its seat in an open batch is released
     /// without a vote, so the batch resolves on its real reports alone.
     /// Without this, the dead member holds its live slot until the app
     /// restarts and keeps its URL's batch from ever resolving — stranding
     /// every later same-URL transfer behind it.
+    ///
+    /// Resolution is deliberately left to the caller (see
+    /// `resolve_after_losses`): a pathless engine (macOS) cannot say WHICH
+    /// member of a URL batch reported, so a member that already voted looks
+    /// exactly like one still streaming. Settling members one by one with a
+    /// resolve after each would let an early completion seat release fire
+    /// the batch while a same-URL sibling is still streaming — marking the
+    /// sibling `Succeeded` and placing a partial file. The caller settles
+    /// every lost member first and resolves once afterwards, when no lost
+    /// record is left to misattribute.
     fn report_lost(&mut self, id: &str, url: &str) -> Vec<Effect> {
         let Some(download) = self.downloads.get_mut(id) else {
             return Vec::new();
@@ -446,11 +461,62 @@ impl Registry {
             return Vec::new();
         }
         download.transfer = Transfer::Failed;
-        let mut effects = self.settle(id);
+        let effects = self.settle(id);
         if let Some(batch) = self.pending_finishes.get_mut(url) {
             batch.remaining = batch.remaining.saturating_sub(1);
         }
-        effects.extend(self.resolve_finished_batch(url));
+        effects
+    }
+
+    /// Resolves the batches of the URLs whose members were just settled as
+    /// lost; see `report_lost` for why this runs once, after the whole sweep.
+    ///
+    /// A batch that received anonymous (pathless) votes cannot prove that a
+    /// lost member was unreported — the vote may have been the lost member's
+    /// own. If its seat release drained `remaining` while a registered
+    /// same-URL member is still streaming, no assignment is provable: the
+    /// batch fails closed (the remaining members are failed like any
+    /// unattributable generation) instead of marking a streaming transfer
+    /// `Succeeded` on a vote that may not be its own. Without anonymous
+    /// votes every voter is identified (its report matched its staged path),
+    /// so a drained batch resolves normally.
+    fn resolve_after_losses<I: IntoIterator<Item = String>>(&mut self, urls: I) -> Vec<Effect> {
+        let mut urls: Vec<String> = urls.into_iter().collect();
+        urls.sort();
+        urls.dedup();
+        let mut effects = Vec::new();
+        for url in urls {
+            let drained = self
+                .pending_finishes
+                .get(&url)
+                .is_some_and(|batch| batch.remaining == 0 && batch.anonymous_votes > 0);
+            if drained {
+                let in_flight = |download: &Download| download.transfer == Transfer::InFlight;
+                let still_streaming = self
+                    .downloads
+                    .values()
+                    .any(|download| in_flight(download) && download.url == url);
+                if still_streaming {
+                    // No assignment is provable; nothing ships unverified.
+                    let mut ids: Vec<String> = self
+                        .downloads
+                        .iter()
+                        .filter(|(_, download)| in_flight(download) && download.url == url)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    ids.sort();
+                    self.pending_finishes.remove(&url);
+                    for id in ids {
+                        if let Some(download) = self.downloads.get_mut(&id) {
+                            download.transfer = Transfer::Failed;
+                        }
+                        effects.extend(self.settle(&id));
+                    }
+                    continue;
+                }
+            }
+            effects.extend(self.resolve_finished_batch(&url));
+        }
         effects
     }
 
@@ -494,9 +560,11 @@ impl Registry {
             .or_insert(UrlBatch {
                 remaining: candidates,
                 outcomes: Vec::new(),
+                anonymous_votes: 0,
             });
         batch.remaining = batch.remaining.saturating_sub(1);
         batch.outcomes.push(success);
+        batch.anonymous_votes += 1;
         self.resolve_finished_batch(url)
     }
 
@@ -739,13 +807,6 @@ impl BrowserDownloads {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Whether downloads were put out of service at construction (staging
-    /// root not absolute) or by a failed Linux download surface.
-    #[cfg(test)]
-    fn is_unavailable(&self) -> bool {
-        self.unavailable.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     /// Settles every in-flight download attributed to `page` as one whose
     /// engine report will never arrive. Called when a tab webview closes on
     /// the engines whose download delegate dies with the webview (macOS,
@@ -758,10 +819,17 @@ impl BrowserDownloads {
         let mut effects = {
             let mut registry = self.registry.lock();
             let lost = registry.in_flight_ids_of_page(page);
+            let mut urls = Vec::new();
             let mut effects = Vec::new();
             for (id, url) in lost {
                 effects.extend(registry.report_lost(&id, &url));
+                urls.push(url);
             }
+            // Resolve once, after every lost record is settled: a member that
+            // already voted looks unmarked until resolution, and resolving
+            // mid-sweep would attribute the batch to a sibling that is still
+            // streaming (see `Registry::report_lost`).
+            effects.extend(registry.resolve_after_losses(urls));
             effects
         };
         if let Some(app) = app {
@@ -796,9 +864,13 @@ impl BrowserDownloads {
     ) -> bool {
         // Out of service (Linux download surface could not be created): a
         // per-tab fallback would mis-attribute every download and cancel them
-        // all once the first tab closes, so this fails closed instead.
+        // all once the first tab closes, so this fails closed instead. The
+        // caller's page is unreliable there — the degraded per-tab handlers
+        // all answer through whichever webview connected first — so the
+        // notice attributes to the shown workspace, like on healthy Linux.
         if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("[browser] Download denied: downloads are unavailable");
+            let page = self.shown_page.lock().clone().unwrap_or(page);
             emit_blocked(app, &page, url, "unavailable");
             self.note_refusal(url);
             return false;
@@ -813,8 +885,10 @@ impl BrowserDownloads {
         let id = new_download_id();
         let staging_dir = self.staging_root.join(&id);
         // Fail closed: without a staging file the engine would write to its
-        // own default location.
-        if let Err(error) = std::fs::create_dir_all(&staging_dir) {
+        // own default location. The directory is created owner-only from the
+        // first syscall (see `create_private_dir`), so there is no window in
+        // which another local user could reach in.
+        if let Err(error) = crate::platform::os::create_private_dir(&staging_dir) {
             eprintln!(
                 "[browser] Download staging directory unavailable: {}",
                 error.kind()
@@ -823,9 +897,10 @@ impl BrowserDownloads {
             self.note_refusal(url);
             return false;
         }
-        // The staged bytes are private while they wait: the per-download
-        // directory is owner-only, so another local user on a shared host
-        // cannot read an in-flight transfer.
+        // Belt and braces: a directory that already existed with wider
+        // permissions (an earlier process's leftover) is restricted again, so
+        // the staged bytes are unreadable to other local users while they
+        // wait.
         if let Err(error) = crate::platform::os::try_make_private_dir(&staging_dir) {
             eprintln!(
                 "[browser] Download staging directory could not be restricted: {}",
@@ -1267,10 +1342,26 @@ where
     let temporary = parent.join(temporary_name);
     let placed = (|| -> io::Result<()> {
         let mut source = std::fs::File::open(staged_file)?;
-        let mut target = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let open_temporary = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+        };
+        let mut target = match open_temporary() {
+            Ok(target) => target,
+            // The part file's name embeds this download's id, so an
+            // already-existing one is always ours: a stale part from an
+            // earlier attempt whose best-effort cleanup could not delete it
+            // (an antivirus hold, for example) is removed and the copy
+            // retried, instead of wedging every later retry of this
+            // download into `unsaved`.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&temporary);
+                open_temporary()?
+            }
+            Err(error) => return Err(error),
+        };
         let copied = copy(&mut source, &mut target).and_then(|_| target.sync_all());
         // Windows refuses to rename a file that is still open.
         drop(target);
@@ -1319,28 +1410,28 @@ fn is_staging_entry_id(name: &OsStr) -> bool {
 }
 
 /// Removes the per-download staging directories an earlier process left
-/// behind. Entries that are not coordinator-owned (see `is_staging_entry_id`)
-/// are never touched, and a missing root is not an error: a fresh machine or
-/// an unwritable override simply has nothing of ours to sweep.
+/// behind. Only directory entries the coordinator itself creates are swept
+/// (id-shaped names — the coordinator never creates files or symlinks at
+/// this level), so anything else under the root is left alone. A missing
+/// root is not an error: a fresh machine or an unwritable override simply
+/// has nothing of ours to sweep.
 fn discard_staging_leftovers(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
-        if !is_staging_entry_id(&entry.file_name()) {
+        if !is_staging_entry_id(&entry.file_name())
+            || !entry.file_type().is_ok_and(|ty| ty.is_dir())
+        {
             continue;
         }
         let path = entry.path();
-        if std::fs::remove_dir_all(&path).is_err() {
-            // A leftover file, symlink, or already-removed directory falls
-            // back to the single-entry removal.
-            if let Err(error) = std::fs::remove_file(&path) {
-                if error.kind() != io::ErrorKind::NotFound {
-                    eprintln!(
-                        "[browser] Failed to remove leftover download staging entry: {}",
-                        error.kind()
-                    );
-                }
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            if error.kind() != io::ErrorKind::NotFound {
+                eprintln!(
+                    "[browser] Failed to remove leftover download staging entry: {}",
+                    error.kind()
+                );
             }
         }
     }
@@ -2423,7 +2514,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_member_does_not_fail_its_successful_sibling() {
+    fn an_anonymous_batch_with_a_lost_member_fails_its_streaming_sibling() {
         let mut registry = Registry::default();
         registry
             .begin(record("a", URL_A))
@@ -2436,23 +2527,26 @@ mod tests {
         // b reports success (pathless, macOS), which opens the batch and
         // leaves one seat for a.
         assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
-        // a's tab closes. Its seat is released without a vote, so b's lone
-        // success stays uniform and b is placed — not failed alongside the
-        // member whose completion was lost.
+        // a's tab closes. A pathless vote cannot name its member, so a's
+        // released seat may double-count a member that already voted: with a
+        // sibling still streaming, no assignment is provable and the batch
+        // fails closed — b is failed (its staged copy discarded), never
+        // placed from a vote that may not be its own.
+        let mut effects = registry.report_lost("a", URL_A);
+        effects.extend(registry.resolve_after_losses([URL_A.to_string()]));
         assert_eq!(
-            registry.report_lost("a", URL_A),
+            effects,
             vec![
                 discard("a"),
                 finished("a", Outcome::Failed),
-                place("b", chosen("b")),
+                discard("b"),
+                finished("b", Outcome::Failed),
             ]
         );
         assert!(registry.pending_finishes.is_empty());
-        // b now sits in `placing` (the host executes the Place effect); the
-        // registry-level test ends here, the placement result is its business.
-        assert_eq!(registry.downloads["b"].intent, Intent::Placing);
+        assert!(registry.downloads.is_empty());
         // The next generation of the URL resolves on its own report alone:
-        // the lost member left nothing behind for it.
+        // the failed generation left nothing behind for it.
         registry
             .begin(record("c", URL_A))
             .expect("within the live cap");
@@ -2462,6 +2556,35 @@ mod tests {
             vec![place("c", chosen("c"))]
         );
         assert!(registry.pending_finishes.is_empty());
+    }
+
+    #[test]
+    fn an_identified_batch_loss_leaves_its_placed_sibling_alone() {
+        // Windows semantics: successes report with their written path, so
+        // every voter in the batch is identified. A sibling's staged file was
+        // already placed from its own report, and a lost unreported member
+        // only releases its seat — nothing here is ambiguous.
+        let mut registry = Registry::default();
+        registry
+            .begin(record("a", URL_A))
+            .expect("within the live cap");
+        registry
+            .begin(record("b", URL_A))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        assert_eq!(
+            registry.transfer_finished(URL_A, Some(&staged_path("b")), true),
+            vec![place("b", chosen("b"))]
+        );
+        let mut effects = registry.report_lost("a", URL_A);
+        effects.extend(registry.resolve_after_losses([URL_A.to_string()]));
+        assert_eq!(effects, vec![discard("a"), finished("a", Outcome::Failed)]);
+        assert!(registry.pending_finishes.is_empty());
+        assert_eq!(
+            registry.placed("b", true),
+            vec![finished("b", Outcome::Saved)]
+        );
     }
 
     #[test]
@@ -2521,9 +2644,12 @@ mod tests {
         assert_eq!(lost, vec![("a".to_string(), URL_A.to_string())]);
         // The settle loop mirrors `BrowserDownloads::reports_lost`.
         let mut effects = Vec::new();
+        let mut lost_urls = Vec::new();
         for (id, lost_url) in lost {
             effects.extend(registry.report_lost(&id, &lost_url));
+            lost_urls.push(lost_url);
         }
+        effects.extend(registry.resolve_after_losses(lost_urls));
         assert_eq!(
             effects,
             vec![discard("a"), finished_on_tab("a", Outcome::Failed, "tab-1"),]
@@ -2540,6 +2666,93 @@ mod tests {
             registry.placed("b", true),
             vec![finished_on_tab("b", Outcome::Saved, "tab-2")]
         );
+    }
+
+    #[test]
+    fn a_tab_close_after_pathless_votes_never_resolves_a_streaming_sibling() {
+        // macOS: completions report pathlessly and cannot name their member.
+        // Three same-URL downloads on ONE tab; two complete (their votes are
+        // in the batch), then the tab closes while the third is still
+        // streaming. Every lost record settles first, and only then does the
+        // batch resolve — the streaming member must be reported `failed`,
+        // never placed as if it had finished (a partial file as `saved`).
+        let mut registry = Registry::default();
+        for id in ["a", "s", "c"] {
+            registry
+                .begin(record_for_tab(id, URL_A, "tab-1"))
+                .expect("within the live cap");
+        }
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("s", Some(chosen("s")));
+        registry.answer("c", Some(chosen("c")));
+        registry.transfer_finished(URL_A, None, true);
+        registry.transfer_finished(URL_A, None, true);
+        let page_one = page_for_tab("tab-1");
+        let mut effects = Vec::new();
+        let mut lost_urls = Vec::new();
+        for (id, lost_url) in registry.in_flight_ids_of_page(&page_one) {
+            effects.extend(registry.report_lost(&id, &lost_url));
+            lost_urls.push(lost_url);
+        }
+        effects.extend(registry.resolve_after_losses(lost_urls));
+        // Every member failed; the still-streaming member got no Place.
+        let mut finished_ids = Vec::new();
+        for effect in &effects {
+            if let Effect::Finished { notice, outcome } = effect {
+                finished_ids.push((notice.id.clone(), *outcome));
+            }
+            assert!(
+                !matches!(effect, Effect::Place { id, .. } if id == "c"),
+                "the streaming member must never be placed from a tab close"
+            );
+        }
+        assert_eq!(
+            finished_ids,
+            vec![
+                ("a".to_string(), Outcome::Failed),
+                ("c".to_string(), Outcome::Failed),
+                ("s".to_string(), Outcome::Failed),
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        assert!(registry.downloads.is_empty());
+    }
+
+    #[test]
+    fn a_voted_member_tab_close_fails_the_live_sibling_fail_closed() {
+        // The voted member's tab closes while a same-URL sibling on another
+        // tab is still streaming. The pathless vote cannot name its member,
+        // so the released seat may have been the sibling's: marking the
+        // sibling from the vote could place a partial file. The batch fails
+        // closed instead — the sibling is failed visibly, and its tab's own
+        // report is spent as noise afterwards.
+        let mut registry = Registry::default();
+        registry
+            .begin(record_for_tab("a", URL_A, "tab-1"))
+            .expect("within the live cap");
+        registry
+            .begin(record_for_tab("b", URL_A, "tab-2"))
+            .expect("within the live cap");
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        // a votes pathless success; b has not reported.
+        assert_eq!(registry.transfer_finished(URL_A, None, true), vec![]);
+        // tab-1 closes.
+        let mut effects = registry.report_lost("a", URL_A);
+        effects.extend(registry.resolve_after_losses([URL_A.to_string()]));
+        assert_eq!(
+            effects,
+            vec![
+                discard("a"),
+                finished_on_tab("a", Outcome::Failed, "tab-1"),
+                discard("b"),
+                finished_on_tab("b", Outcome::Failed, "tab-2"),
+            ]
+        );
+        assert!(registry.pending_finishes.is_empty());
+        assert!(registry.downloads.is_empty());
+        // b's late real report belongs to no member and changes nothing.
+        assert_eq!(registry.transfer_finished(URL_A, None, false), vec![]);
     }
 
     #[test]
@@ -2720,6 +2933,32 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), payload);
         assert!(!staged_file.exists());
         // No temporary sibling is left behind.
+        assert_eq!(entries(&folder), vec!["file.bin"]);
+    }
+
+    #[test]
+    fn a_stale_part_file_does_not_wedge_the_cross_volume_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged_file = staged(temp.path(), b"contents");
+        let folder = temp.path().join("other-volume");
+        std::fs::create_dir(&folder).unwrap();
+        let destination = folder.join("file.bin");
+        // A failed earlier attempt left its part file behind and nothing
+        // could delete it (an antivirus hold): the part's name embeds this
+        // download's id, so it is ours and the retry removes it instead of
+        // failing `create_new` forever.
+        let stale_part = folder.join(".pinvou-id.part");
+        std::fs::write(&stale_part, b"stale").unwrap();
+        place_staged_file_with(
+            &staged_file,
+            &destination,
+            ".pinvou-id.part",
+            rename_across_volumes(&staged_file),
+            |source, target| io::copy(source, target),
+            sync_staged,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"contents");
         assert_eq!(entries(&folder), vec!["file.bin"]);
     }
 
@@ -2967,13 +3206,23 @@ mod tests {
         // resolve — must survive the sweep instead of disappearing with it.
         let foreign = root.join("user-file.pdf");
         std::fs::write(&foreign, b"kept").unwrap();
-        // An entry that merely shares the prefix shape is not ours either.
+        // An entry that merely shares the prefix shape is not ours either —
+        // in either property: a 33rd hex digit fails the length check, and a
+        // non-hex 33rd character fails the digit check.
         let near_miss = root.join("0123456789abcdef0123456789abcdeg");
         std::fs::create_dir_all(&near_miss).unwrap();
+        let near_miss_hex = root.join("0123456789abcdef0123456789abcdef0");
+        std::fs::create_dir_all(&near_miss_hex).unwrap();
+        // The coordinator only creates directories, so an id-shaped plain
+        // file (or symlink) at the root is not ours and must survive.
+        let foreign_file = root.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        std::fs::write(&foreign_file, b"kept").unwrap();
         let _coordinator = BrowserDownloads::new(root.clone());
         assert!(!root.join("0123456789abcdef0123456789abcdef").exists());
         assert!(foreign.exists());
         assert!(near_miss.exists());
+        assert!(near_miss_hex.exists());
+        assert!(foreign_file.exists());
         // A missing root is not an error.
         let _coordinator = BrowserDownloads::new(temp.path().join("missing"));
         assert!(!temp.path().join("missing").exists());

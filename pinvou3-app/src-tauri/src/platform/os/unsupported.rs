@@ -306,6 +306,12 @@ pub fn try_make_private_dir(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Unsupported platforms create the directory without a mode; there is no
+/// privacy primitive to apply.
+pub fn create_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(path)
+}
+
 /// The macOS WebView carries image items natively in paste events, so no
 /// native clipboard fallback is needed; always returns `None` (the
 /// `pasteImageClipboardRead` capability is false on macOS).

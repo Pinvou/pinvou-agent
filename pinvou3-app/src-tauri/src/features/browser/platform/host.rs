@@ -3272,6 +3272,12 @@ fn ensure_download_surface<P: PlatformWebviewConfig>(
     // The surface is never attached to the visible slot and never shown; it
     // exists only so its handler chain stays alive.
     if webview.hide().is_err() {
+        // Closing the surface does not disconnect the context-level handler
+        // it registered, so this surface's handler stays first-connected on
+        // the shared context. `mark_unavailable` is sticky, which keeps the
+        // refusal honest: a later build's replacement surface could never
+        // win the decide-destination race against that dead handler anyway
+        // (see this function's doc comment).
         let _ = webview.close();
         eprintln!(
             "[browser] Download surface could not be hidden; downloads are refused with the unavailable reason"

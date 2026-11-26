@@ -216,6 +216,25 @@ test('the not-retryable wire code is exported once and described in every langua
   }
 });
 
+test('the unavailable-service and out-of-flow copies exist in every language', () => {
+  for (const [language, dictionary] of Object.entries(DICTIONARIES)) {
+    // The degraded-service refusal is a distinct copy, not a fallback.
+    assert.equal(typeof dictionary.browserDownloadUnavailable, 'function', language);
+    const unavailable = dictionary.browserDownloadUnavailable('site.invalid');
+    assert.ok(unavailable.includes('site.invalid'), language);
+    assert.ok(!unavailable.includes('undefined'), language);
+    // The staging-refusal copy names a temporary file, not the service.
+    const staging = dictionary.browserDownloadBlocked('site.invalid');
+    assert.ok(staging.includes('site.invalid'), language);
+    assert.ok(!staging.includes('undefined'), language);
+    // The started notice names the file in every language, so a dropped key
+    // cannot surface only at runtime inside the listener.
+    const startedNotice = downloadStartedNotice(dictionary, { downloadId: 'k', fileName: 'x.bin' });
+    assert.ok(startedNotice.message.includes('x.bin'), language);
+    assert.ok(!startedNotice.message.includes('undefined'), language);
+  }
+});
+
 test('a mount-time backfill fills only the notices this session does not know', () => {
   // An `unsaved` notice cannot be dismissed (the UI hides the X), so a key
   // missing from the state always means "never seen here" and is filled.
