@@ -186,8 +186,15 @@ test('BrowserView renders the notice from copy and wires the retry to the host',
     browserView,
     /\{downloadNotice\.status !== 'unsaved' && \(\s*<button\s+type="button"\s+data-testid="browser-download-notice-dismiss"/,
   );
-  // Mount-time backfill re-reports the backend's live `unsaved` records.
+  // Mount-time backfill re-reports the backend's live `unsaved` records once
+  // the listeners have settled, and keeps only this session's records — the
+  // same scoping the listeners enforce, so another session's download never
+  // renders here with actionable buttons.
   assert.match(browserView, /invokeTauri\('browser_download_pending'\)\.then/);
+  assert.match(
+    browserView,
+    /\.filter\(\(payload\) => payload\?\.sessionId === sessionId\)\s*\.map\(\(payload\) => downloadFinishedNotice\(t, payload\)\)/,
+  );
   assert.match(browserView, /type: 'backfill', notices/);
   // `limit` and `unavailable` keep their dedicated copy; `staging` keeps the
   // staging copy; an unknown future reason gets the generic one instead of a
@@ -241,11 +248,33 @@ test('the notice history stays bounded so one map entry per download cannot accu
   for (let index = 0; index < 80; index += 1) {
     state = downloadNoticesReducer(state, started(`d${index}`));
   }
-  assert.equal(Object.keys(state).length <= 64, true);
+  // The exact bound is pinned: a silently tightened bound would hide notices
+  // the UI promises to keep.
+  assert.equal(Object.keys(state).length, 64);
   // The most recent download survives trimming.
   assert.ok('d79' in state);
   // Updating a notice re-inserts it, so trimming never drops the freshest.
   state = downloadNoticesReducer(state, reported('saved', 'd40'));
   assert.ok('d40' in state);
   assert.equal(latestDownloadNotice(state).downloadId, 'd40');
+});
+
+test('trimming never drops an unsaved notice that still waits for the user', () => {
+  // The unsaved record holds a live download slot and its staged file; its
+  // notice is the only route to the Save as / Discard actions, so it must
+  // survive an otherwise full history while newer reports stream in.
+  let state = downloadNoticesReducer(undefined, reported('unsaved', 'held'));
+  for (let index = 0; index < 80; index += 1) {
+    state = downloadNoticesReducer(state, started(`d${index}`));
+  }
+  assert.ok('held' in state, 'the unsaved notice survives trimming');
+  assert.ok(Object.keys(state).length <= 65, 'the rest stays bounded');
+  assert.equal(latestDownloadNotice(state).downloadId, 'held');
+  // Once it leaves `unsaved`, it trims like any other notice.
+  state = downloadNoticesReducer(state, reported('cancelled', 'held'));
+  for (let index = 80; index < 160; index += 1) {
+    state = downloadNoticesReducer(state, started(`d${index}`));
+  }
+  assert.ok(!('held' in state), 'the resolved notice trims away');
+  assert.equal(Object.keys(state).length, 64);
 });

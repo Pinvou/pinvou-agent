@@ -43,6 +43,12 @@ const EVENT_FINISHED: &str = "browser:download-finished";
 const EVENT_BLOCKED: &str = "browser:download-blocked";
 const MAIN_WINDOW: &str = "main";
 const FALLBACK_FILE_NAME: &str = "download";
+/// The wire code the retry command answers with when the record left the
+/// retryable state. `download-notice.mjs` exports the same string as
+/// `DOWNLOAD_NOT_RETRYABLE` and translates it into the user's language
+/// instead of showing the raw code; the node tests pin the literal on both
+/// sides, so a drift fails a test rather than reaching the UI.
+const DOWNLOAD_NOT_RETRYABLE: &str = "download_not_retryable";
 /// Longest suggested name kept for staging and for the dialog. It bounds one
 /// path component only; the transfer size is never limited.
 const MAX_FILE_NAME_BYTES: usize = 120;
@@ -56,6 +62,16 @@ const MAX_LIVE_DOWNLOADS: usize = 16;
 /// the cap only bounds a pathological page that gets thousands of distinct
 /// URLs refused. Past the cap a refusal's report votes as ordinary noise,
 /// which the outcome mix already tolerates.
+///
+/// Residual edge (disclosed): on macOS and Windows a refused download's
+/// report can be lost with its tab, leaving a stale credit that then consumes
+/// a real pathless failure report of a later live same-URL transfer. The
+/// record still settles when its own tab closes (`reports_lost`), and Linux
+/// is immune (its surface never closes, so refused reports always arrive).
+/// Spending before the candidates check is deliberate: a same-URL refusal
+/// and a live transfer can coexist, and letting an unspent refusal report
+/// vote would reintroduce the live-transfer poisoning the credits exist to
+/// prevent.
 const MAX_REFUSAL_CREDITS: usize = 1024;
 /// Longer "extensions" are treated as part of the name, so truncating a long
 /// name cannot spend its whole budget on a suffix.
@@ -551,7 +567,7 @@ impl Registry {
     /// Queues a new save dialog for a finished transfer that has no place yet.
     fn ask_again(&mut self, id: &str) -> Result<Vec<Effect>, &'static str> {
         let Some(download) = self.downloads.get_mut(id) else {
-            return Err("download_not_retryable");
+            return Err(DOWNLOAD_NOT_RETRYABLE);
         };
         // A second request while that retry is already queued changes nothing,
         // so a repeated click neither fails nor opens a second dialog.
@@ -559,7 +575,7 @@ impl Registry {
             return Ok(Vec::new());
         }
         if download.transfer != Transfer::Succeeded || download.intent != Intent::Unsaved {
-            return Err("download_not_retryable");
+            return Err(DOWNLOAD_NOT_RETRYABLE);
         }
         download.intent = Intent::Asking { again: true };
         self.waiting.push_back(id.to_string());
@@ -644,13 +660,17 @@ pub(crate) struct BrowserDownloads {
 }
 
 impl BrowserDownloads {
-    /// Creates the coordinator and deletes staging left by an earlier process.
-    /// Call it before any browser WebView exists, so nothing under the root
-    /// belongs to a live transfer. A staging root that cannot be made
-    /// absolute (the process working directory is gone) puts downloads out
-    /// of service instead of sending the engine to a cwd-relative path.
+    /// Creates the coordinator and removes the per-download staging an
+    /// earlier process left behind: only the id-shaped entries the
+    /// coordinator itself creates are swept (see `discard_staging_leftovers`),
+    /// so a file that reached the root through a non-canonical destination
+    /// spelling survives a restart instead of vanishing with it. Call this
+    /// before any browser WebView exists, so nothing under the root belongs
+    /// to a live transfer. A staging root that cannot be made absolute (the
+    /// process working directory is gone) puts downloads out of service
+    /// instead of sending the engine to a cwd-relative path.
     pub(crate) fn new(staging_root: PathBuf) -> Self {
-        discard_directory(&staging_root);
+        discard_staging_leftovers(&staging_root);
         let staging_root = absolute_staging_root_with(
             staging_root.as_path(),
             std::env::current_dir().ok().as_deref(),
@@ -904,10 +924,15 @@ impl BrowserDownloads {
                     // and then deleted together with its staging directory
                     // while reporting `saved`, so it fails the placement
                     // instead: the staged file stays and the record reports
-                    // `unsaved` for another attempt.
-                    let rejected = destination_inside_staging(&destination, &self.staging_root);
+                    // `unsaved` for another attempt. The check runs on the
+                    // blocking thread next to the placement work: the
+                    // filesystem-resolved comparison stats the destination's
+                    // parent, and neither it nor the placement belongs on
+                    // the caller's thread.
+                    let staging_root = self.staging_root.clone();
                     let app = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
+                        let rejected = destination_inside_staging(&destination, &staging_root);
                         let placed =
                             !rejected && place_staged_file(&staged_file, &destination, &id).is_ok();
                         if placed {
@@ -1142,9 +1167,41 @@ fn download_source(url: &Url) -> String {
 /// A destination under the staging root would be renamed into a directory
 /// the placement cleanup then deletes, so such a choice fails the placement.
 /// `Path::starts_with` compares whole components, so a sibling directory
-/// whose name merely shares a prefix stays allowed.
+/// whose name merely shares a prefix stays allowed — but it compares
+/// spelling only, so the destination's parent is additionally resolved
+/// through the filesystem (see `destination_inside_staging_with`).
 fn destination_inside_staging(destination: &Path, staging_root: &Path) -> bool {
-    destination.starts_with(staging_root)
+    // A closure, not the bare `std::fs::canonicalize` item: the item's
+    // inferred input lifetime does not generalize to the resolver bound.
+    destination_inside_staging_with(destination, staging_root, |path| {
+        std::fs::canonicalize(path)
+    })
+}
+
+/// The resolved containment check. `resolve` is injected so tests can stand
+/// in for a symlinked or case-insensitive destination folder, which a
+/// portable test cannot create; the real resolver is `std::fs::canonicalize`.
+/// A folder that reaches the root through either spelling must fail the
+/// placement too, or the file would land inside the root while being
+/// reported as `saved` elsewhere — and the next startup sweep, which removes
+/// only coordinator-owned entries, would leave a file the app believes is
+/// saved somewhere else. Either resolution failing (a folder deleted between
+/// the dialog and the placement) falls back to the lexical comparison, which
+/// still guards the direct spellings.
+fn destination_inside_staging_with<R>(destination: &Path, staging_root: &Path, resolve: R) -> bool
+where
+    R: Fn(&Path) -> io::Result<PathBuf>,
+{
+    if destination.starts_with(staging_root) {
+        return true;
+    }
+    let resolved_destination = destination.parent().and_then(|parent| resolve(parent).ok());
+    let resolved_root = resolve(staging_root).ok();
+    let (Some(resolved_destination), Some(resolved_root)) = (resolved_destination, resolved_root)
+    else {
+        return false;
+    };
+    resolved_destination.starts_with(resolved_root)
 }
 
 /// Moves a finished transfer to the user's path.
@@ -1247,6 +1304,48 @@ fn discard_directory(path: &Path) {
     }
 }
 
+/// Whether a staging-root entry is one the coordinator itself creates: the
+/// 32 lowercase hex digits of a download id (see `new_download_id`). The
+/// startup sweep removes only these, so a file that reached the root through
+/// a destination the containment guard could not resolve lexically survives
+/// a restart instead of disappearing with the root. Anything else under the
+/// root was placed there by something else and is left alone.
+fn is_staging_entry_id(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.len() == 32
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Removes the per-download staging directories an earlier process left
+/// behind. Entries that are not coordinator-owned (see `is_staging_entry_id`)
+/// are never touched, and a missing root is not an error: a fresh machine or
+/// an unwritable override simply has nothing of ours to sweep.
+fn discard_staging_leftovers(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !is_staging_entry_id(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        if std::fs::remove_dir_all(&path).is_err() {
+            // A leftover file, symlink, or already-removed directory falls
+            // back to the single-entry removal.
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!(
+                        "[browser] Failed to remove leftover download staging entry: {}",
+                        error.kind()
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1304,6 +1403,16 @@ mod tests {
             notice: record(id, "").notice,
             outcome,
         }
+    }
+
+    /// Same as `finished`, but for a record streaming on another tab
+    /// (`record_for_tab`): the notice travels with the event payload.
+    fn finished_on_tab(id: &str, outcome: Outcome, tab: &str) -> Effect {
+        let mut effect = finished(id, outcome);
+        if let Effect::Finished { notice, .. } = &mut effect {
+            notice.tab = tab.to_string();
+        }
+        effect
     }
 
     fn discard(id: &str) -> Effect {
@@ -2377,6 +2486,62 @@ mod tests {
         assert_eq!(registry.report_lost("b", URL_A), vec![]);
     }
 
+    fn record_for_tab(id: &str, url: &str, tab: &str) -> Download {
+        let mut download = record(id, url);
+        download.notice.tab = tab.to_string();
+        download
+    }
+
+    fn page_for_tab(tab: &str) -> DownloadPage {
+        DownloadPage {
+            session_id: "session".to_string(),
+            tab: tab.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_lost_tab_report_spares_other_tabs_in_flight_downloads() {
+        // Two tabs stream at once. Closing tab 1 (macOS, Windows) must settle
+        // only tab 1's records: an unfiltered scan would fail every other
+        // tab's transfer with it.
+        let mut registry = Registry::default();
+        registry
+            .begin(record_for_tab("a", URL_A, "tab-1"))
+            .expect("within the live cap");
+        registry
+            .begin(record_for_tab("b", &url("b"), "tab-2"))
+            .expect("within the live cap");
+        // Both save dialogs were answered while the transfers streamed, so
+        // each record carries its queued destination (answering `a` also
+        // hands the serialized dialog to `b`).
+        registry.answer("a", Some(chosen("a")));
+        registry.answer("b", Some(chosen("b")));
+        let page_one = page_for_tab("tab-1");
+        let lost = registry.in_flight_ids_of_page(&page_one);
+        assert_eq!(lost, vec![("a".to_string(), URL_A.to_string())]);
+        // The settle loop mirrors `BrowserDownloads::reports_lost`.
+        let mut effects = Vec::new();
+        for (id, lost_url) in lost {
+            effects.extend(registry.report_lost(&id, &lost_url));
+        }
+        assert_eq!(
+            effects,
+            vec![discard("a"), finished_on_tab("a", Outcome::Failed, "tab-1"),]
+        );
+        assert!(!registry.downloads.contains_key("a"));
+        // The other tab's streaming transfer is untouched and still finishes
+        // on its own engine report.
+        assert_eq!(registry.downloads["b"].transfer, Transfer::InFlight);
+        assert_eq!(
+            registry.transfer_finished(&url("b"), Some(&staged_path("b")), true),
+            vec![place("b", chosen("b"))]
+        );
+        assert_eq!(
+            registry.placed("b", true),
+            vec![finished_on_tab("b", Outcome::Saved, "tab-2")]
+        );
+    }
+
     #[test]
     fn refusal_credits_are_capped_so_a_storm_cannot_grow_them_without_bound() {
         let mut registry = Registry::default();
@@ -2671,6 +2836,53 @@ mod tests {
             &PathBuf::from("/home/u/.pinvou3/browser/downloads-backup/a.bin"),
             &root
         ));
+        // A parent deleted between the dialog and the placement cannot be
+        // resolved; the lexical comparison still answers for direct
+        // spellings, and neither check claims an unreachable destination is
+        // inside the root.
+        assert!(!destination_inside_staging(
+            &PathBuf::from("/home/u/Downloads/gone/a.bin"),
+            &root
+        ));
+    }
+
+    #[test]
+    fn a_destination_resolved_into_the_staging_root_is_rejected_for_placement() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let alias = temp.path().join("alias");
+        // The factory hands every call its own resolver, which owns its
+        // anchors so its `Fn` impl stays generic over the argument lifetime.
+        let make_resolve = |alias: PathBuf, staging: PathBuf| {
+            move |path: &Path| {
+                if path == alias {
+                    Ok(staging.clone())
+                } else {
+                    std::fs::canonicalize(path)
+                }
+            }
+        };
+        assert!(destination_inside_staging_with(
+            &alias.join("a.bin"),
+            &staging,
+            make_resolve(alias.clone(), staging.clone())
+        ));
+        // A folder that resolves outside the root stays allowed.
+        let sibling = temp.path().join("other");
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(!destination_inside_staging_with(
+            &sibling.join("a.bin"),
+            &staging,
+            make_resolve(alias.clone(), staging.clone())
+        ));
+        // An unresolvable destination cannot claim containment; the lexical
+        // comparison already answered for the direct spellings.
+        assert!(!destination_inside_staging_with(
+            &alias.join("a.bin"),
+            &staging,
+            |_| Err(io::Error::new(io::ErrorKind::NotFound, "gone"))
+        ));
     }
 
     #[test]
@@ -2741,16 +2953,30 @@ mod tests {
     }
 
     #[test]
-    fn a_new_coordinator_sweeps_staging_from_the_previous_process() {
+    fn a_new_coordinator_sweeps_only_its_own_staging_leftovers() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("staging");
-        let leftover = root.join("0123456789abcdef").join("partial.bin");
+        // Coordinator-owned shape: 32 lowercase hex digits (`new_download_id`).
+        let leftover = root
+            .join("0123456789abcdef0123456789abcdef")
+            .join("partial.bin");
         std::fs::create_dir_all(leftover.parent().unwrap()).unwrap();
         std::fs::write(&leftover, b"interrupted transfer").unwrap();
+        // An entry the coordinator does not own — a file that reached the
+        // root through a destination spelling the placement guard could not
+        // resolve — must survive the sweep instead of disappearing with it.
+        let foreign = root.join("user-file.pdf");
+        std::fs::write(&foreign, b"kept").unwrap();
+        // An entry that merely shares the prefix shape is not ours either.
+        let near_miss = root.join("0123456789abcdef0123456789abcdeg");
+        std::fs::create_dir_all(&near_miss).unwrap();
         let _coordinator = BrowserDownloads::new(root.clone());
-        assert!(!root.exists());
+        assert!(!root.join("0123456789abcdef0123456789abcdef").exists());
+        assert!(foreign.exists());
+        assert!(near_miss.exists());
         // A missing root is not an error.
         let _coordinator = BrowserDownloads::new(temp.path().join("missing"));
+        assert!(!temp.path().join("missing").exists());
     }
 
     #[test]

@@ -641,18 +641,6 @@ export function BrowserView({
       const notice = downloadFinishedNotice(t, payload);
       if (notice) dispatchDownloadNotice({ type: 'report', notice });
     }));
-    // An `unsaved` notice whose event landed while this workspace was not
-    // mounted (view switch, background session) would otherwise strand its
-    // record with no UI to save or discard it: re-report the backend's live
-    // ones on mount. The reducer keeps entries this session already knows,
-    // so a stale snapshot cannot resurrect a dismissed or updated notice.
-    invokeTauri('browser_download_pending').then((payloads) => {
-      if (disposed || !Array.isArray(payloads)) return;
-      const notices = payloads
-        .map((payload) => downloadFinishedNotice(t, payload))
-        .filter(Boolean);
-      if (notices.length) dispatchDownloadNotice({ type: 'backfill', notices });
-    }).catch(() => {});
     guard('browser:persistence-warning', listenTauri('browser:persistence-warning', (event) => {
       if (disposed || !browserViewMountedRef.current) return;
       const payload = event.payload || {};
@@ -682,6 +670,23 @@ export function BrowserView({
         listenerRegistrationFailed = true;
         console.error('[browser] listener registration timed out; enabling reconciliation');
       }
+      // An `unsaved` notice whose event landed while this workspace was not
+      // mounted (view switch, background session) would otherwise strand its
+      // record with no UI to save or discard it: re-report the live ones on
+      // mount, once the listeners above have settled so nothing can fall into
+      // the gap between the static answer and the events it missed. The
+      // command answers for every session, so this workspace keeps only its
+      // own records — the same scoping the listeners enforce. The reducer
+      // keeps entries this session already knows, so a stale snapshot cannot
+      // resurrect a dismissed or updated notice.
+      invokeTauri('browser_download_pending').then((payloads) => {
+        if (disposed || !Array.isArray(payloads)) return;
+        const notices = payloads
+          .filter((payload) => payload?.sessionId === sessionId)
+          .map((payload) => downloadFinishedNotice(t, payload))
+          .filter(Boolean);
+        if (notices.length) dispatchDownloadNotice({ type: 'backfill', notices });
+      }).catch(() => {});
       const hydrateInitialStatus = async (failedAttempt = 0) => {
         // ok is false only when refreshStatus's own status RPC threw; stale
         // rounds resolve true and must not schedule a bounded retry.

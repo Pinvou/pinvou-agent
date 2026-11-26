@@ -1170,7 +1170,7 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   );
   assert.match(
     nativeHost,
-    /self\.quarantine_workspace_for_failed_restore\(session_id\)\?;\s*\/\/ Quarantine revokes[\s\S]{0,220}?self\.sync_shown_download_page\(app\);/,
+    /let quarantine_result = self\.quarantine_workspace_for_failed_restore\(session_id\);\s*\/\/ Quarantine revokes[\s\S]{0,400}?self\.sync_shown_download_page\(app\);\s*quarantine_result\?;/,
   );
   // Compensation that removes a tab can change the active tab; the mirror
   // follows there too.
@@ -1237,10 +1237,21 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   assert.match(browserDownloads, /\.save_file\(move \|picked\|/);
   assert.doesNotMatch(browserDownloads, /blocking_save_file|blocking_show/);
 
-  // Placement and cleanup never block the UI thread.
+  // Placement and cleanup never block the UI thread, and the staging-root
+  // containment check — whose filesystem-resolved comparison stats the
+  // destination's parent — runs on the blocking thread next to the placement.
   assert.match(
     browserDownloads,
-    /let rejected = destination_inside_staging\(&destination, &self\.staging_root\);\s*let app = app\.clone\(\);\s*tauri::async_runtime::spawn_blocking\(move \|\| \{\s*let placed =\s*!rejected && place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
+    /let staging_root = self\.staging_root\.clone\(\);\s*let app = app\.clone\(\);\s*tauri::async_runtime::spawn_blocking\(move \|\| \{\s*let rejected =\s*destination_inside_staging\(&destination, &staging_root\);\s*let placed =\s*!rejected && place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
+  );
+  // The containment guard resolves the destination's parent through the
+  // filesystem (the resolver is injected so tests can stand in for a
+  // symlinked or case-insensitive folder): a destination that reaches the
+  // root through such a spelling must fail the placement too, or a saved
+  // file would land inside the root and be swept away at the next startup.
+  assert.match(
+    browserDownloads,
+    /fn destination_inside_staging_with<R>\(destination: &Path, staging_root: &Path, resolve: R\) -> bool\s*where\s*R: Fn\(&Path\) -> io::Result<PathBuf>,\s*\{\s*if destination\.starts_with\(staging_root\) \{\s*return true;\s*\}\s*let resolved_destination = destination\.parent\(\)\.and_then\(\|parent\| resolve\(parent\)\.ok\(\)\);\s*let resolved_root = resolve\(staging_root\)\.ok\(\);/,
   );
   // A cross-volume copy streams through a sibling named after the download,
   // so a process killed mid-copy leaves one attributable `.part` behind, and
@@ -1258,11 +1269,20 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
     /spawn_blocking\(move \|\| discard_directory\(&staging_dir\)\);/,
   );
 
-  // An earlier process cannot leave staging behind, and the coordinator is
-  // created before any browser WebView exists.
+  // An earlier process's own staging leftovers cannot survive a restart,
+  // entries the coordinator does not own are never swept, and the coordinator
+  // is created before any browser WebView exists.
   assert.match(
     browserDownloads,
-    /pub\(crate\) fn new\(staging_root: PathBuf\) -> Self \{\s*discard_directory\(&staging_root\);/,
+    /pub\(crate\) fn new\(staging_root: PathBuf\) -> Self \{\s*discard_staging_leftovers\(&staging_root\);/,
+  );
+  assert.match(
+    browserDownloads,
+    /fn is_staging_entry_id\(name: &OsStr\) -> bool \{[\s\S]{0,320}?name\.len\(\) == 32[\s\S]{0,320}?matches!\(byte, b'0'\.\.=b'9' \| b'a'\.\.=b'f'\)/,
+  );
+  assert.match(
+    browserDownloads,
+    /fn discard_staging_leftovers\(root: &Path\) \{\s*let Ok\(entries\) = std::fs::read_dir\(root\) else \{\s*return;\s*\};/,
   );
   assert.match(
     browserPaths,
@@ -1291,6 +1311,13 @@ test('embedded downloads stage privately and ask the user through a deferred OS 
   assert.match(
     browserCommands,
     /#\[tauri::command\(async\)\]\s*pub fn browser_download_pending\(downloads: State<'_, BrowserDownloads>\) -> Vec<Value> \{\s*downloads\.pending_unsaved\(\)\s*\}/,
+  );
+  // A deferred prompt whose record left the asking state before the spawned
+  // task runs (a lost-tab settle, a failed transfer) releases the serialized
+  // dialog slot instead of opening a dialog nothing will ever answer.
+  assert.match(
+    browserDownloads,
+    /fn prompt\(&self, app: &AppHandle, id: &str, file_name: &str\) \{\s*\{\s*let mut registry = self\.registry\.lock\(\);\s*if !registry\.is_asking\(id\) \{\s*let effects = registry\.abandon_prompt\(id\);\s*drop\(registry\);\s*self\.perform\(app, effects\);\s*return;\s*\}\s*\}/,
   );
   // Refusal credits are bounded, so a storm of refused distinct URLs cannot
   // grow them without limit.
@@ -1328,7 +1355,7 @@ test('download events and notices carry names and outcomes but no URL or local p
   assert.ok(askAgain, 'the coordinator implements the retry');
   assert.match(
     askAgain[0],
-    /download\.transfer != Transfer::Succeeded \|\| download\.intent != Intent::Unsaved \{\s*return Err\("download_not_retryable"\);/,
+    /download\.transfer != Transfer::Succeeded \|\| download\.intent != Intent::Unsaved \{\s*return Err\(DOWNLOAD_NOT_RETRYABLE\);/,
   );
   assert.match(
     askAgain[0],
@@ -1405,10 +1432,14 @@ test('download round-3 fixes are pinned: writable-handle sync, refusal accountin
   );
   assert.match(browserDownloads, /is_reserved_device_name\(segment\.trim_end\(\)\)/);
 
-  // A destination under the staging root fails the placement instead of
-  // being renamed into a directory the cleanup then deletes.
+  // A destination under the staging root — lexically or resolved through
+  // the filesystem — fails the placement instead of being renamed into a
+  // directory the cleanup then deletes.
   assert.match(browserDownloads, /fn destination_inside_staging\(destination: &Path, staging_root: &Path\) -> bool \{/);
-  assert.match(browserDownloads, /let rejected = destination_inside_staging\(&destination, &self\.staging_root\);/);
+  assert.match(
+    browserDownloads,
+    /let rejected =\s*destination_inside_staging\(&destination, &staging_root\);/,
+  );
 
   // The shown workspace mirror is refreshed when a tab switch commits, not
   // only at session visibility transitions.

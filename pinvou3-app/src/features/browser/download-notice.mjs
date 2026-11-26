@@ -103,13 +103,21 @@ export function downloadNoticesReducer(state, action) {
 
 // Keeps the newest MAX_DOWNLOAD_NOTICES entries; key order is insertion
 // order, and `report` re-inserts on every update, so the oldest entries are
-// the least recently updated ones.
+// the least recently updated ones. An `unsaved` entry is never updated
+// again, so it would always be trimmed first — exempt it instead: its record
+// holds a live download slot and a staged file, and this notice is the only
+// route to its Save as / Discard actions. (The live cap bounds `unsaved`
+// entries at 16, well under the history bound.)
 function trimNotices(notices) {
   const keys = Object.keys(notices);
   if (keys.length <= MAX_DOWNLOAD_NOTICES) return notices;
   const trimmed = { ...notices };
-  for (const key of keys.slice(0, keys.length - MAX_DOWNLOAD_NOTICES)) {
+  let excess = keys.length - MAX_DOWNLOAD_NOTICES;
+  for (const key of keys) {
+    if (excess <= 0) break;
+    if (notices[key].status === 'unsaved') continue;
     delete trimmed[key];
+    excess -= 1;
   }
   return trimmed;
 }

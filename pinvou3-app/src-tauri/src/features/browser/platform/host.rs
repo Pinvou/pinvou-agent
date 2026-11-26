@@ -2206,11 +2206,13 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         let app = app.ok_or_else(|| {
             "App handle is not ready; cannot reconcile failed browser restore".to_string()
         })?;
-        self.quarantine_workspace_for_failed_restore(session_id)?;
-        // Quarantine revokes the failed session's visibility, so the mirror
-        // must stop naming it for the same reason an ordinary session close
-        // does: a stale page would admit downloads into a dead session.
+        let quarantine_result = self.quarantine_workspace_for_failed_restore(session_id);
+        // Quarantine revokes the failed session's visibility even when its
+        // durable cleanup fails, so the mirror must stop naming it before any
+        // early return, for the same reason an ordinary session close does: a
+        // stale page would admit downloads into a dead session.
         self.sync_shown_download_page(app);
+        quarantine_result?;
         self.reap_quarantined_for_session(app, session_id)?;
         Ok(self.has_sessions())
     }
