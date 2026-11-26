@@ -698,9 +698,11 @@ function enforceLazyChunks() {
 // PR #847 r18 re-measure (review evidence, hosted frontend job
 // 140124247539): with the review waves' contracts joined to the shared
 // startup graph, writeBundle measures 497,476 B desktop — 1,476 B over
-// the 496_000 ceiling — so the ceiling takes the next thousand step. Web
+// the 496_000 ceiling — so the ceiling takes the next thousand step
+// (498_000; the first re-cut to 497_000 still sat 476 B under the
+// measured size and the hosted build correctly refused it). Web
 // unchanged. This cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 497_000;
+export const MAIN_ENTRY_BUDGET_BYTES = 498_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {

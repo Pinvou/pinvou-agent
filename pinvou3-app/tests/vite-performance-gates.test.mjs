@@ -32,10 +32,12 @@ test('startup gates remain active in desktop and web production builds', () => {
   // rebase re-measure 494_000 → 495_000 desktop raises, and PR #847's second
   // rebase re-measure 495_000 → 496_000 desktop raise (the 2026-11-16 main's
   // #881 frontend additions; the aarch64 measurement binds) and the review-
-  // wave re-measure 496_000 → 497_000 desktop raise (hosted writeBundle
-  // measured 497,476 B; the aarch64-class measurement binds) are measured
-  // per policy; the config comment preserves both platforms' measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 497_000);
+  // wave re-measure 496_000 → 498_000 desktop raise (hosted writeBundle
+  // measured 497,476 B — the first 497_000 re-cut still sat under the
+  // measured size and the hosted build refused it; the aarch64-class
+  // measurement binds) are measured per policy; the config comment
+  // preserves both platforms' measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 498_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));
