@@ -619,7 +619,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // 测试连接的生效输入镜像(r14 P3):resolve 时刻栅栏比对的现值来源——
       // 运行中的 handleTest 闭包持有旧渲染的 state,直接读会永远等于快照。
       const testInputsRef = useRef({ key: apiKey, noAuth, keyAction });
-      testInputsRef.current = { key: apiKey, noAuth, keyAction };
+      testInputsRef.current = { key: apiKey, noAuth, keyAction }; // eslint-disable-line react-hooks/refs -- synchronously mirror the live test inputs so the resolve-time fence compares the probe snapshot against the CURRENT field values (round-14 review P3)
       baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
       // wire 模型 ID 同款镜像(复审 M2):端点事实按模型探得,测试在飞时换了模型
       // (目录切换/手输 ID/候选行填充),旧模型的数字不得填进新模型的空字段。

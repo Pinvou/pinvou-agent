@@ -1264,7 +1264,9 @@ impl UserPrefs {
     /// 第三位 = 读取降级(r13 复审 P2):settings.json 存在但读不出来
     /// (EIO/权限等非 NotFound 错误)或内容不可解析——这次加载回退了默认
     /// 值,不是权威观察。缺失文件(全新安装)不算降级。
-    fn load_unlocked_with_migration(persist_normalized: bool) -> (Self, CredentialMigrationResult, bool) {
+    fn load_unlocked_with_migration(
+        persist_normalized: bool,
+    ) -> (Self, CredentialMigrationResult, bool) {
         let path = super::paths::settings_path();
         let read_result = std::fs::read_to_string(&path);
         let read_degraded = match &read_result {
