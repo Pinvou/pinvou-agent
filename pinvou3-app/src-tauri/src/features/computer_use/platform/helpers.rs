@@ -103,17 +103,31 @@ pub(crate) fn append_tree_truncation_footers(
     emitted_nodes: u32,
     out: &mut String,
 ) {
+    // Cap-aware advice (review P3): at the stack's own hard ceiling the old
+    // "pass a larger …" footer manufactured the exact raise-rejected loop the
+    // parser's explicit range check closes — a value above the effective cap
+    // is a hard parse error, so the footer now says the ceiling was reached.
+    // Below the cap, raising the caller's budget is real advice and keeps the
+    // historical wording.
     if truncated {
-        let _ = writeln!(
-            out,
-            "... (truncated at {} nodes; pass a larger max_nodes to see more)",
-            emitted_nodes
-        );
+        if emitted_nodes >= MAX_TREE_NODES {
+            let _ = writeln!(
+                out,
+                "... (truncated at {} nodes — this stack's hard ceiling; a larger max_nodes is rejected by the parser)",
+                emitted_nodes
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "... (truncated at {} nodes; pass a larger max_nodes to see more)",
+                emitted_nodes
+            );
+        }
     }
     if truncated_by_depth {
         let _ = writeln!(
             out,
-            "... (truncated by depth; pass a larger max_depth to see more)"
+            "... (truncated by depth — this stack's hard ceiling; a larger max_depth is rejected by the parser)"
         );
     }
     if cap_bounded {
@@ -1177,14 +1191,34 @@ mod tests {
     /// top-level cap consumed slots. Pure; Linux-runnable.
     #[test]
     fn tree_truncation_footers_are_byte_stable() {
+        // At the stack's own hard ceiling (2000 nodes / 24 depth), the footer
+        // must NOT advise larger budgets — any value above the effective cap
+        // is a hard parse error now (review P3: the old advice manufactured
+        // the raise-rejected loop).
         let mut out = String::new();
-        append_tree_truncation_footers(true, true, true, 4321, &mut out);
+        append_tree_truncation_footers(true, true, true, MAX_TREE_NODES, &mut out);
         assert_eq!(
             out,
-            "... (truncated at 4321 nodes; pass a larger max_nodes to see more)\n\
-             ... (truncated by depth; pass a larger max_depth to see more)\n\
-             ... (top-level window cap bound; bottom-most windows absent)\n",
-            "the three footers render in node/depth/cap order, one line each"
+            format!(
+                "... (truncated at {} nodes — this stack's hard ceiling; a larger max_nodes is rejected by the parser)\n\
+                 ... (truncated by depth — this stack's hard ceiling; a larger max_depth is rejected by the parser)\n\
+                 ... (top-level window cap bound; bottom-most windows absent)\n",
+                MAX_TREE_NODES
+            ),
+            "at-cap truncation renders the ceiling wording in node/depth/cap order"
+        );
+        // Below the ceiling, raising the caller's budget is real advice and
+        // keeps the historical wording (byte-stable with the pre-change
+        // below-cap shape).
+        // Below the stack's own ceiling, raising the caller's budget is
+        // real advice and keeps the historical wording (the interface
+        // admits up to 10000, so a walk that stopped under the 2000-node
+        // stack ceiling still leaves real headroom to advise about).
+        let mut out = String::new();
+        append_tree_truncation_footers(true, false, false, 1_500, &mut out);
+        assert_eq!(
+            out, "... (truncated at 1500 nodes; pass a larger max_nodes to see more)\n",
+            "below-cap truncation keeps the raise-advice wording"
         );
         let mut out = String::new();
         append_tree_truncation_footers(false, false, false, 0, &mut out);

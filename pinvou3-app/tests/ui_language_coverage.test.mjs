@@ -590,6 +590,21 @@ for (const language of ['zh', 'en', 'ja']) {
       ['unsaved work in them is lost', '保存されていない作業は失われ', '未保存的工作会丢失'],
     ],
   ];
+  // (#897 review P2, two-phase survivor truth) ordinary children also
+  // survive until session teardown — the exclusive only-broker clause must
+  // not come back. Caveat-only (the note/caveat dual-surface scheme does
+  // not apply): the sentence lives in the Stop consent copy.
+  const survivorAnchors = [
+    ['grantWindowsCaveat', 'child processes those apps spawned keep running until the session is fully closed', '派生した子プロセスはセッションを完全に閉じたときにのみ回収されます', '派生的子进程会继续运行、直到会话完全关闭'],
+  ];
+  for (const [key, enAnchor, jaAnchor, zhAnchor] of survivorAnchors) {
+    assert.ok(
+      dict.en.uiComputerUse[key].includes(enAnchor) &&
+        dict.ja.uiComputerUse[key].includes(jaAnchor) &&
+        dict.zh.uiComputerUse[key].includes(zhAnchor),
+      `${key} must keep the two-phase survivor anchor in every locale`,
+    );
+  }
   for (const [noteKey, caveatKey, anchors] of disclosureAnchors) {
     for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
       const anchor = anchors[index];
@@ -623,7 +638,7 @@ for (const language of ['zh', 'en', 'ja']) {
   // screening clause are all honesty-load-bearing.
   const singleKeyAnchors = [
     ['grantDescVirtual', 'never shows on your screen', 'あなたの画面には表示されない', '画面不会出现在你的屏幕上'],
-    ['grantDescVirtual', 'its apps cannot be screened', '内部のアプリは検査できないため', '其中的应用无法被筛查'],
+    ['grantDescVirtual', 'a real UI tree', '実際の UI ツリー', '真实的 UI 树'],
     ['grantDesc', 'screening is best-effort', '確認はベストエフォートであり', '确认是尽力而为的'],
     // R17: the Screen Recording sharing sentence lives only in the macOS
     // settings note (no caveat twin), so it rides the single-key scheme.

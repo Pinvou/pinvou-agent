@@ -2209,9 +2209,18 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             } else {
                 "the node budget was exhausted"
             };
+            // Cap-aware advice (review P3, sibling of the shared footer):
+            // at the stack's own 2000-node clamp a larger max_nodes is a
+            // hard parse error — say the budget was exhausted at the
+            // ceiling instead of advising a rejected value.
+            let advice = if writer.next_index >= super::helpers::MAX_TREE_NODES {
+                "the node budget reached this stack's hard ceiling; a larger max_nodes is rejected by the parser"
+            } else {
+                "pass a larger max_nodes to see more"
+            };
             let _ = writeln!(
                 out,
-                "... (truncated after {} nodes: {reason}; pass a larger max_nodes to see more)",
+                "... (truncated after {} nodes: {reason}; {advice})",
                 writer.next_index
             );
         }

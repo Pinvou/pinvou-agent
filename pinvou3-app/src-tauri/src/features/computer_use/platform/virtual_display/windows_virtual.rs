@@ -3231,6 +3231,11 @@ impl WindowsVirtualDesktopBackend {
                     "[computer_use][virtual-win] the UIA helper process is up \
                      on the hidden desktop"
                 );
+                let mut client = client;
+                // Stop/revoke reach the helper's tree wait (review P2): the
+                // backend's cancel flag enables the sliced poll loop, so a
+                // Stop can no longer queue behind the whole scaled walk.
+                client.set_cancel(self.cancel.clone());
                 self.uia_helper = Some(client);
                 self.uia_helper.as_mut()
             }

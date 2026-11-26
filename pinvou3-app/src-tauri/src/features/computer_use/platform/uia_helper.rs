@@ -47,7 +47,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::io::FromRawHandle;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows::Win32::System::Pipes::CreatePipe;
@@ -415,6 +415,11 @@ pub(crate) enum HelperTransportError {
     Timeout,
     BrokenPipe,
     Unparsable(String),
+    /// The CALLER cancelled (Stop/revoke) while the tree response was in
+    /// flight (review P2): the client is dropped by the transport-death
+    /// path, whose `Drop` terminates the helper — Stop's exposure is one
+    /// poll slice plus the kill instead of the whole scaled walk budget.
+    Cancelled,
 }
 
 /// One op's outcome from a HEALTHY helper. `Ok` carries the answer; `Soft`
@@ -443,6 +448,11 @@ pub(crate) struct UiaHelperClient {
     /// kill channel; the session-end job remains the backstop for the
     /// backend's own drop).
     process: HANDLE,
+    /// Caller-timeout cancel flag (review P2): the backend's existing
+    /// Stop/revoke flag, mirrored here so `tree`'s wait can poll it in
+    /// bounded slices instead of blocking the whole scaled budget. `None`
+    /// keeps the old single-wait behavior (tests, non-cancelling callers).
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl UiaHelperClient {
@@ -521,6 +531,7 @@ impl UiaHelperClient {
             reader_thread: None,
             next_id: 1,
             process,
+            cancel: None,
         };
         let reader_thread = std::thread::Builder::new()
             .name("cu-uia-helper-reader".to_string())
@@ -600,7 +611,7 @@ impl UiaHelperClient {
     /// One serialized request/response exchange. Transport failures carry
     /// the helper-death semantics (caller drops the client); a well-framed
     /// `ok: false` is returned as-is for the caller to translate.
-    fn exchange(&mut self, op: Op, timeout: Duration) -> Result<Response, HelperTransportError> {
+    fn send_request(&mut self, op: Op) -> Result<u64, HelperTransportError> {
         let id = self.next_id;
         self.next_id += 1;
         let line = serde_json::to_string(&Request { id, op })
@@ -616,8 +627,14 @@ impl UiaHelperClient {
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
             .map_err(|_| HelperTransportError::BrokenPipe)?;
-        let line = self.take_line(timeout)?;
-        let response: Response = serde_json::from_str(&line)
+        Ok(id)
+    }
+
+    /// Framing/identity adjudication for one received line against the
+    /// request id it must answer (the cancellable wait reuses this so the
+    /// poll loop cannot answer a query with another query's response).
+    fn finish_exchange(&mut self, id: u64, line: &str) -> Result<Response, HelperTransportError> {
+        let response: Response = serde_json::from_str(line)
             .map_err(|e| HelperTransportError::Unparsable(format!("response parse: {e}")))?;
         if response.id != id {
             // Framing corruption: never answer a query with another query's
@@ -628,6 +645,22 @@ impl UiaHelperClient {
             )));
         }
         Ok(response)
+    }
+
+    fn exchange(&mut self, op: Op, timeout: Duration) -> Result<Response, HelperTransportError> {
+        let id = self.send_request(op)?;
+        let line = self.take_line(timeout)?;
+        self.finish_exchange(id, &line)
+    }
+
+    /// Wire the caller's Stop/revoke flag (review P2): enables the
+    /// cancellable sliced wait in `tree`. Called once at client creation
+    /// from the backend that owns the flag.
+    pub(crate) fn set_cancel(
+        &mut self,
+        flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) {
+        self.cancel = flag;
     }
 
     /// The helper's UIA tree. The wait budget scales with the node budget
@@ -642,6 +675,46 @@ impl UiaHelperClient {
         let timeout = Duration::from_millis(
             HELPER_TREE_TIMEOUT_BASE_MS + u64::from(max_nodes) * HELPER_TREE_TIMEOUT_PER_NODE_MS,
         );
+        // Cancellation checkpoints (review P2): the serialized worker
+        // channel means Stop/revoke queues BEHIND this whole exchange, so
+        // blocking it for the full scaled budget (tens of seconds at a full
+        // node budget) stalls wind-down behind thousands of individually
+        // responsive fetches — far beyond the committed "one in-flight OS
+        // call" exception. When a cancel flag is wired, the wait runs in
+        // bounded slices polling the flag; a latch returns `Cancelled`
+        // (transport-death semantics: the caller drops the client, whose
+        // Drop terminates the helper — the session job remains the
+        // backstop). `cancel: None` keeps the single-wait behavior.
+        if self.cancel.is_some() {
+            const CANCEL_POLL_SLICE: Duration = Duration::from_millis(250);
+            let deadline = Instant::now() + timeout;
+            let id = self.next_id;
+            if let Err(error) = self.send_request(Op::Tree {
+                max_depth,
+                max_nodes,
+            }) {
+                return Err(error);
+            }
+            loop {
+                if self
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    return Err(HelperTransportError::Cancelled);
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(HelperTransportError::Timeout);
+                }
+                let slice = CANCEL_POLL_SLICE.min(deadline - now);
+                match self.take_line(slice) {
+                    Ok(line) => return self.finish_exchange(id, &line),
+                    Err(HelperTransportError::Timeout) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         match self.exchange(
             Op::Tree {
                 max_depth,

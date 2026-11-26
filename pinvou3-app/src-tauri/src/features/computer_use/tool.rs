@@ -76,16 +76,21 @@ pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// (`cu-<hex>`) are far below this; over the cap is rejected as a parse
 /// error.
 pub const MAX_CONFIRM_ID_CHARS: usize = 128;
-/// `ui_tree` argument caps — the SAME values the schema declares (`maximum`)
-/// and every backend clamps to (helpers.rs `MAX_TREE_DEPTH`/`MAX_TREE_NODES`
-/// = 24/2000): parser, schema, and backend now state one ceiling, so no
-/// client can pass a value that is accepted here and silently shrunk there
-/// (the r6 review found the parser still admitted 64/10000 against a
-/// 24/2000 schema, re-requesting "larger" per the truncation footer would
-/// loop). The parser rejects out-of-range values explicitly
-/// ([`opt_u32_range`]) instead of silently clamping or truncating.
-pub const MAX_UI_TREE_DEPTH: u32 = 24;
-pub const MAX_UI_TREE_NODES: u32 = 2000;
+/// `ui_tree` argument caps — the SAME values the schema declares (`maximum`):
+/// the parser rejects out-of-range values explicitly ([`opt_u32_range`])
+/// instead of silently clamping or truncating. Interface maximums stay at
+/// the historical 64/10000 (review P2: the unchanged Linux AT-SPI writer
+/// feeds these straight into its `TreeWriter` with no clamp, so tightening
+/// them to the stack ceilings removed previously legal Linux requests —
+/// Windows clamp parity does not own this interface). The per-stack
+/// EFFECTIVE caps are narrower and disclosed honestly: macOS/Windows clamp
+/// in-backend (helpers.rs `MAX_TREE_DEPTH`/`MAX_TREE_NODES` = 24/2000),
+/// and the truncation footer is cap-aware (review P3) so a walk truncated
+/// at a stack's own ceiling no longer advises "larger" values the parser
+/// would reject — that footer advice was the r6 loop's actual driver, not
+/// the interface width.
+pub const MAX_UI_TREE_DEPTH: u32 = 64;
+pub const MAX_UI_TREE_NODES: u32 = 10_000;
 /// `open` program-name cap (characters), mirroring the parse-time cap
 /// convention of the other free-text fields: the program rides the consent
 /// summary/payload and the audit trail, so an uncapped model-supplied string
@@ -2812,9 +2817,11 @@ impl ToolSpec for ComputerUseTool {
          there with `open` and work freely; this isolation is subject to the \
          platform residuals the target note discloses (e.g. on macOS an app \
          you just opened passes through the user's desktop while it is being \
-         moved in), and per-action screening cannot read the isolated \
-         display (its apps cannot be screened, so nothing there is \
-         confirmed against a user-facing control). When the target is the user's real \
+         moved in), and per-action screening on the Windows hidden-desktop stack returns a \
+         REAL tree (a consequential target there CAN raise a confirmation \
+         against a user-facing control), while stacks whose display cannot \
+         be read answer unreadable and still execute without confirmation. \
+         When the target is the user's real \
          desktop, every action is visible to the user: minimize disruption, keep \
          actions to the minimum the task needs, and say what you are about to do \
          before doing it. \
@@ -2848,9 +2855,10 @@ impl ToolSpec for ComputerUseTool {
          as a clear one, and every unreadable location binds identically, so the \
          replay only detects a readable target appearing. The CONTENT you type is never \
          screened, and \
-         key chords are not screened for destructiveness. The accessibility tree walk \
-         is capped at 24 levels / 2000 nodes — the max_depth/max_nodes arguments cannot \
-         exceed that hard ceiling (parser, schema, and every backend agree). Observation \
+         key chords are not screened for destructiveness. The max_depth/max_nodes arguments accept up to 64 levels / 10000 nodes; on \
+         macOS and Windows the accessibility tree walk is additionally clamped below \
+         those arguments (24 levels / 2000 nodes effective), and a walk truncated at \
+         that stack's own ceiling says so instead of advising larger values. Observation \
          (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
@@ -2884,8 +2892,8 @@ impl ToolSpec for ComputerUseTool {
                 "ms": { "type": "integer", "minimum": 1, "maximum": 30000, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
                 "amount": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Scroll wheel clicks, 1-100 (scroll)" },
-                "max_depth": { "type": "integer", "minimum": 1, "maximum": 24, "description": "Max accessibility tree depth (ui_tree; the backend's hard ceiling)" },
-                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Max accessibility tree nodes (ui_tree; the backend's hard ceiling)" },
+                "max_depth": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Max accessibility tree depth (ui_tree)" },
+                "max_nodes": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Max accessibility tree nodes (ui_tree)" },
                 "program": { "type": "string", "maxLength": 1024, "description": "Program to launch, spawned directly without a shell (open): a bare name resolved by the platform's usual search order, or an absolute path" },
                 "args": { "type": "array", "items": { "type": "string", "maxLength": 4096 }, "maxItems": 64, "description": "Arguments passed verbatim to the program (open)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }

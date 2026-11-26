@@ -6749,35 +6749,37 @@ fn mint_path_restores_the_physical_input_lock_for_virtual_targets() {
 /// names).
 #[test]
 fn ui_tree_parser_caps_match_the_schema_maximums_and_backend_ceilings() {
-    assert_eq!(
-        MAX_UI_TREE_DEPTH, 24,
-        "parser depth cap = the backend ceiling"
+    // Interface maximums (review P2): the parser and schema stay at the
+    // historical 64/10000 — the unchanged Linux AT-SPI writer feeds these
+    // values straight into its TreeWriter with no clamp, so tightening the
+    // INTERFACE removed previously legal Linux requests. The per-stack
+    // EFFECTIVE ceilings are narrower and separately pinned below; the
+    // truncation footer is cap-aware so an at-ceiling walk no longer
+    // advises larger values (the r6 loop's driver), keeping the
+    // accept-then-silently-shrink gap closed without narrowing the
+    // interface.
+    assert_eq!(MAX_UI_TREE_DEPTH, 64, "interface depth cap");
+    assert_eq!(MAX_UI_TREE_NODES, 10_000, "interface node cap");
+    let src = include_str!("../tool.rs");
+    assert!(
+        src.contains("\"maximum\": 64,") && src.contains("\"maximum\": 10000,"),
+        "the schema must declare the same maximums the parser enforces — \
+         a schema/parser drift reopens the accept-vs-schema gap \
+         (the trailing comma makes the needle exact: the old prefix form \
+         also matched \"maximum\": 640)"
     );
-    assert_eq!(
-        MAX_UI_TREE_NODES, 2000,
-        "parser node cap = the backend ceiling"
-    );
-    // The backend leg (r7): the shared ceilings every backend's clamp
-    // applies (`tree_budget` and its physical inlining read these exact
-    // constants). A drift here (say 20/1500) would keep parser and schema
-    // at 24/2000 while every backend silently shrank — the exact class
-    // this test names. The platform's `helpers` module is private, so the
+    // The effective-stack leg (r7, kept): every backend's clamp applies
+    // (`tree_budget` and its physical inlining read these exact
+    // constants). A drift here would silently change the disclosed
+    // effective cap. The platform's `helpers` module is private, so the
     // ceiling DECLARATIONS are pinned at their source instead of through a
     // widened import.
     let helpers = include_str!("../platform/helpers.rs");
     assert!(
         helpers.contains("MAX_TREE_DEPTH: u32 = 24")
             && helpers.contains("MAX_TREE_NODES: u32 = 2000"),
-        "the backend ceilings must state the same 24/2000 the parser and \
-         schema enforce — a backend drift re-silences the \
-         accept-then-silently-shrink gap this pin names"
-    );
-    let src = include_str!("../tool.rs");
-    assert!(
-        src.contains("\"maximum\": 24,") && src.contains("\"maximum\": 2000,"),
-        "the schema must declare the same ceilings the parser enforces — \
-         a schema/parser drift reopens the accept-then-silently-shrink gap \
-         (the trailing comma makes the needle exact: the old prefix form \
-         also matched \"maximum\": 240)"
+        "the backend ceilings must stay at the disclosed 24/2000 — \
+         they are what the macOS/Windows clamps apply and what the \
+         description and cap-aware footer disclose"
     );
 }

@@ -2458,7 +2458,8 @@ jobs:
             'features::monitor::platform::windows_gpu::tests::' \
             'features::remote_control::platform::windows::tests::' \
             'features::computer_use::platform::windows::tests::' \
-            'features::computer_use::platform::virtual_display::windows_virtual::tests::' \
+            'features::computer_use::platform::virtual_display::windows_virtual::tests::'
+            'features::computer_use::platform::uia_helper::tests::' \
             'failed_probe_never_deletes_an_existing_store_windows' \
             'features::voice_shortcut::platform::tests::' \
             'app::commands::dependencies::platform::windows::tests::' \
