@@ -16,11 +16,14 @@
       : shellCleanupFailed.zh;
   }
 
-  // Backend error strings the desktop computer-use commands surface verbatim
-  // (platform/tauri/bridge/computer_use.js localizeKnownError). Exact
-  // equality first; unrecognized messages then fall through to the
-  // marker-based table below, and a miss there returns null so the bridge
-  // passes the original error through untouched.
+  // Backend error strings the desktop computer-use feature surfaces
+  // verbatim: localizeKnownError maps command rejections
+  // (platform/tauri/bridge/computer_use.js) and the virtual-display status
+  // projection maps the settings-page diagnostic detail through the same
+  // table (localizeVirtualDisplayDetail). Exact equality first;
+  // unrecognized messages then fall through to the marker-based table
+  // below, and a miss there returns null so the bridge passes the original
+  // error through untouched.
   const computerUseKnownErrors = {
     "computer use has no backend on this operating system": {
       zh: "当前平台没有电脑使用后端，无法开启此功能。",
@@ -49,6 +52,58 @@
       zh: "该确认请求已过期或不存在；请重新发起操作，确认弹窗会再次出现。",
       en: "This confirmation request no longer exists (unknown or expired); retry the action to raise a fresh confirmation.",
       ja: "この確認リクエストは存在しないか有効期限が切れています。操作を再試行すると新しい確認が表示されます。",
+    },
+    // The macOS virtual-display copy embeds live values (seconds, vendor and
+    // product ids, serial numbers), so exact equality cannot match; these
+    // match on stable marker phrases. Each marker is pinned against the
+    // backend source by tests/computer_use_bridge.test.mjs — a wording
+    // change on either side must update both in the same change.
+    {
+      marker: "did not become active within",
+      zh: "虚拟显示器未能在创建预算内激活：若 macOS 曾为新显示器弹出「屏幕镜像」询问，该询问已随本次释放一起关闭——请新开会话，并在 控制中心 → 屏幕镜像（若系统已记住选择则在 系统设置 → 显示器）中为该显示器选择「扩展」。",
+      en: "The virtual display did not become active within the creation budget; if macOS showed a Screen Mirroring alert for the new display, that alert closed when the session released the display — start a new session and choose \"Extend\" for it in Control Center → Screen Mirroring (or System Settings → Displays if the choice was remembered).",
+      ja: "仮想ディスプレイが作成予算内でアクティブになりませんでした：macOS が新しいディスプレイの「画面をミラーリング」確認を表示していた場合、その確認はセッションがディスプレイを解放した時点で閉じています——新しいセッションを開始し、コントロールセンター → 画面をミラーリング（選択が記憶されている場合はシステム設定 → ディスプレイ）で「拡張」を選択してください。",
+    },
+    {
+      marker: "came up as part of a mirror set",
+      zh: "虚拟显示器以镜像集合成员启动，而不是独立桌面：镜像会把你的桌面内容复制到它上面，驱动或截取它等于驱动或截取你的桌面。请新开会话，并在 控制中心 → 屏幕镜像（若系统已记住选择则在 系统设置 → 显示器）中为该显示器选择「扩展」。",
+      en: "The virtual display came up as part of a mirror set, not as a separate desktop: the set duplicates your desktop onto it, so driving or capturing it would drive and capture your desktop. Start a new session and choose \"Extend\" for the display in Control Center → Screen Mirroring (or System Settings → Displays if the choice was remembered).",
+      ja: "仮想ディスプレイが独立したデスクトップではなくミラーセットの一部として起動しました：ミラーリングはあなたのデスクトップをこのディスプレイに複製するため、操作やキャプチャはあなたのデスクトップへの操作になります。新しいセッションを開始し、コントロールセンター → 画面をミラーリング（選択が記憶されている場合はシステム設定 → ディスプレイ）で「拡張」を選択してください。",
+    },
+    {
+      marker: "became the main display while the user's own",
+      zh: "虚拟显示器成了主显示器，而你的显示器仍在线：菜单栏和新窗口已移到它上面，驱动或截取它等于驱动或截取你的桌面。请新开会话，并在 macOS 询问时为该显示器选择「扩展」（控制中心 → 屏幕镜像）；若系统已记住排列，请在 系统设置 → 显示器 中把你的显示器设为主显示器。",
+      en: "The virtual display became the main display while your own displays are active: their menu bar and new windows moved onto it, so driving or capturing it would drive and capture your desktop. Start a new session and choose \"Extend\" for the display when macOS asks (Control Center → Screen Mirroring); if the arrangement was remembered, set your own display as the main display in System Settings → Displays.",
+      ja: "あなたのディスプレイがアクティブなまま、仮想ディスプレイがメインディスプレイになりました：メニューバーと新しいウィンドウがそちらへ移動しているため、操作やキャプチャはあなたのデスクトップへの操作になります。新しいセッションを開始し、macOS が尋ねたときにこのディスプレイへ「拡張」を選択してください（コントロールセンター → 画面をミラーリング）。配置が記憶されている場合は、システム設定 → ディスプレイで自分のディスプレイをメインに設定してください。",
+    },
+    {
+      marker: "rejected every identity slot",
+      zh: "macOS 拒绝了虚拟显示器的全部身份槽位（每个未结束的并发会话各占一块，上限 4 块）：常见原因是其他 Pinvou 虚拟显示器仍在运行——退出本应用可立即全部释放（停止其他会话的电脑使用要等其会话结束后才生效），然后新开会话。",
+      en: "macOS rejected every virtual display identity slot (one per concurrent session that has not ended, up to four): the usual cause is other Pinvou virtual displays still alive — quit the app to release them all immediately (stopping the other sessions' computer use only helps once their sessions end), then start a new session.",
+      ja: "macOS が仮想ディスプレイの識別スロットをすべて拒否しました（終了していない同時実行セッションごとに 1 つ、最大 4 つ）：原因は通常、他の Pinvou 仮想ディスプレイがまだ動作していることです——このアプリを終了するとすべて即時に解放されます（他のセッションのコンピュータ操作を停止しても、そのセッションが終わって初めて反映されます）。その後、新しいセッションを開始してください。",
+    },
+    // The API-absence probes are the user-facing "this macOS cannot host a
+    // virtual display" condition: the probe verdict is the settings page's
+    // "unavailable" detail line, and a creation with the preference on
+    // falls back to the physical target in the same breath (resolve_target),
+    // so the copy states that fallback. The creation-phase counterpart
+    // ("has no setter to name the display") is deliberately NOT mapped: it
+    // only fires when the probe passed yet creation still cannot proceed,
+    // where no fallback exists and a localized "sessions fall back" claim
+    // would be false.
+    {
+      marker: "private macos virtual display api not present on this macos",
+      zh: "此 macOS 版本没有隔离虚拟显示器所依赖的私有显示器 API，无法创建虚拟显示器：会话会改用你的真实屏幕。可尝试升级 macOS；若确认不支持，可在设置中关闭「优先使用隔离的虚拟显示器」，让此提示不再出现。",
+      en: "This macOS build lacks the private display API the isolated virtual display depends on, so no virtual display can be created: sessions fall back to your real screen. Consider updating macOS; if it still does not provide the API, turn off \"Prefer isolated virtual display\" in settings to dismiss this hint.",
+      ja: "この macOS ビルドには隔離仮想ディスプレイが依存するプライベートディスプレイ API がないため、仮想ディスプレイは作成できません：セッションはあなたの実際の画面に切り替わります。macOS の更新を検討してください。それでも対応していない場合は、設定で「隔離された仮想ディスプレイを優先」をオフにするとこの表示は消えます。",
+    },
+    {
+      // Covers both probe shapes (plural "selectors" and singular
+      // "selector") via the shared prefix.
+      marker: "is missing the selector",
+      zh: "此 macOS 版本的私有显示器 API 缺少隔离虚拟显示器所需的选择器，无法创建虚拟显示器：会话会改用你的真实屏幕。可尝试升级 macOS；若确认不支持，可在设置中关闭「优先使用隔离的虚拟显示器」。",
+      en: "This macOS build's private display API is missing selectors the isolated virtual display needs, so no virtual display can be created: sessions fall back to your real screen. Consider updating macOS; if it still lacks them, turn off \"Prefer isolated virtual display\" in settings.",
+      ja: "この macOS ビルドのプライベートディスプレイ API には隔離仮想ディスプレイに必要なセレクタが欠けているため、仮想ディスプレイは作成できません：セッションはあなたの実際の画面に切り替わります。macOS の更新を検討してください。それでも欠けている場合は、設定で「隔離された仮想ディスプレイを優先」をオフにしてください。",
     },
   ];
 

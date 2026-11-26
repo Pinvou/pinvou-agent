@@ -499,6 +499,25 @@ for (const language of ['zh', 'en', 'ja']) {
       'grantMacCaveat',
       ['overlap-free', '重なり', '不重叠'],
     ],
+    // The #919 follow-up scenario sentences are consent-critical too (the
+    // mirroring prompt decides virtual-vs-mirrored, the identity pool caps
+    // concurrency, and the refused-start recovery is the only path after a
+    // refusal): anchor each so a single-language drop fails the suite.
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['Screen Mirroring prompt', '画面をミラーリング」の確認', '屏幕镜像」询问'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['pool of at most four', '（最大 4 つ）のプール', '身份池'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['a refused start recovers', '開始が拒否された場合', '启动被拒绝时'],
+    ],
     ['virtualNoteLinux', 'grantLinuxCaveat', ['raw Wayland', 'raw Wayland', 'raw Wayland']],
     // R18: the Linux wind-down abruptness (group SIGKILL at Stop, unsaved
     // work lost) reached the model-facing note in R15 but never the
