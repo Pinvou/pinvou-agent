@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import { VIEW_LOADERS } from '../src/app/view-loaders.js';
 import createViteConfig, {
+  MAIN_ENTRY_BUDGET_BYTES,
+  WEB_MAIN_ENTRY_BUDGET_BYTES,
   assertLazyChunks,
   lazyChunkContracts,
   lazyToolChunkContracts,
