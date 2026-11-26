@@ -231,7 +231,11 @@ const EXPECTED_SURFACE = {
   // setPlanModeNext; no cluster literal gains a dep — count only.
   // bumpModeSyncAttempt (review P2 ordering fence) is a base-local helper
   // over the same closure Maps — pure, count only.
-  sharedFnCount: 325,
+  sharedFnCount: 334,
+  // Rebase reconciliation (+9 vs the pre-rebase pin): main moved
+  // discardPlan / exitPlanToYolo into the shared base (lane shells), and
+  // the shared exitPlanToYolo now carries the tri-mode settlement
+  // machinery; the exported names join the surfaces the shells consume.
 };
 
 assert.equal(

@@ -1410,16 +1410,18 @@ try {
     ]) {
       assert.match(laneSource, /if \(outcome && outcome\.ask_error\) \{\s*\n\s*addSystemItemFor\(sid, bt\("modeAskPersistFailed"\) \+ outcome\.ask_error\);\s*\n\s*\}/,
         `${laneName} setSessionMode 必须把 ask 半边作为未保存注记（ask_error 进 outcome 而非 Err 回执）`);
+      // 回放后 exitPlanToYolo 的机器随 main 的 shared 收编进共享基座
+      // （lane 只留壳），lane 侧直接计数降一档；共享侧由下方 exitPlan 钉锁定。
       const beginHits = (laneSource.match(/\.beginModeSwitchAttempt\(/g) || []).length;
-      assert.ok(beginHits >= 4, `${laneName} 每个切换面都必须在派发前取 attempt 身份（实得 ${beginHits} 处）`);
+      assert.ok(beginHits >= 3, `${laneName} 每个切换面都必须在派发前取 attempt 身份（实得 ${beginHits} 处）`);
       const settleHits = (laneSource.match(/\.settleModeSwitchSuccess\(/g) || []).length;
-      assert.ok(settleHits >= 4, `${laneName} 每个切换面成功都必须按桩结算（实得 ${settleHits} 处）`);
+      assert.ok(settleHits >= 3, `${laneName} 每个切换面成功都必须按桩结算（实得 ${settleHits} 处）`);
       const fenceHits = (laneSource.match(/\.handleModeSwitchFailure\(/g) || []).length;
-      assert.ok(fenceHits >= 4, `${laneName} 每个切换面失败都必须按桩栅栏收敛（实得 ${fenceHits} 处）`);
+      assert.ok(fenceHits >= 3, `${laneName} 每个切换面失败都必须按桩栅栏收敛（实得 ${fenceHits} 处）`);
       assert.match(laneSource, /editResendSyncBlocked\(sid\)\) \{[\s\S]{0,200}?addSystemItemFor\(sid, bt\("editResendSyncPending"\)\);[\s\S]{0,100}?notify\(\);\s*\n\s*return;/,
         `${laneName} editLastTurn 必须在未解决同步失败上拒收编辑重发（可重试文案）`);
       const preModeHits = (laneSource.match(/= state\.modeState && state\.modeState\.mode;/g) || []).length;
-      assert.ok(preModeHits >= 4, `${laneName} 每个切换面都必须在派发前捕获会话权威模式（pre-write 拒绝判别,实得 ${preModeHits} 处）`);
+      assert.ok(preModeHits >= 3, `${laneName} 每个切换面都必须在派发前捕获会话权威模式（pre-write 拒绝判别,实得 ${preModeHits} 处）`);
       const acceptGateHits = (laneSource.match(/settleModeSwitchSuccess\((?:sid|meta\.id), (?:switchAttempt|laneAttempt)\)\) \{/g) || []).length;
       assert.ok(acceptGateHits >= 3, `${laneName} 成功臂必须以结算受理门包裹投影/注记/卡片动作（陈旧成功零效果,实得 ${acceptGateHits} 处）`);
       const preModeFenceHits = (laneSource.match(/handleModeSwitchFailure\((?:meta\.id, laneModeError, bt\("switchModeFailed"\), laneAttempt, lanePreMode|sid, e, bt\("(?:switchModeFailed|exitPlanFailed)"\), switchAttempt, preSwitchMode)/g) || []).length;
@@ -1427,6 +1429,12 @@ try {
     }
     assert.match(web, /\} catch \(laneModeError\) \{[\s\S]{0,400}?await pinvouSharedweb\(\)\.handleModeSwitchFailure\(meta\.id, laneModeError, bt\("switchModeFailed"\), laneAttempt, lanePreMode\);/,
       'web lane-default 物化的切换失败臂同样必须收敛并携带派发前模式');
+    assert.match(sharedBase, /async function exitPlanToYolo\(targetSessionId\) \{[\s\S]{0,900}?const switchAttempt = beginModeSwitchAttempt\(sid\);[\s\S]{0,700}?if \(!settleModeSwitchSuccess\(sid, switchAttempt\)\) \{ notify\(\); return; \}[\s\S]{0,400}?await handleModeSwitchFailure\(sid, e, bt\("exitPlanFailed"\), switchAttempt, preSwitchMode\); \}/,
+      '共享 exitPlanToYolo（main 收编位置）必须携带完整派发序栅栏+结算受理门+pre-write 拒绝判别机器');
+    assert.match(web, /lane 只保留转发壳[\s\S]{0,200}?async function discardPlan\(itemId, planId\) \{ return pinvouSharedweb\(\)\.discardPlan/,
+      'web lane 对 discardPlan/exitPlanToYolo 只保留转发壳（实现统一在共享基座）');
+    assert.match(tauriInteraction, /lane 只保留转发壳[\s\S]{0,200}?async function discardPlan\(itemId, planId\) \{ return pinvouSharedtauriInteraction\(\)\.discardPlan/,
+      'tauri lane 对 discardPlan/exitPlanToYolo 只保留转发壳（实现统一在共享基座）');
     const syncEffHits = (web.match(/modeSyncFailedEffective:/g) || []).length;
     assert.ok(syncEffHits >= 3, `modeSyncFailedEffective 文案必须三语齐备（实得 ${syncEffHits} 处）`);
     const askHits = (web.match(/modeAskPersistFailed:/g) || []).length;
@@ -1577,7 +1585,7 @@ try {
     // web 物化必须应用全部三档 lane 默认（与桌面 sessions.js 未绑定 plain
     // 分支逐字镜像）：tri-mode 对账之前只应用 plan,显式的 yolo/auto work
     // 默认被静默丢弃。
-    assert.match(web, /if \(\["plan", "yolo", "auto"\]\.includes\(laneDefault\)\) \{[\s\S]{0,300}?set_plan_mode_next[\s\S]{0,200}?set_session_mode[\s\S]{0,200}?mode: laneDefault/,
+    assert.match(web, /if \(\["plan", "yolo", "auto"\]\.includes\(laneDefault\)\) \{[\s\S]{0,500}?set_plan_mode_next[\s\S]{0,200}?set_session_mode[\s\S]{0,200}?mode: laneDefault/,
       'web 物化必须应用全部三档 lane 默认（plan→set_plan_mode_next,yolo/auto→set_session_mode）');
     // 普通聊天车道首轮不得再经 create_and_chat 快车道绕过姿态门：后端把
     // 未绑定 plain session 解析成 Auto,快车道让首轮无门禁跑 Auto 且草稿期

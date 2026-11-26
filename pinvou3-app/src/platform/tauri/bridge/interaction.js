@@ -297,83 +297,11 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedtauriInt
     }
     notify();
   }
-  async function discardPlan(itemId, planId) {
-    const sid = state.activeSessionId;
-    const planTicket = String(planId || "").trim();
-    if (!sid || !isActionablePlanCard(sid, itemId, planTicket)) return;
-    patchItemByIdFor(sid, itemId, {
-      cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true,
-      planResolutionConfirmed: false,
-    });
-    notify();
-    try {
-      const st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
-      applyAuthoritativeModeState(sid, st);
-      patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
-    } catch (e) {
-      const errorText = String(e && e.message ? e.message : e || "");
-      const planNotActive = errorText.includes("plan_not_active");
-      runOnSession(sid, function () {
-        const card = state.chatItems.find(function (item) {
-          return item && item.id === itemId && item.type === "plan_card" &&
-            String(item.planId || "") === planTicket;
-        });
-        if (!card) return;
-        if (planNotActive) {
-          card.cardState = "frozen";
-          card.resolved = true;
-          card.statusLabel = bt("planHistorical");
-        } else if (!card.planResolutionConfirmed) {
-          card.cardState = "active";
-          card.resolved = false;
-          card.statusLabel = "";
-        }
-      });
-      if (planNotActive) {
-        try {
-          const currentMode = await invoke("get_mode_state", { sessionId: sid });
-          applyAuthoritativeModeState(sid, currentMode);
-        } catch { /* status re-read failure must not mask the original error */ }
-      }
-      addSystemItemFor(sid, bt("discardPlanFailed") + e);
-    }
-    notify();
-  }
-  async function exitPlanToYolo(targetSessionId) {
-    // The caller may pin the target session explicitly: the YOLO confirmation
-    // gate issues the switch only after several await round-trips, by which
-    // time the user may have switched away and the live active session is no
-    // longer the ruling one (same precedent as sessions.js passing meta.id on
-    // its materialization path). No-argument calls keep the original semantics:
-    // act on the live active session at invocation time (bulb / plan-stuck
-    // card).
-    const sid = typeof targetSessionId === 'string' && targetSessionId
-      ? targetSessionId
-      : state.activeSessionId;
-    // Draft state: do not materialize a session; rewrite this lane's global
-    // default (two-lane semantics).
-    if (!sid) { await setDraftMode("yolo"); return; }
-    const switchAttempt = pinvouSharedtauriInteraction().beginModeSwitchAttempt(sid);
-    let preSwitchMode = null;
-    runSyncOnSession(sid, function () { preSwitchMode = state.modeState && state.modeState.mode; });
-    try {
-      // The invoke targets sid directly at issue time; after the await, the
-      // result is written back to the same sid (the protocol fingerprint is
-      // computed from the call text; parameterizing it requires recomputing the
-      // interaction-feature digest in step).
-      const outcome = await invoke("exit_plan_to_yolo", { sessionId: sid });
-      // Settlement acceptance BEFORE any projection or notice (review P2):
-      // a stale success — a newer switch already settled — must not write
-      // its old state back or emit its durability note.
-      if (!pinvouSharedtauriInteraction().settleModeSwitchSuccess(sid, switchAttempt)) { notify(); return; }
-      const st = outcome && outcome.state ? outcome.state : outcome;
-      applyAuthoritativeModeState(sid, st);
-      if (outcome && outcome.persist_error) {
-        addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
-      }
-    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); }
-    notify();
-  }
+  // discardPlan / exitPlanToYolo payload 统一在 shared/bridge-shared-helpers.js
+  // （web 车道同段逐字一致）；lane 只保留转发壳。回执收敛/派发序栅栏/结算
+  // 受理门在共享实现内（tri-mode settlement machinery, review P2）。
+  async function discardPlan(itemId, planId) { return pinvouSharedtauriInteraction().discardPlan(itemId, planId); }
+  async function exitPlanToYolo(targetSessionId) { return pinvouSharedtauriInteraction().exitPlanToYolo(targetSessionId); }
   // 灯泡 toggle：plan ↔ yolo
 async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlanModeNext(); }
   // 多智能体开关（ADR-0006）：模型列表下方的会话级开关。后端做名册装配
