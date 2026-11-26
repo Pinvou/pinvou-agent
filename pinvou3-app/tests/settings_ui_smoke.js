@@ -696,7 +696,7 @@ assert.match(
 // retains it while clearing the displayed list.
 assert.match(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
-  /state\.savedModels = \(v && v\.models\) \|\| \[\];\s*state\.lastConfirmedModels = \[\.\.\.\(\(v && v\.models\) \|\| \[\]\)\];[\s\S]{0,560}state\.savedModels = \[\]; state\.activeModelId = null;\s*state\.modelsListLoadFailed = true;/,
+  /state\.savedModels = \(v && v\.models\) \|\| \[\];\s*state\.lastConfirmedModels = \[\.\.\.\(\(v && v\.models\) \|\| \[\]\)\];[\s\S]{0,1100}state\.savedModels = \[\]; state\.activeModelId = null;\s*state\.modelsListLoadFailed = true;/,
   'the shared loadModels must retain lastConfirmedModels across a failed read and replace it on the next successful read (review P2 pre-mount boundary; ⑦.9e)',
 );
 assert.match(
@@ -793,11 +793,11 @@ assert.match(
 // there is NOT deletion), and deferred (batch, no tail). The accepted
 // evidence must come from the read's own response (tail.models), never from
 // the mutable state at chain end.
-const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,2600}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) return \{ refresh: 'superseded' \};\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
+const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,2600}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) \{\s*if \(tail\.publishedSeq > tail\.requestedSeq && !tail\.publishedFailed\) \{\s*return \{ refresh: 'ok', models: tail\.publishedModels \};\s*\}\s*return \{ refresh: 'superseded' \};\s*\}\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8')),
   true,
-  'the tauri saveModel must return the four-arm chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded (a newer pending loadModels discarded our read: no evidence, present-only booking — absence in chain-end state there is a pre-upsert world, not a deletion)',
+  'the tauri saveModel must return the generation-gated chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded-with-generation-classification (a newer pending loadModels discarded our read, but when a newer accepted publication already republished the world after our seq — publishedSeq > requestedSeq, a confirmed post-upsert observation per the r11 review schedule — its absence upgrades the verdict to ok; a failed or older publication stays superseded present-only)',
 );
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8')),
@@ -1709,6 +1709,27 @@ function injectSource() {
                 max_model_len: 8192,
               },
             ],
+            // ⑦.9i 代际证据场景的隔离名册:仅在 ⑦.9i 使用。
+            8280: [
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8280/v1',
+                status: 'ready',
+                model: 'gen-twin-a',
+                models: ['gen-twin-a'],
+                max_model_len: 8192,
+              },
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8280/v1',
+                status: 'ready',
+                model: 'gen-twin-b',
+                models: ['gen-twin-b'],
+                max_model_len: 8192,
+              },
+            ],
             // ⑦.9h 被作废读取场景的隔离名册:仅在 ⑦.9h 使用。
             8270: [
               {
@@ -1829,10 +1850,11 @@ function injectSource() {
       armListModelsFailure: function () { listModelsFailure = true; },
       armListModelsHold: function (count) { listModelsHoldCount = Number(count) || 0; },
       heldListModelsCount: function () { return heldListModels.length; },
-      releaseHeldListModels: function () {
-        // FIFO 单个放行:先解最老的在飞读取(⑦.9h 需要只放 N、让 N+1 继续
-        // pending),payload 用放行时刻的当前世界。
-        var resolve = heldListModels.shift();
+      releaseHeldListModels: function (index) {
+        // 单个放行:缺省 FIFO(先解最老,⑦.9h 只放 N 让 N+1 继续 pending);
+        // 传 1-based index 时按位选择(⑦.9i 需要先放 N+1 再放 N/M)。
+        // payload 用放行时刻的当前世界。
+        var resolve = index ? heldListModels.splice(index - 1, 1)[0] : heldListModels.shift();
         if (resolve) resolve({ models: models.slice(), active_model_id: activeModelId });
       },
       setModelImageCapability: function (id, override) {
@@ -5223,6 +5245,91 @@ async function modalWidth(page, headingText) {
       && staleBlocked.found && staleBlocked.disabled && staleBlocked.savedLabel && staleBlocked.saves === staleSavesBefore + 1
       && staleAfterAck.saves === staleSavesBefore + 1 && staleAfterAck.landed === 1,
     JSON.stringify({ before: staleSavesBefore, blocked: staleBlocked, afterAck: staleAfterAck }));
+
+  // ===== ⑦.9i review round-11 P2 (presence → deletion → late completion):
+  // the superseded arm must carry accepted-publication generation evidence.
+  // Schedule: the save chain's read N is parked; a newer read N+1 is raced
+  // and RELEASED first, publishing [B,A] (accepted, after our seq — a
+  // confirmed post-upsert observation); the user then deletes A, whose
+  // newer refresh M publishes [B]; only after both publications does the
+  // original tail finish. A superseded verdict without generation evidence
+  // would book A present-only here and strand the reservation for a record
+  // the accepted list already proves deleted (the legitimate re-add would
+  // stay blocked until reload). The generation gate upgrades the verdict to
+  // ok-absent and the booking is skipped. Isolated roster 8280.
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8280');
+  await clickExact(page, '检测');
+  await sleep(600);
+  // 计数按身份过滤。
+  const genSavesBefore = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'gen-twin-a').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armGetSettingsHold());
+  await page.evaluate(() => window.__SETTINGS_TEST__.armListModelsHold(3));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('gen-twin-a'));
+    if (button) button.click();
+  });
+  await sleep(600); // save_model ✓ → N 挂 slot1;链停在 get_settings 保持上
+  await page.evaluate(() => {
+    window.TauriBridge.models.setActiveModel(window.__SETTINGS_TEST__.activeModelId());
+  });
+  let genHeld = 0;
+  for (let i = 0; i < 30; i += 1) {
+    genHeld = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (genHeld === 2) break;
+    await sleep(100);
+  }
+  if (genHeld !== 2) throw new Error('⑦.9i N+1 未到站');
+  // ① N+1 先发布 [B,A](受理,序号 > N)——镜像随之更新为含 A 的世界。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels(2));
+  await sleep(600);
+  // ② 用户删除 A(生产链):M 挂 slot3 并发布 [B]。
+  await page.evaluate(() => {
+    const record = window.__SETTINGS_TEST__.models().find(item => item.model === 'gen-twin-a');
+    window.TauriBridge.models.deleteModel(record.id);
+  });
+  let genHeldAfterDelete = 0;
+  for (let i = 0; i < 30; i += 1) {
+    genHeldAfterDelete = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (genHeldAfterDelete === 2) break;
+    await sleep(100);
+  }
+  if (genHeldAfterDelete !== 2) throw new Error('⑦.9i M 未到站');
+  // ③ 放行 N(作废)→ 放行 M(受理 [B])→ 最后放保存尾(get_settings 释放):
+  // 裁定按已发布代际升级为 ok,缺席=已删 → 不入簿,合法重加即刻可用。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels(1));
+  await sleep(300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseGetSettingsHold());
+  await sleep(700);
+  const genAfter = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('gen-twin-a'));
+    const saves = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'gen-twin-a').length;
+    return {
+      found: !!button,
+      disabled: !!button && button.disabled,
+      savedLabel: !!button && (button.textContent || '').includes('已保存'),
+      saves,
+      landed: window.__SETTINGS_TEST__.models().filter(item => item.model === 'gen-twin-a').length,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9i 在场→删除→迟到完成:superseded 臂携带受理代际证据,已发布观察确认删除后不入簿,合法重加不被搁浅(恰好一笔且行恢复可点)',
+    genAfter.found && !genAfter.disabled && !genAfter.savedLabel
+      && genAfter.saves === genSavesBefore + 1 && genAfter.landed === 0,
+    JSON.stringify({ before: genSavesBefore, after: genAfter }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

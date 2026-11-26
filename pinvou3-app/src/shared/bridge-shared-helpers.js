@@ -3878,15 +3878,25 @@
   // pre-mount boundary, two independent reviewer reproductions). The next
   // successful read — including a real deletion's refresh — replaces it,
   // which is what keeps a genuinely deleted model re-addable.
+  // publishedModelsSeq: 最近一次**受理**写入所用的读取序号(r11 复审 P2)。
+  // 被作废的读取不发布任何东西,链尾 state 仍可能反映 upsert 之前的旧世界
+  // ——调用方(保存链裁定)拿「发布代际 vs 自己的请求序号」区分两种情形:
+  // published > requested ⇒ 链尾列表已是 upsert 之后的受理观察(缺席=已删,
+  // 可作裁定证据);published ≤ requested ⇒ 仍是旧世界(superseded,入簿
+  // present-only 保护)。0=尚无受理发布。
+  let publishedModelsSeq = 0;
   async function loadModels() {
     const seq = ++modelsLoadSeq.value;
     try {
       const v = await invoke("list_models");
-      if (seq !== modelsLoadSeq.value) return { accepted: false };
+      if (seq !== modelsLoadSeq.value) {
+        return { accepted: false, requestedSeq: seq, publishedSeq: publishedModelsSeq, publishedModels: state.savedModels, publishedFailed: state.modelsListLoadFailed === true };
+      }
       state.savedModels = (v && v.models) || [];
       state.lastConfirmedModels = [...((v && v.models) || [])];
       state.activeModelId = (v && v.active_model_id) || null;
       state.modelsListLoadFailed = false;
+      publishedModelsSeq = seq;
       notify();
       // 受理状态随返回值外显(r10 复审 P2):被并发更新请求作废的读取
       // (accepted:false)没有发布任何东西——链尾 state 仍反映 upsert 之前
@@ -3894,9 +3904,12 @@
       // 与缺席退休地板都以此为前提)。
       return { accepted: true, models: state.savedModels };
     } catch {
-      if (seq !== modelsLoadSeq.value) return { accepted: false };
+      if (seq !== modelsLoadSeq.value) {
+        return { accepted: false, requestedSeq: seq, publishedSeq: publishedModelsSeq, publishedModels: state.savedModels, publishedFailed: state.modelsListLoadFailed === true };
+      }
       state.savedModels = []; state.activeModelId = null;
       state.modelsListLoadFailed = true;
+      publishedModelsSeq = seq;
       notify();
       return { accepted: true, failed: true };
     }

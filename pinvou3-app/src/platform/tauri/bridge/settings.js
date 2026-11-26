@@ -118,19 +118,31 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
    // identity there is a deleted one.
    // A SUPERSEDED read (review round 10 P2: a concurrent newer loadModels
    // started before ours resolved — last-write-wins discards our response
-   // without publishing anything) publishes nothing: the state at chain end
-   // can still be the PRE-upsert accepted write, so absence there is NOT
-   // deletion. The verdict degrades to 'superseded' — the caller books
-   // present-only (protection retained for the committed-but-unlisted save)
-   // and the identity resolves through the next accepted list either way.
-   // The reload tail still runs in full: the settings/effective refresh is
-   // the save chain's own duty regardless of which verdict arm is taken.
+   // without publishing anything) publishes nothing — but the chain-end
+   // state may meanwhile have been republished by that newer request's own
+   // accepted response (review round 11 P2: N+1 lands [B,A], the user then
+   // deletes A whose newer refresh lands [B], and only then does our tail
+   // finish — the published world is a confirmed post-upsert post-delete
+   // observation, and treating our superseded read as "no evidence" would
+   // strand the reservation for a record the accepted list already proves
+   // deleted). Classify by published generation: when the last accepted
+   // publication used a seq GREATER than our own request's seq, it started
+   // after our chain handed its seq — i.e. after the upsert completed — so
+   // it is a confirmed post-upsert observation and its absence IS deletion;
+   // otherwise the published world predates our read (still the pre-upsert
+   // accepted write) and absence there is not evidence. A failed published
+   // read stays without evidence too.
    const tail = await loadModels();
    const superseded = !tail || !tail.accepted;
    const listFailed = !superseded && tail.failed === true;
    await loadSettings();
    await loadEffectiveModelConfig();
-   if (superseded) return { refresh: 'superseded' };
+   if (superseded) {
+     if (tail.publishedSeq > tail.requestedSeq && !tail.publishedFailed) {
+       return { refresh: 'ok', models: tail.publishedModels };
+     }
+     return { refresh: 'superseded' };
+   }
    return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):

@@ -4662,7 +4662,12 @@ async function loadModels() { return pinvouSharedweb().loadModels(); }
    const superseded = !tail || !tail.accepted;
    const listFailed = !superseded && tail.failed === true;
    await loadEffectiveModelConfig();
-   if (superseded) return { refresh: 'superseded' };
+   if (superseded) {
+     if (tail.publishedSeq > tail.requestedSeq && !tail.publishedFailed) {
+       return { refresh: 'ok', models: tail.publishedModels };
+     }
+     return { refresh: 'superseded' };
+   }
    return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):

@@ -232,6 +232,58 @@ test('web saveModel ok/failed/deferred mirror the tauri verdict contract', async
   assert.equal(deferredOutcome.models, undefined, 'deferred 无列表证据');
 });
 
+test('tauri saveModel superseded with a newer accepted publication: the published generation upgrades the verdict (r11 P2)', async () => {
+  const rt = loadTauriSettings(makeState());
+  // 预置受理世界 [B]:先跑一次受理读取(publishedSeq=1)。
+  const d0 = rt.defer('list_models');
+  const p0 = rt.api.loadModels();
+  d0.resolve({ models: [{ id: 'b0', model: 'b-model', base_url: 'https://b/v1' }], active_model_id: 'b0' });
+  await p0;
+  // 保存 A:链读取 N(seq=2)挂起;并发更新 N+1(seq=3)挂起。
+  const d1 = rt.defer('list_models');
+  const p = rt.api.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();
+  // N+1 先落地 [B,A](受理,publishedSeq=3>2)——链尾已发布的观察是
+  // upsert 之后的确认证据;再解析 N(作废)。裁定应按已发布观察升级为
+  // ok:A 在场(评审日程一:present→带地板入簿)。
+  d2.resolve({ models: [{ id: 'b0', model: 'b-model', base_url: 'https://b/v1' }, SAVED_RECORD], active_model_id: 'm1' });
+  // 生产时序:N+1 的响应先抵达(发布完成),原始保存尾在真实间隔后才收尾
+  // ——对齐之,避免微任务跳数差异把发布排到作废读取之后。
+  await p2;
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'ok', '已发布的受理观察(refresh)后于 upsert → ok 裁定');
+  assert.ok(Array.isArray(outcome.models) && outcome.models.length === 2, '证据用已发布列表');
+  assert.equal(outcome.models[1].id, 'm1', '元素逐位一致');
+  await p2;
+  // 评审日程二:N+1 落地后用户删除 A,新受理观察缺席 A → ok+缺席=已删。
+  const d3 = rt.defer('list_models');
+  const p3 = rt.api.saveModel({ ...SAVED_RECORD, id: 'm9' });
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  d3.resolve({ models: [{ id: 'b0', model: 'b-model', base_url: 'https://b/v1' }], active_model_id: 'b0' });
+  const outcome2 = await p3;
+  assert.equal(outcome2.refresh, 'ok', '本轮链读取直接受理,裁定 ok');
+  assert.equal(outcome2.models.some(m => m && m.id === 'm9'), false, '缺席语义照常');
+});
+
+test('tauri saveModel superseded with a failed newer publication: stays superseded (r11 evidence invalid)', async () => {
+  const rt = loadTauriSettings(makeState());
+  const d1 = rt.defer('list_models');
+  const p = rt.api.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();
+  d2.reject(new Error('newer read failed'));          // 受理失败:发布失败标记,无列表证据
+  await p2.catch(() => {});
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' }); // N 作废
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'superseded', '失败的新近发布不能当确认观察——维持 superseded 保护');
+  assert.equal(outcome.models, undefined, '无列表证据');
+  await p2;
+});
+
 test('web saveModel mirrors the superseded verdict (r10 P2)', async () => {
   const rt = bootWebBridge();
   const d1 = rt.defer('list_models');              // 先挂 N 的 defer(链 invoke 时捕获)
