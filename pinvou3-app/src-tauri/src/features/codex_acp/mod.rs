@@ -6429,17 +6429,17 @@ mod restore_timeout_overlay_tests {
         let failed = HashSet::from(["model".to_string(), "mode".to_string()]);
         let merged = keep_desired_for_failed(&observed, &desired, &failed);
         assert_eq!(
-            merged.get("model").unwrap(),
+            merged.get("model").expect("model in merged"),
             "saved-model",
             "unknown-state model keeps the saved choice"
         );
         assert_eq!(
-            merged.get("mode").unwrap(),
+            merged.get("mode").expect("mode in merged"),
             "saved-mode",
             "unknown-state mode keeps the saved choice"
         );
         assert_eq!(
-            merged.get("effort").unwrap(),
+            merged.get("effort").expect("effort in merged"),
             "observed-effort",
             "a successfully restored value takes the observed state"
         );
@@ -6450,7 +6450,7 @@ mod restore_timeout_overlay_tests {
         let observed = HashMap::from([("model".to_string(), "observed".to_string())]);
         let desired = HashMap::from([("model".to_string(), "saved".to_string())]);
         let merged = keep_desired_for_failed(&observed, &desired, &HashSet::new());
-        assert_eq!(merged.get("model").unwrap(), "observed");
+        assert_eq!(merged.get("model").expect("model in merged"), "observed");
     }
 }
 

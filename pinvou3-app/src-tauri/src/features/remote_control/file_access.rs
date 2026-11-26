@@ -353,7 +353,14 @@ mod tests {
             }
         }
         let _cleanup = RemoveHomeOnDrop(&home);
+        // SAFETY: mutating the process environment is not thread-safe on
+        // all platforms; this test setup runs before any test spawns worker
+        // threads and the guard above restores HOME on drop, so no other
+        // thread can observe a torn write. (clippy::undocumented_unsafe_blocks)
         unsafe { std::env::set_var("HOME", &home) };
+        // SAFETY: same single-threaded test-setup invariant as the HOME
+        // write immediately above — Windows reads USERPROFILE for the same
+        // relocation, and the value is a valid path owned by this test.
         unsafe { std::env::set_var("USERPROFILE", &home) };
         let directory = home.join("bulk");
         std::fs::create_dir_all(&directory).unwrap();

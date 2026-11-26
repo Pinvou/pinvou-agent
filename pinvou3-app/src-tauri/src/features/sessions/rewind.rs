@@ -511,22 +511,19 @@ impl SessionStore {
                 MAX_REWIND_RECORD_BYTES / (1024 * 1024),
             );
         }
-        // 预算余量（同一淘汰口径的静态投影）：当前 map 总量 + 新记录
-        // ≤ 预算 + 可淘汰量（各会话除最后一条外的记录之和）。
-        let backups = load_rewound_turns_map_for_read()?;
-        let total: usize = serde_json::to_vec_pretty(&backups)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX);
-        let evictable: usize = backups
-            .values()
-            .flat_map(|records| records.iter().rev().skip(1))
-            .map(rewound_record_serialized_len)
-            .sum();
-        if total.saturating_add(record_len) > MAX_REWIND_TURNS_MAP_BYTES.saturating_add(evictable) {
-            bail!(
-                "回退备份预算不足：即使淘汰所有可淘汰的旧备份（各会话最后一条保留），新备份无法全部入簿，已中止回退（transcript 未改动）；请删除或分叉旧会话释放备份预算"
-            );
-        }
+        // 预算余量改投影法（review P2）：`当前总量 + record_len` 的算术
+        // 会低估最终准入——记录是嵌在 map 的 key/array 结构里序列化的
+        // （缩进 + 包装字节），一个四会话各自单记录 + 多文本块尾部的集合
+        // 可以在预检算术下恰好过线而投影 map 实测超限 359 字节，淘汰面
+        // 为零（每会话仅最后一条）——拒绝发生在恢复工作区之后，死锁形态
+        // 复活。这里直接构造投影 map（当前备份 + 新记录），在其上运行与
+        // 权威落点同一的 `enforce_rewound_map_budget`：Err 即该拒绝的
+        // 精确复现，预检提前如实报错。
+        let mut projected = load_rewound_turns_map_for_read()?;
+        projected.entry(id.to_string()).or_default().push(record);
+        enforce_rewound_map_budget(&mut projected, MAX_REWIND_TURNS_MAP_BYTES).context(
+            "回退备份预算不足：投影入簿超限，已中止回退（transcript 未改动）；请删除或分叉旧会话释放备份预算",
+        )?;
         Ok(())
     }
 
