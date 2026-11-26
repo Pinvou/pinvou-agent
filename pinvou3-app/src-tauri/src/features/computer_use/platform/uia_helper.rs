@@ -731,9 +731,11 @@ impl UiaHelperClient {
                                 ..
                             } => return Ok(UiaHelperOutcome::Soft(error)),
                             // A malformed frame is TRANSPORT corruption.
-                            Response { .. } => Err(HelperTransportError::Unparsable(
-                                "the tree response carried no tree and no error".to_string(),
-                            )),
+                            Response { .. } => {
+                                return Err(HelperTransportError::Unparsable(
+                                    "the tree response carried no tree and no error".to_string(),
+                                ));
+                            }
                         }
                     }
                     Err(HelperTransportError::Timeout) => continue,
