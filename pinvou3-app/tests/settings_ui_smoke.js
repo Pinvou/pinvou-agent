@@ -784,20 +784,24 @@ assert.match(
   /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{[\s\S]{0,700}absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),\s*\}\);\s*\};/,
   'the verdict gate must skip booking exactly when the successful accepted tail list lacks the identity (deleted mid-tail) and grant the absence floor for every chain that ran the reload tail including superseded ones — the chain read handed its seq after the upsert completed, so any later accepted read reflects a post-upsert world and absence there is deletion; only deferred batches and verdict-less legacy bridges book present-only',
 );
-// Bridge-side chain-end verdict (review P2×2 + r10 P2): the verdict is a
-// four-arm contract over the save chain's own loadModels ACCEPTANCE — ok
-// (accepted response carries the confirmed post-upsert list), failed
+// Bridge-side chain-end verdict (review P2×2 + r10 P2 + r12 P2): the verdict
+// is a four-arm contract over the save chain's own loadModels ACCEPTANCE —
+// ok (accepted response carries the confirmed post-upsert list), failed
 // (accepted failure, book without evidence), superseded (a newer pending
 // loadModels discarded our response — last-write-wins publishes nothing, so
 // chain-end state can still be the pre-upsert accepted write and absence
 // there is NOT deletion), and deferred (batch, no tail). The accepted
 // evidence must come from the read's own response (tail.models), never from
-// the mutable state at chain end.
-const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,2600}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) \{\s*if \(tail\.publishedSeq > tail\.requestedSeq && !tail\.publishedFailed\) \{\s*return \{ refresh: 'ok', models: tail\.publishedModels \};\s*\}\s*return \{ refresh: 'superseded' \};\s*\}\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
+// the mutable state at chain end. The superseded classification reads LIVE
+// accepted-publication evidence at chain completion (r12: the discarded
+// return's published* snapshot cannot see publications accepted during the
+// remaining refresh, and the original schedule — N discarded first, N+1 and
+// the delete publishing inside the tail — still stranded the reservation).
+const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,3200}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) \{\s*const live = readPublishedModelsEvidence\(\);\s*if \(live\.seq > tail\.requestedSeq && !live\.failed\) \{\s*return \{ refresh: 'ok', models: live\.models \};\s*\}\s*return \{ refresh: 'superseded' \};\s*\}\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8')),
   true,
-  'the tauri saveModel must return the generation-gated chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded-with-generation-classification (a newer pending loadModels discarded our read, but when a newer accepted publication already republished the world after our seq — publishedSeq > requestedSeq, a confirmed post-upsert observation per the r11 review schedule — its absence upgrades the verdict to ok; a failed or older publication stays superseded present-only)',
+  'the tauri saveModel must return the generation-gated chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded-with-live-generation-classification (a newer pending loadModels discarded our read; the classification reads the shared closure CURRENT accepted state at chain completion — live.seq > requestedSeq means a confirmed post-upsert publication whose absence upgrades the verdict to ok per the r11/r12 review schedules; a failed or older publication stays superseded present-only)',
 );
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8')),
@@ -1730,6 +1734,27 @@ function injectSource() {
                 max_model_len: 8192,
               },
             ],
+            // ⑦.9j 尾窗活体证据场景的隔离名册:仅在 ⑦.9j 使用。
+            8290: [
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8290/v1',
+                status: 'ready',
+                model: 'gen2-twin-a',
+                models: ['gen2-twin-a'],
+                max_model_len: 8192,
+              },
+              {
+                provider: 'vllm',
+                label: 'vLLM',
+                base_url: 'http://127.0.0.1:8290/v1',
+                status: 'ready',
+                model: 'gen2-twin-b',
+                models: ['gen2-twin-b'],
+                max_model_len: 8192,
+              },
+            ],
             // ⑦.9h 被作废读取场景的隔离名册:仅在 ⑦.9h 使用。
             8270: [
               {
@@ -1841,6 +1866,7 @@ function injectSource() {
       setSaveModelError: function (message) { saveModelError = message || null; },
       setSaveModelDelay: function (ms) { saveModelDelay = Number(ms) || 0; },
       armGetSettingsHold: function () { holdGetSettings = true; },
+      heldGetSettingsCount: function () { return heldGetSettings.length; },
       releaseGetSettingsHold: function () {
         holdGetSettings = false;
         var queued = heldGetSettings.slice();
@@ -5330,6 +5356,108 @@ async function modalWidth(page, headingText) {
     genAfter.found && !genAfter.disabled && !genAfter.savedLabel
       && genAfter.saves === genSavesBefore + 1 && genAfter.landed === 0,
     JSON.stringify({ before: genSavesBefore, after: genAfter }));
+
+  // ===== ⑦.9j review round-12 P2 (publications inside the remaining
+  // refresh tail): the superseded classification must read LIVE accepted
+  // evidence at chain completion, not the snapshot from the discarded
+  // read's return. Schedule: the save chain's read N parks; N+1 races in
+  // (seq taken, N now stale); N is RELEASED FIRST and returns discarded —
+  // its captured evidence still describes the pre-save world; the chain
+  // then parks INSIDE the get_settings hold (the tail window); N+1 and the
+  // user's deletion of A publish while that hold is pending. A snapshot-
+  // based classification (round 11) sees publishedSeq ≤ requestedSeq,
+  // answers superseded and books A present-only — stranded. The live read
+  // sees the deletion's publication and upgrades to ok-absent. Isolated
+  // roster 8290.
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '本地模型');
+  await sleep(200);
+  await setPortDraft('8290');
+  await clickExact(page, '检测');
+  await sleep(600);
+  // 计数按身份过滤。
+  const gen2SavesBefore = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'gen2-twin-a').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armGetSettingsHold());
+  await page.evaluate(() => window.__SETTINGS_TEST__.armListModelsHold(3));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('gen2-twin-a'));
+    if (button) button.click();
+  });
+  await sleep(600); // save_model ✓ → N 挂 slot1(此刻链停在 list_models 在飞)
+  let gen2Held = 0;
+  for (let i = 0; i < 30; i += 1) {
+    gen2Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (gen2Held === 1) break;
+    await sleep(100);
+  }
+  if (gen2Held !== 1) throw new Error('⑦.9j N 未到站');
+  await page.evaluate(() => {
+    window.TauriBridge.models.setActiveModel(window.__SETTINGS_TEST__.activeModelId());
+  });
+  for (let i = 0; i < 30; i += 1) {
+    gen2Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (gen2Held === 2) break;
+    await sleep(100);
+  }
+  if (gen2Held !== 2) throw new Error('⑦.9j N+1 未到站');
+  // ① 先放 N:作废返回,快照证据停留在 upsert 之前的世界;保存链随即
+  // 钻进 get_settings 保持(尾窗开启)——轮询到站后才继续,保证后续发布
+  // 真正落在「剩余刷新 pending」窗口内。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels(1));
+  let gen2Tail = 0;
+  for (let i = 0; i < 30; i += 1) {
+    gen2Tail = await page.evaluate(() => window.__SETTINGS_TEST__.heldGetSettingsCount());
+    if (gen2Tail === 1) break;
+    await sleep(100);
+  }
+  if (gen2Tail !== 1) throw new Error('⑦.9j 保存链未钻进尾窗');
+  // ② N+1 发布 [B,A](受理,publishedSeq>N)——落在尾窗内,对 N 的快照
+  // 不可见。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(400);
+  // ③ 用户删除 A(生产链):M 挂 slot3 → 放行发布 [B](确认删除)。
+  await page.evaluate(() => {
+    const record = window.__SETTINGS_TEST__.models().find(item => item.model === 'gen2-twin-a');
+    window.TauriBridge.models.deleteModel(record.id);
+  });
+  let gen2HeldAfterDelete = 0;
+  for (let i = 0; i < 30; i += 1) {
+    gen2HeldAfterDelete = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (gen2HeldAfterDelete === 1) break;
+    await sleep(100);
+  }
+  if (gen2HeldAfterDelete !== 1) throw new Error('⑦.9j M 未到站');
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(300);
+  // ④ 放保存尾:链完成时点读取活体证据(已发布 [B],缺席 A)→ ok-缺席
+  // → 不入簿;快照式分类在此日程下给 superseded,present-only 搁浅。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseGetSettingsHold());
+  await sleep(700);
+  const gen2After = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = [...dialog.querySelectorAll('[data-testid="local-model-row-add"]')].find(button =>
+      (button.parentElement.textContent || '').includes('gen2-twin-a'));
+    const saves = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'gen2-twin-a').length;
+    return {
+      found: !!button,
+      disabled: !!button && button.disabled,
+      savedLabel: !!button && (button.textContent || '').includes('已保存'),
+      saves,
+      landed: window.__SETTINGS_TEST__.models().filter(item => item.model === 'gen2-twin-a').length,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9j 尾窗内发布(N 先作废返回,N+1 与删除落在剩余刷新 pending 窗口):链完成时点读活体受理证据升级 ok-缺席,不入簿不搁浅,合法重加即刻可用(恰好一笔且行恢复可点)',
+    gen2After.found && !gen2After.disabled && !gen2After.savedLabel
+      && gen2After.saves === gen2SavesBefore + 1 && gen2After.landed === 0,
+    JSON.stringify({ before: gen2SavesBefore, after: gen2After }));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

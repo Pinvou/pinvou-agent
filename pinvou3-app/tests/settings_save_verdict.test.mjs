@@ -284,6 +284,47 @@ test('tauri saveModel superseded with a failed newer publication: stays supersed
   await p2;
 });
 
+const B_REC = { id: 'b0', model: 'b-model', base_url: 'https://b/v1' };
+
+test('tauri saveModel: publications landing during the remaining refresh are read live at completion (r12 P2)', async () => {
+  const rt = loadTauriSettings(makeState());
+  // 预置受理世界 [B](publishedSeq=1)。
+  const d0 = rt.defer('list_models');
+  const p0 = rt.api.loadModels();
+  d0.resolve({ models: [B_REC], active_model_id: 'b0' });
+  await p0;
+  // 保存 A:链读取 N(seq=2)挂 d1;并发更新 N+1(seq=3)挂 d2,**先不落地**
+  // ——与 r11 日程的区别就在这里:N 作废先返回,此刻证据仍停在 upsert 之前。
+  const d1 = rt.defer('list_models');
+  const p = rt.api.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();
+  // N 作废返回(快照 publishedSeq=1);链随即进入剩余刷新——挂起
+  // get_settings 打开尾部窗口。
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  const dSettings = rt.defer('get_settings');
+  // 窗口内:N+1 受理落地 [B,A](publishedSeq=3);用户删除 A,删除链受理
+  // [B](publishedSeq=4,缺席 A=upsert 之后的确认删除)。
+  d2.resolve({ models: [B_REC, SAVED_RECORD], active_model_id: 'm1' });
+  await p2;
+  const dDel = rt.defer('delete_model');
+  const p3 = rt.api.deleteModel('m1');
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d3 = rt.defer('list_models');
+  dDel.resolve({});
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  d3.resolve({ models: [B_REC], active_model_id: 'b0' });
+  // 放行剩余刷新:链尾分类读取的是**完成时点**的活体证据(publishedSeq=4),
+  // 而非 N 返回时点的快照(publishedSeq=1)——缺席升级为 ok,预订被跳过。
+  dSettings.resolve({});
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'ok', '尾部窗口内的受理发布对快照不可见——活体证据在链完成时点升级裁定');
+  assert.ok(Array.isArray(outcome.models) && outcome.models.length === 1, '证据用活体列表');
+  assert.equal(outcome.models.some(m => m && m.id === 'm1'), false, '确认删除:调用方按裁定跳过入簿');
+  await p3;
+});
+
 test('web saveModel mirrors the superseded verdict (r10 P2)', async () => {
   const rt = bootWebBridge();
   const d1 = rt.defer('list_models');              // 先挂 N 的 defer(链 invoke 时捕获)
@@ -300,4 +341,38 @@ test('web saveModel mirrors the superseded verdict (r10 P2)', async () => {
   assert.equal(outcome.models, undefined, 'superseded 无列表证据');
   d2.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
   await p2;
+});
+
+test('web saveModel: publications during the remaining refresh are read live (r12 P2 mirror)', async () => {
+  const rt = bootWebBridge();
+  // 预置受理世界 [B](publishedSeq=1):一次性 handler 让 deleteModel 链受理。
+  rt.setHandler('list_models', () => Promise.resolve({ models: [B_REC], active_model_id: 'b0' }));
+  await rt.flat.deleteModel('seed-b0');
+  // 保存 A:N(seq=2)挂 d1;N+1(seq=3)由 deleteModel 链触发挂 d2,先不落地。
+  rt.setHandler('list_models', null);
+  const d1 = rt.defer('list_models');
+  const p = rt.flat.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d2 = rt.defer('list_models');
+  const p2 = rt.flat.deleteModel('trigger-n1');
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  // N 作废先返回(快照停在 upsert 前世界);web 剩余刷新只有有效配置读取
+  // ——挂起 get_effective_model_config 打开尾部窗口。
+  d1.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' });
+  const dCfg = rt.defer('get_effective_model_config');
+  // 窗口内:N+1 受理 [B,A](publishedSeq=3);再删 A:handler 放行 [B]
+  // (publishedSeq=4,确认删除)。两条删除链的链尾同样挂在 dCfg 上。
+  d2.resolve({ models: [B_REC, SAVED_RECORD], active_model_id: 'm1' });
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  rt.setHandler('list_models', () => Promise.resolve({ models: [B_REC], active_model_id: 'b0' }));
+  const p3 = rt.flat.deleteModel('m1');
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  // 放行:链尾分类读活体证据(publishedSeq=4)而非快照(publishedSeq=1)。
+  dCfg.resolve({});
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'ok', 'web lane 同样在链完成时点读取活体证据');
+  assert.ok(Array.isArray(outcome.models) && outcome.models.length === 1, '证据用活体列表');
+  assert.equal(outcome.models.some(m => m && m.id === 'm1'), false, '确认删除:跳过入簿');
+  await p2;
+  await p3;
 });
