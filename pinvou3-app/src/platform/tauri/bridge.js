@@ -1814,6 +1814,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const discoverLocalVllm = settingsFeature.discoverLocalVllm;
   const loadModels = settingsFeature.loadModels; // startup loader (init); not on the facade
   const saveModel = settingsFeature.saveModel;
+  // r12 review P2: the superseded verdict's live-evidence getter — exposed
+  // on the models facade for the SettingsView mirror effect (generation
+  // release of superseded bookings).
+  const readPublishedModelsEvidence = settingsFeature.readPublishedModelsEvidence;
   // Batch add-all post-loop refresh (round-1 review M9): one reload burst for
   // up to 100 deferred saves instead of three loaders per row.
   const reloadSavedModels = settingsFeature.reloadSavedModels;
@@ -2285,6 +2289,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     },
     models: {
       saveModel,
+      readPublishedModelsEvidence,
       reloadSavedModels,
       revealModelApiKey,
       deleteModel,

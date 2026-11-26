@@ -3892,6 +3892,18 @@
       if (seq !== modelsLoadSeq.value) {
         return { accepted: false, requestedSeq: seq, publishedSeq: publishedModelsSeq, publishedModels: state.savedModels, publishedFailed: state.modelsListLoadFailed === true };
       }
+      // 读取降级(r13 复审 P2):后端 list_models 在 settings.json 存在但读
+      // 不出(非 NotFound)或内容不可解析时,以成功响应回退安全默认值并打
+      // fallback 标记——该(空)列表不是权威观察,按失败等价处理(r3 lane G
+      // /r7 冻结):清显示列表、保留 lastConfirmedModels、置失败标记冻结
+      // 守卫;**不发布代际**(publishedModelsSeq 不动——降级列表里的缺席
+      // 不是删除证据,链尾裁定走 failed 臂入簿无证据)。
+      if (v && v.fallback === true) {
+        state.savedModels = []; state.activeModelId = null;
+        state.modelsListLoadFailed = true;
+        notify();
+        return { accepted: true, failed: true };
+      }
       state.savedModels = (v && v.models) || [];
       state.lastConfirmedModels = [...((v && v.models) || [])];
       state.activeModelId = (v && v.active_model_id) || null;

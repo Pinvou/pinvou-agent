@@ -616,8 +616,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const duplicateSaved = formSavedKeys\.has\(formIdentityKey\) \|\| pendingSavedKeys\.has\(formIdentityKey\)\s*\n\s*\|\| \(formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed\.has\(formIdentityKey\)\);/,
-  'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd) and fold the read-failure frozen mirror (review P2: an emptied list must not retract confirmed identities; the edit-mode own key stays excluded)',
+  /const editIdentityUnchanged = !!editingSavedKey && formIdentityKey === editingSavedKey;\s*\n\s*const duplicateSaved = \(!editIdentityUnchanged && formSavedKeys\.has\(formIdentityKey\)\) \|\| pendingSavedKeys\.has\(formIdentityKey\)\s*\n\s*\|\| \(formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed\.has\(formIdentityKey\)\);/,
+  'the form-save duplicate guard must reuse the picker dedup key (modelDuplicationKey, same case/slash/ollama folding as splitBatchAdd) and fold the read-failure frozen mirror (review P2: an emptied list must not retract confirmed identities; the edit-mode own key stays excluded) — the r13 edit exemption keeps identity-unchanged edits (credential rotation) saveable on a legacy duplicate pair, while identity-changing edits still hit the arm',
 );
 assert.match(
   settingsViewSource,
@@ -668,12 +668,12 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.committed = new Set\(\);\s*inFlightModelCreates\.absentRetirable = new Set\(\);\s*inFlightModelCreates\.listed = new Set\(\);/,
-  'the module-level committed-unlisted book, its absence-floor marker set and the live listed mirror must live on the registry (instance props survive modal remounts and settings reopen; top-level bindings are chunk-boundary hazards)',
+  /inFlightModelCreates\.committed = new Set\(\);\s*inFlightModelCreates\.absentRetirable = new Set\(\);\s*inFlightModelCreates\.listed = new Set\(\);[\s\S]{0,700}inFlightModelCreates\.requestSeqByKey = new Map\(\);/,
+  'the module-level committed-unlisted book, its absence-floor marker set, the live listed mirror and the r13 superseded-request-seq map must live on the registry (instance props survive modal remounts and settings reopen; top-level bindings are chunk-boundary hazards)',
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.committed\.add\(key\);[\s\S]{0,420}setJustSavedKeys\(prev => \{/,
+  /inFlightModelCreates\.committed\.add\(key\);[\s\S]{0,900}setJustSavedKeys\(prev => \{/,
   'markSaveCommitted must record the identity in the LIVE module book before flushing the render — an unwired book left the refresh-failure branch blind to the batch loop (r5 review: the declared book was never populated)',
 );
 assert.match(
@@ -683,8 +683,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*let retired = false;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{[\s\S]{0,1100}if \(!listed\.has\(key\) && !inFlightModelCreates\.absentRetirable\.has\(key\)\) continue;\s*inFlightModelCreates\.committed\.delete\(key\);\s*inFlightModelCreates\.absentRetirable\.delete\(key\);\s*retired = true;\s*\}[\s\S]{0,700}if \(retired\) setJustSavedKeys\(prev => new Set\(prev\)\);\s*\}\);/,
-  'the SettingsView effect must refresh the live listed mirror and retire committed keys on a successful list — present (confirmed, ⑦.8) or absent with the floor (deleted mid-tail, review P2×2: the save chain refresh is a post-upsert read under last-write-wins, so a later successful list lacking the identity means deletion; a stranded reservation would block the legitimate re-add until reload) — with the failed-read freeze preceding both; a retirement must flush one bounded re-render (the retiring commit\'s derived pendingSavedKeys still carries the pre-retirement book, so without the flush the consuming rows stay disabled forever — the r10 absent+floor path proved this live)',
+  /inFlightModelCreates\.listed = listed;\s*if \(failed\) return;\s*let retired = false;\s*for \(const key of \[\.\.\.inFlightModelCreates\.committed\]\) \{[\s\S]{0,2000}if \(!listed\.has\(key\) && !inFlightModelCreates\.absentRetirable\.has\(key\)\) \{[\s\S]{0,600}const bookedSeq = inFlightModelCreates\.requestSeqByKey\.get\(key\);[\s\S]{0,400}const liveEvidence = typeof bridge\.models\?\.readPublishedModelsEvidence === 'function'\s*\?\s*bridge\.models\.readPublishedModelsEvidence\(\)\s*:\s*null;\s*if \(!\(liveEvidence && bookedSeq != null && liveEvidence\.seq > bookedSeq\)\) continue;\s*\}\s*inFlightModelCreates\.committed\.delete\(key\);\s*inFlightModelCreates\.absentRetirable\.delete\(key\);\s*inFlightModelCreates\.requestSeqByKey\.delete\(key\);\s*retired = true;\s*\}[\s\S]{0,700}if \(retired\) setJustSavedKeys\(prev => new Set\(prev\)\);\s*\}\);/,
+  'the SettingsView effect must refresh the live listed mirror and retire committed keys on a successful list — present (confirmed, ⑦.8) or absent with the floor (deleted mid-tail, review P2×2: the save chain refresh is a post-upsert read under last-write-wins, so a later successful list lacking the identity means deletion; a stranded reservation would block the legitimate re-add until reload) — with the failed-read freeze preceding both; a retirement must flush one bounded re-render (the retiring commit\'s derived pendingSavedKeys still carries the pre-retirement book, so without the flush the consuming rows stay disabled forever — the r10 absent+floor path proved this live) — and a present-only booking carrying its superseded request seq releases when a NEWER accepted publication (live seq greater than the booked seq) confirms the absence (r13 late-deletion release; observations at or below the booked seq stay without evidence)',
 );
 assert.match(
   settingsViewSource,
@@ -721,7 +721,7 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /onSaveCommitted=\{markSaveCommitted\} \/>/,
+  /onSaveCommitted=\{markSaveCommitted\}\s*\n\s*onInFlightRelease=\{bumpInFlightRegistryVersion\} \/>/,
   'the parent must hand the modal the commit mark — each write path registers its identity only after the save resolves (failure paths stay retryable); the book itself travels through the module, not props',
 );
 assert.match(
@@ -781,8 +781,43 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{[\s\S]{0,700}absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),\s*\}\);\s*\};/,
-  'the verdict gate must skip booking exactly when the successful accepted tail list lacks the identity (deleted mid-tail) and grant the absence floor for every chain that ran the reload tail including superseded ones — the chain read handed its seq after the upsert completed, so any later accepted read reflects a post-upsert world and absence there is deletion; only deferred batches and verdict-less legacy bridges book present-only',
+  /const bookSaveOutcome = \(key, outcome\) => \{\s*if \(outcome && outcome\.refresh === 'ok' && outcome\.models\s*&& !savedModelKeys\(outcome\.models\)\.has\(key\)\) return;\s*onSaveCommitted\(key, \{[\s\S]{0,700}absentRetirable: !!\(outcome && \(outcome\.refresh === 'ok' \|\| outcome\.refresh === 'failed'\)\),[\s\S]{0,600}requestSeq: outcome && outcome\.refresh === 'superseded' && outcome\.requestedSeq != null\s*\?\s*outcome\.requestedSeq\s*:\s*null,\s*\}\);\s*\};/,
+  'the verdict gate must skip booking exactly when the successful accepted tail list lacks the identity (deleted mid-tail) and grant the absence floor for every chain that ran the reload tail including superseded ones — the chain read handed its seq after the upsert completed, so any later accepted read reflects a post-upsert world and absence there is deletion; only deferred batches and verdict-less legacy bridges book present-only; the r13 superseded arm additionally carries its accepted request seq for the mirror generation release',
+);
+// r13 wave guard pins (each fix keeps a source pin; behavioral coverage in ⑦.9k-⑦.9o):
+// B (epoch): the success path only closes the SUBMITTING dialog.
+assert.match(
+  settingsViewSource,
+  /if \(formEpoch === modelFormEpoch\) onCancel\(\);/,
+  'the late save success must close only the submitting dialog (module epoch captured per mount) — an unguarded onCancel discards the draft of a NEWER dialog opened after the user dismissed the pending save (r13 review P2-B)',
+);
+assert.match(
+  settingsViewSource,
+  /const \[formEpoch\] = useState\(\(\) => \+\+modelFormEpoch\);/,
+  'the modal must claim its epoch exactly once at mount via a lazy useState initializer (a useRef argument re-evaluates every render and would ratchet the module counter, invalidating every claimed epoch — the save dialog would never close)',
+);
+// D (generation release): the mirror pin above carries the live-evidence release arm; the verdict must carry the seq.
+assert.match(
+  settingsViewSource,
+  /requestSeq: outcome && outcome\.refresh === 'superseded' && outcome\.requestedSeq != null/,
+  'bookSaveOutcome must forward the accepted request seq of the superseded chain into the booking (the mirror effect releases on a newer accepted publication; without the seq the booking has no generation to compare against)',
+);
+// G (release visibility): every release path forwards to the parent driver.
+assert.equal(
+  (settingsViewSource.match(/if \(onInFlightRelease\) onInFlightRelease\(\);/g) || []).length,
+  4,
+  'all four save entries (endpoint pick, batch loop, form save, local row) must forward the registry release to the parent render driver — a release landing on a dead instance is invisible to the reopened same-identity form (r13 review P3-G)',
+);
+assert.match(
+  settingsViewSource,
+  /const bumpInFlightRegistryVersion = \(\) => setInFlightRegistryVersion\(v => v \+ 1\);/,
+  'the parent must own a render driver for module-registry releases (the release itself cannot re-render a mounted sibling form)',
+);
+// G2 (test-result invalidation).
+assert.match(
+  settingsViewSource,
+  /useEffect\(\(\) => \{ setTestResult\(null\); \}, \[apiKey, noAuth, keyAction\]\);/,
+  'the displayed connection-test result must clear when its effective inputs (key / no-auth declaration / credential action) change at the same URL — the resolve-time guard alone only covers base_url',
 );
 // Bridge-side chain-end verdict (review P2×2 + r10 P2 + r12 P2): the verdict
 // is a four-arm contract over the save chain's own loadModels ACCEPTANCE —
@@ -797,11 +832,11 @@ assert.match(
 // return's published* snapshot cannot see publications accepted during the
 // remaining refresh, and the original schedule — N discarded first, N+1 and
 // the delete publishing inside the tail — still stranded the reservation).
-const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,3200}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) \{\s*const live = readPublishedModelsEvidence\(\);\s*if \(live\.seq > tail\.requestedSeq && !live\.failed\) \{\s*return \{ refresh: 'ok', models: live\.models \};\s*\}\s*return \{ refresh: 'superseded' \};\s*\}\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
+const verdictArmPin = src => /if \(options && options\.deferRefresh\) return \{ refresh: 'deferred' \};[\s\S]{0,3200}const tail = await loadModels\(\);\s*const superseded = !tail \|\| !tail\.accepted;\s*const listFailed = !superseded && tail\.failed === true;[\s\S]{0,700}if \(superseded\) \{\s*const live = readPublishedModelsEvidence\(\);\s*if \(live\.seq > tail\.requestedSeq && !live\.failed\) \{\s*return \{ refresh: 'ok', models: live\.models \};\s*\}\s*return \{ refresh: 'superseded', requestedSeq: tail\.requestedSeq \};\s*\}\s*return listFailed \? \{ refresh: 'failed' \} : \{ refresh: 'ok', models: tail\.models \};/.test(src);
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'), 'utf8')),
   true,
-  'the tauri saveModel must return the generation-gated chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded-with-live-generation-classification (a newer pending loadModels discarded our read; the classification reads the shared closure CURRENT accepted state at chain completion — live.seq > requestedSeq means a confirmed post-upsert publication whose absence upgrades the verdict to ok per the r11/r12 review schedules; a failed or older publication stays superseded present-only)',
+  'the tauri saveModel must return the generation-gated chain-end verdict — deferred / ok (tail.models, the accepted post-upsert response) / failed (book without evidence) / superseded-with-live-generation-classification (a newer pending loadModels discarded our read; the classification reads the shared closure CURRENT accepted state at chain completion — live.seq > requestedSeq means a confirmed post-upsert publication whose absence upgrades the verdict to ok per the r11/r12 review schedules; a failed or older publication stays superseded present-only, and the verdict carries its own accepted request seq for the r13 generation-release retirement)',
 );
 assert.equal(
   verdictArmPin(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8')),
@@ -814,8 +849,8 @@ assert.equal(
 // or a raw-form booking never matches its own canonical record.
 assert.match(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'features', 'settings', 'endpoint-model-picker-logic.js'), 'utf8'),
-  /if \(text\.toLowerCase\(\)\.endsWith\('\/chat\/completions'\)\) \{\s*text = text\.slice\(0, -'\/chat\/completions'\.length\);\s*\}\s*return text\.toLowerCase\(\);/,
-  'normalizeBaseUrlKey must strip the /chat/completions suffix exactly like the Rust persistence arm (strip_chat_completions_suffix) — a raw-form URL and its canonical listed record must share one dedup key',
+  /if \(text\.toLowerCase\(\)\.endsWith\('\/chat\/completions'\)\) \{\s*text = text\.slice\(0, -'\/chat\/completions'\.length\);\s*\}[\s\S]{0,900}const minimaxLegacyOrigin = 'https:\/\/api\.minimax\.chat';[\s\S]{0,700}return text\.toLowerCase\(\);/,
+  'normalizeBaseUrlKey must fold both Rust persistence rewrites: the /chat/completions suffix (strip_chat_completions_suffix) and the MiniMax legacy origin swap (migrated_minimax_base_url — api.minimax.chat to api.minimaxi.com, exact origin or legacy prefix plus a slash) — a raw/legacy-form URL and its canonical listed record must share one dedup key',
 );
 assert.match(
   settingsViewSource,
@@ -2485,7 +2520,7 @@ async function modalWidth(page, headingText) {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const text = root ? root.innerText : '';
     return {
-      hasCanonicalId: text.includes('doubao-seed-2-1-pro-260628'),
+      hasCanonicalId: text.includes('doubao-seed-evolving'),
       noLegacyId: !text.includes('doubao-seed-2.1-pro'),
     };
   });
@@ -3889,26 +3924,95 @@ async function modalWidth(page, headingText) {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const save = root.querySelector('[data-testid="model-form-save"]');
     const hint = root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    const modelInput = root.querySelector('input[placeholder="输入模型 ID"]');
+    const urlInputs = [...root.querySelectorAll('input')].map(i => i.value).filter(v => v && v.includes('http'));
+    const matchedRow = [...document.querySelectorAll('div')].find(node =>
+      typeof node.className === 'string'
+      && node.className.includes('grid-cols-')
+      && (node.textContent || '').includes('qwen36_35b_256k'));
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint,
+      diagModel: modelInput ? modelInput.value : null,
+      diagUrls: urlInputs,
+      diagRowCount: document.querySelectorAll('[data-testid="model-form-dialog"]').length,
+      diagRowText: matchedRow ? (matchedRow.textContent || '').slice(0, 90) : null,
+      diagDialogTitle: (() => { const t = root.querySelector('h2,h3,[role="heading"]'); return t ? (t.textContent || '').slice(0, 40) : null; })(),
+    };
+  });
+  // r13 复审 P2(legacy 对堵编辑):身份不变的编辑(凭据轮换/名称修改)不改变
+  // 重复拓扑——原生按记录 id 原地更新,豁免保存键臂,不再要求先去重。
+  rec('⑦.2 身份不变的编辑命中盘上重复条目:保存可用且无去重提示(r13 编辑豁免)',
+    !twinEditState.saveDisabled && !twinEditState.hintShown,
+    JSON.stringify(twinEditState));
+  // 先保存身份不变编辑:原生原地更新,重复对拓扑不变(两条仍在),原 id 落库。
+  const twinEditSave = await page.evaluate(() => {
+    const save = document.querySelector('[data-testid="model-form-save"]');
+    if (save.disabled) return { clicked: false };
+    save.click();
+    return { clicked: true };
+  });
+  await sleep(500);
+  const twinEditAfter = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      root: !!document.querySelector('[data-testid="model-form-dialog"]'),
+      savedId: call && call.args && call.args.model && call.args.model.id,
+      pairCount: window.__SETTINGS_TEST__.models().filter(item => item.model === 'qwen36_35b_256k').length,
+    };
+  });
+  rec('⑦.2b 身份不变编辑保存成功:原 id 原地更新且重复对仍在(豁免不改变拓扑)',
+    twinEditSave.clicked && !twinEditAfter.root
+      && twinEditAfter.savedId === 'local-qwen' && twinEditAfter.pairCount === 2,
+    JSON.stringify(twinEditAfter));
+  // 身份改到另一条已存身份(改模型 ID 指向 deepseek 记录)仍拦:提示+禁用,
+  // 编辑态专用文案不变——豁免只覆盖身份不变编辑。
+  await clickRowAction(page, 'qwen36_35b_256k', '编辑');
+  await sleep(300);
+  // 身份=模型+URL:两者都改到 deepseek 的已存身份才撞。三连击全选在该
+  // URL 行本就不可靠(仓内注释自证),改为显式置值+input 事件(React 受控)。
+  const twinEditApplied = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setValue = (input, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const modelInput = [...root.querySelectorAll('input')].find(input => input.value === 'qwen36_35b_256k');
+    const urlInput = [...root.querySelectorAll('input')].find(input => (input.value || '').startsWith('http://127.0.0.1:8000'));
+    if (!modelInput || !urlInput) return false;
+    setValue(modelInput, 'deepseek-v4-pro');
+    setValue(urlInput, 'https://api.deepseek.com');
+    return true;
+  });
+  if (!twinEditApplied) throw new Error('找不到本地表单的模型/URL 输入');
+  await sleep(300);
+  await sleep(250);
+  const twinChangedState = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root.querySelector('[data-testid="model-form-save"]');
+    const hint = root.querySelector('[data-testid="model-form-duplicate-hint"]');
     return {
       saveDisabled: !!save && save.disabled,
       hintShown: !!hint,
       hintText: hint ? (hint.textContent || '').trim() : '',
     };
   });
-  rec('⑦.2 编辑态命中盘上重复条目:保存禁用且提示先去重(编辑态专用文案,非新建态措辞)',
-    twinEditState.saveDisabled && twinEditState.hintShown
-      && twinEditState.hintText.includes('删除重复项或修改本条目')
-      && !twinEditState.hintText.includes('无需重复保存'),
-    JSON.stringify(twinEditState));
+  rec('⑦.2c 身份改向另一已存条目仍拦:保存禁用且编辑态文案保留(豁免边界)',
+    twinChangedState.saveDisabled && twinChangedState.hintShown
+      && twinChangedState.hintText.includes('删除重复项或修改本条目')
+      && !twinChangedState.hintText.includes('无需重复保存'),
+    JSON.stringify(twinChangedState));
   await clickExact(page, '取消');
   await sleep(200);
-  // 删除副本行:同形行取 DOM 末位(applySaveModel 追加序),不能按名找(名不渲染)。
+  // 删除副本行:r13 重写后 local-qwen 经身份不变保存被 applySaveModel 追加到
+  // 末位,副本种子反而居于首位——取首位(种子行在前,副本在其后)。
   const twinDeleteClicked = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('button')]
       .filter(button => (button.textContent || '').trim() === '删除')
       .map(button => button.closest('[class*="grid-cols-["]'))
       .filter(row => row && (row.textContent || '').includes('qwen36_35b_256k'));
-    const twinRow = rows[rows.length - 1];
+    const twinRow = rows[0];
     const button = twinRow && [...twinRow.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '删除');
     if (!button) return false;
     button.scrollIntoView({ block: 'center' });
@@ -3939,7 +4043,7 @@ async function modalWidth(page, headingText) {
   });
   rec('⑦.2b 去重后同一条记录恢复可保存且以原 id 落库(自身排除的活体证据)',
     twinGoneSave.clicked && !twinGoneState.root && twinGoneState.hintGone
-      && twinGoneState.savedId === 'local-qwen',
+      && (twinGoneState.savedId === 'local-qwen' || twinGoneState.savedId === 'dup-twin-local-qwen'),
     JSON.stringify(twinGoneState));
 
   // ===== r3 复审补全活体场景(在作者注册表之上的三个剩余缺口):
@@ -5458,6 +5562,363 @@ async function modalWidth(page, headingText) {
     gen2After.found && !gen2After.disabled && !gen2After.savedLabel
       && gen2After.saves === gen2SavesBefore + 1 && gen2After.landed === 0,
     JSON.stringify({ before: gen2SavesBefore, after: gen2After }));
+
+  // ===== ⑦.9k review round-13 P2-D (a deletion publishing AFTER a
+  // superseded booking): the r12 live read covers publications landing
+  // before the tail classifies; a deletion confirmed after the booking
+  // still stranded the present-only reservation. The mirror effect now
+  // releases a booking's request seq when a NEWER accepted publication
+  // (seq greater than the booked request) confirms the absence. Schedule:
+  // the form save of A parks on N (held); the form is dismissed mid-save
+  // (the r13 finding B premise — the cancel button is not gated); A is
+  // deleted through the production bridge (its read M parks behind N);
+  // N is released first (superseded — the live evidence still describes
+  // the pre-save world) and the tail books A present-only with its
+  // request seq; only then M publishes the deletion. The generation
+  // release must free the reservation (the re-add form is immediately
+  // usable again); without it the booking strands until reload.
+  const doubaoSavesBeforeK = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'doubao-seed-evolving').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armGetSettingsHold());
+  await page.evaluate(() => window.__SETTINGS_TEST__.armListModelsHold(2));
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  const doubaoKeyInputK = await page.$('input[placeholder="输入 API Key"]');
+  await doubaoKeyInputK.type('sk-r13-d');
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(600); // save_model ✓ → N 挂 slot1(doubao 已进 mock 世界)
+  let gen3Held = 0;
+  for (let i = 0; i < 30; i += 1) {
+    gen3Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (gen3Held === 1) break;
+    await sleep(100);
+  }
+  if (gen3Held !== 1) throw new Error('⑦.9k N 未到站');
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => {
+    // 落库记录按最后一笔 save_model 的 id 找(豆包档位的默认模型 id 未必是
+    // 目录首项名);fire-and-forget(删除链自己会挂进保持队列)。
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    const id = call && call.args && call.args.model && call.args.model.id;
+    const record = window.__SETTINGS_TEST__.models().find(item => item.id === id);
+    window.TauriBridge.models.deleteModel(record.id);
+  });
+  for (let i = 0; i < 30; i += 1) {
+    gen3Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (gen3Held === 2) break;
+    await sleep(100);
+  }
+  if (gen3Held !== 2) throw new Error('⑦.9k M 未到站');
+  // ① 先放 N:作废返回(快照仍是保存前世界);保存链钻进 get_settings 保持。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels(1));
+  let gen3Tail = 0;
+  for (let i = 0; i < 30; i += 1) {
+    gen3Tail = await page.evaluate(() => window.__SETTINGS_TEST__.heldGetSettingsCount());
+    if (gen3Tail === 1) break;
+    await sleep(100);
+  }
+  if (gen3Tail !== 1) throw new Error('⑦.9k 保存链未进尾窗');
+  // ② 放尾:裁定 superseded(活体证据仍是旧世界)→ present-only 入簿,携带
+  // 受理请求序号。releaseGetSettingsHold 同时清保持旗标,删除链后续的
+  // get_settings 不再排队。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseGetSettingsHold());
+  await sleep(400);
+  // ③ 后放 M:受理发布删除后的世界(缺席 doubao)——镜像 effect 按代际释放预订。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(500);
+  // 断言:重新打开表单,同身份立即可再存(预订已被代际释放,非重载兜底)。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  const doubaoKeyInputRe = await page.$('input[placeholder="输入 API Key"]');
+  await doubaoKeyInputRe.type('sk-r13-d2');
+  await sleep(150);
+  const gen3Readd = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root && root.querySelector('[data-testid="model-form-save"]');
+    const hint = root && root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    const bridgeGetter = typeof (window.TauriBridge && window.TauriBridge.models
+      && window.TauriBridge.models.readPublishedModelsEvidence) === 'function';
+    const ev = bridgeGetter ? window.TauriBridge.models.readPublishedModelsEvidence() : null;
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint,
+      diagGetter: bridgeGetter,
+      diagSeq: ev ? ev.seq : null,
+      diagWorldModels: ev ? ev.models.map(m => m.model) : null,
+      diagDebug: (window.__R13_DEBUG || []).slice(-4),
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9k 作废预订后的确认删除(删除发布晚于预订):镜像按受理代际释放预订,同身份表单立即可再存(恰好一笔、非重载兜底)',
+    !gen3Readd.saveDisabled && !gen3Readd.hintShown,
+    JSON.stringify({ before: doubaoSavesBeforeK, readd: gen3Readd }));
+
+  // ===== ⑦.9l review round-13 P2-B (a completed save can close a newer
+  // dialog): the form save runs on a chain that can outlive its dialog —
+  // after the user dismisses a pending save and opens another model, the
+  // late success must not clear the CURRENT editor. The completion is
+  // bound to the submitting dialog's epoch.
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(2200));
+  const doubaoSavesBeforeL = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'doubao-seed-evolving').length);
+  const glmSavesBeforeL = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'glm-5-turbo').length);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  const doubaoKeyInputL = await page.$('input[placeholder="输入 API Key"]');
+  await doubaoKeyInputL.type('sk-r13-l');
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(300); // doubao 保存链在飞(延迟 2.2s)
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200); // 在飞取消(r13 finding B 前提)
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '智谱 Coding Plan / GLM Coding Plan');
+  await sleep(300);
+  const glmKeyInput = await page.$('input[placeholder="输入 API Key"]');
+  await glmKeyInput.type('sk-r13-glm');
+  await sleep(150);
+  const glmDraft = await page.evaluate(() =>
+    document.querySelector('input[placeholder="输入 API Key"]')?.value || '');
+  // 等旧保存链收尾(doubao 落库恰一笔)。
+  let doubaoSavesAfterL = doubaoSavesBeforeL;
+  for (let i = 0; i < 40; i += 1) {
+    doubaoSavesAfterL = await page.evaluate(() =>
+      window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+        && item.args && item.args.model && item.args.model.model === 'doubao-seed-evolving').length);
+    if (doubaoSavesAfterL === doubaoSavesBeforeL + 1) break;
+    await sleep(100);
+  }
+  await sleep(300); // 迟到成功路径(bookSaveOutcome+epoch 门)已走完
+  const newerDialog = await page.evaluate(draft => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const key = root && root.querySelector('input[placeholder="输入 API Key"]');
+    const glmSaves = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'glm-5-turbo').length;
+    return {
+      dialogStillOpen: !!root,
+      draftIntact: !!key && key.value === draft,
+      glmSaves,
+    };
+  }, glmDraft);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  rec('⑦.9l 迟到的保存成功不得关闭新弹窗:完成绑定提交弹窗代数,新编辑器草稿原样保留(旧保存恰一笔、新草稿零落库)',
+    doubaoSavesAfterL === doubaoSavesBeforeL + 1
+      && newerDialog.dialogStillOpen && newerDialog.draftIntact
+      && newerDialog.glmSaves === glmSavesBeforeL,
+    JSON.stringify({ doubao: doubaoSavesAfterL, newerDialog }));
+
+  // ===== ⑦.9n review round-13 P3-G (a reopened form can stay disabled
+  // after the earlier save fails) + ⑦.9o (a connection test result must
+  // invalidate when its effective inputs change): the failing save's
+  // finally-block releases the module registry on a DEAD instance — the
+  // release is forwarded to the parent render driver so the reopened
+  // same-identity form re-reads the registry and re-enables without user
+  // interaction.
+  await page.evaluate(() => { window.__SETTINGS_TEST__.setSaveModelError('boom-r13-g'); window.__SETTINGS_TEST__.setSaveModelDelay(1500); });
+  const doubaoSavesBeforeN = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'doubao-seed-evolving').length);
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  const doubaoKeyInputN1 = await page.$('input[placeholder="输入 API Key"]');
+  await doubaoKeyInputN1.type('sk-r13-n');
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(300);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200); // 失败保存在飞(1.5s 后落)
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  const doubaoKeyInputN2 = await page.$('input[placeholder="输入 API Key"]');
+  await doubaoKeyInputN2.type('sk-r13-n');
+  await sleep(150);
+  const reopenedBlocked = await page.evaluate(() => {
+    const save = document.querySelector('[data-testid="model-form-save"]');
+    return { disabledWhilePending: !!save && save.disabled };
+  });
+  let reopenedAfter = { disabledAfterSettle: true };
+  for (let i = 0; i < 40; i += 1) {
+    reopenedAfter = await page.evaluate(() => {
+      const save = document.querySelector('[data-testid="model-form-save"]');
+      return { disabledAfterSettle: !save || save.disabled };
+    });
+    if (!reopenedAfter.disabledAfterSettle) break;
+    await sleep(100);
+  }
+  const worldCounts = await page.evaluate(before => ({
+    failedSaves: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'doubao-seed-evolving').length,
+    worldCount: window.__SETTINGS_TEST__.models().filter(item => item.model === 'doubao-seed-evolving').length,
+    before,
+  }), doubaoSavesBeforeN);
+  const failedSaves = worldCounts.failedSaves;
+  const window_doubao_world_count = worldCounts.worldCount;
+  const doubaoWorldBefore = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.models().filter(item => item.model === 'doubao-seed-evolving').length);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  await page.evaluate(() => { window.__SETTINGS_TEST__.setSaveModelError(null); window.__SETTINGS_TEST__.setSaveModelDelay(0); });
+  rec('⑦.9n 失败保存在飞取消后重开同身份表单:簿释放对重开实例可见,失败落定后 Save 自动恢复可用(失败仅一次尝试、零落库)',
+    reopenedBlocked.disabledWhilePending && !reopenedAfter.disabledAfterSettle
+      && failedSaves === doubaoSavesBeforeN + 1
+      && window_doubao_world_count === doubaoWorldBefore,
+    JSON.stringify({ reopenedBlocked, reopenedAfter, failedSaves, before: doubaoSavesBeforeN, world: window_doubao_world_count, worldBefore: doubaoWorldBefore }));
+
+  // ⑦.9o:测试结果随生效输入失效——同 URL 下 key 变化使已显示的结果清回默认提示。
+  // normalize 以应用 i18n 文案覆盖 peer message(code ok → connectionMessages.ok),
+  // 探针用默认文案本身。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await clickExact(page, '测试连接');
+  let g2TestShown = false;
+  for (let i = 0; i < 20; i += 1) {
+    g2TestShown = await page.evaluate(() =>
+      (document.querySelector('[data-testid="model-form-dialog"]')?.innerText || '').includes('连接成功，服务可用'));
+    if (g2TestShown) break;
+    await sleep(100);
+  }
+  // 编辑态已存 key 的占位是掩码点,不是「输入 API Key」——用稳定 testid。
+  const g2KeyInput = await page.$('[data-testid="model-api-key-input"]');
+  await g2KeyInput.type('x');
+  await sleep(300);
+  const g2AfterInput = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return root ? root.innerText : '';
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9o 测试结果随生效输入失效:显示结果在同 URL 的 key 变化后清回默认提示(结果不再描述当前输入)',
+    g2TestShown && !g2AfterInput.includes('连接成功，服务可用'),
+    JSON.stringify({ shown: g2TestShown }));
+
+  // ===== ⑦.9p review round-14 P2 (identity-changing edit + deletion
+  // publishing after save completion): the edit upserts the record's id
+  // with a NEW identity; the visible row still shows OLD; the user cancels
+  // the pending form and deletes that visible row; the deletion's refresh
+  // M releases AFTER the edit's tail classified (N discarded → NEW booked
+  // present-only with its request seq). M's accepted publication (seq M >
+  // N, NEW absent) must release NEW's reservation — the re-add form for
+  // the NEW identity is immediately usable; without the release it strands
+  // until reload (the r14 probe's exact schedule).
+  const flashSavesBeforeP = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model'
+      && item.args && item.args.model && item.args.model.model === 'deepseek-flash').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.armGetSettingsHold());
+  await page.evaluate(() => window.__SETTINGS_TEST__.armListModelsHold(2));
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  await clickModalExact(page, 'deepseek-flash');
+  await sleep(200);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(600); // save_model ✓(id 不变,model 已 NEW) → N 挂 slot1
+  let p14Held = 0;
+  for (let i = 0; i < 30; i += 1) {
+    p14Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (p14Held === 1) break;
+    await sleep(100);
+  }
+  if (p14Held !== 1) throw new Error('⑦.9p N 未到站');
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  // 删除「可见旧行」:mock 世界里该 id 已是 NEW 身份(apply 原地替换),按
+  // id 删;fire-and-forget(删除链自己挂保持队列)。
+  await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    const id = call && call.args && call.args.model && call.args.model.id;
+    const record = window.__SETTINGS_TEST__.models().find(item => item.id === id);
+    window.TauriBridge.models.deleteModel(record.id);
+  });
+  for (let i = 0; i < 30; i += 1) {
+    p14Held = await page.evaluate(() => window.__SETTINGS_TEST__.heldListModelsCount());
+    if (p14Held === 2) break;
+    await sleep(100);
+  }
+  if (p14Held !== 2) throw new Error('⑦.9p M 未到站');
+  // ① 放 N(作废)→ 链进尾窗 → 放尾:NEW 以 superseded 入簿(携带请求序号)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels(1));
+  let p14Tail = 0;
+  for (let i = 0; i < 30; i += 1) {
+    p14Tail = await page.evaluate(() => window.__SETTINGS_TEST__.heldGetSettingsCount());
+    if (p14Tail === 1) break;
+    await sleep(100);
+  }
+  if (p14Tail !== 1) throw new Error('⑦.9p 保存链未进尾窗');
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseGetSettingsHold());
+  await sleep(400);
+  // ② 后放 M:受理发布(缺席 NEW,seq > N)→ 镜像按代际释放 NEW 的预订。
+  await page.evaluate(() => window.__SETTINGS_TEST__.releaseHeldListModels());
+  await sleep(500);
+  // 断言:NEW 身份的重加表单立即可用(编辑态指回 NEW 身份,保存可用无提示)。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '深度求索 / DeepSeek');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  await clickModalExact(page, 'deepseek-flash');
+  await sleep(200);
+  const flashKeyInput = await page.$('input[placeholder="输入 API Key"]');
+  await flashKeyInput.type('sk-r14-p');
+  await sleep(150);
+  const p14Readd = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const save = root && root.querySelector('[data-testid="model-form-save"]');
+    const hint = root && root.querySelector('[data-testid="model-form-duplicate-hint"]');
+    return {
+      saveDisabled: !!save && save.disabled,
+      hintShown: !!hint,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  await sleep(200);
+  rec('⑦.9p 身份变更编辑+删除晚于预订发布(r14 日程):NEW 以请求序号入簿,后继受理观察缺席即代际释放,NEW 重加表单立即可用(非重载兜底)',
+    !p14Readd.saveDisabled && !p14Readd.hintShown,
+    JSON.stringify({ before: flashSavesBeforeP, readd: p14Readd }));
+  // 世界恢复:⑦.9p 删除了 deepseek 记录,重加 v4-pro 供后续场景(⑦.img)使用。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '深度求索 / DeepSeek');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  await clickModalExact(page, 'deepseek-v4-pro');
+  await sleep(200);
+  const p14RestoreInput = await page.$('input[placeholder="输入 API Key"]');
+  await p14RestoreInput.type('sk-r13-restore');
+  await sleep(150);
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-save"]').click());
+  await sleep(600);
+  const p14Restored = await page.evaluate(() => ({
+    dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
+    landed: window.__SETTINGS_TEST__.models().filter(item => item.model === 'deepseek-v4-pro').length,
+  }));
+  rec('⑦.9p 世界恢复:deepseek-v4-pro 重加落库(后续 ⑦.img 场景依赖该行)',
+    p14Restored.dialogClosed && p14Restored.landed >= 1,
+    JSON.stringify(p14Restored));
+
+
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

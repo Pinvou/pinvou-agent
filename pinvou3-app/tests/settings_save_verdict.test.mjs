@@ -286,6 +286,58 @@ test('tauri saveModel superseded with a failed newer publication: stays supersed
 
 const B_REC = { id: 'b0', model: 'b-model', base_url: 'https://b/v1' };
 
+test('tauri loadModels degraded read: a fallback success is failure-equivalent and publishes no generation (r13 P2)', async () => {
+  const rt = loadTauriSettings(makeState());
+  // 预置受理世界 [B](publishedSeq=1)。
+  const d0 = rt.defer('list_models');
+  const p0 = rt.api.loadModels();
+  d0.resolve({ models: [B_REC], active_model_id: 'b0' });
+  await p0;
+  // 降级读取:成功响应 + fallback 标记(settings.json 读不出/损坏 → 安全
+  // 默认值)。按失败等价:清显示列表、冻结守卫、不发布代际。
+  const d1 = rt.defer('list_models');
+  const p1 = rt.api.loadModels();
+  d1.resolve({ models: [], active_model_id: null, fallback: true });
+  const r1 = await p1;
+  assert.equal(r1.accepted, true, '降级读取仍算受理(链跑过)');
+  assert.equal(r1.failed, true, 'fallback 标记按失败等价处理');
+  assert.equal(rt.state.savedModels.length, 0, '显示列表清空(r3 lane G)');
+  assert.equal(rt.state.modelsListLoadFailed, true, '失败标记置位(r7 冻结)');
+  assert.equal(rt.state.lastConfirmedModels.length, 1, 'lastConfirmedModels 不被降级读取覆盖(跨 realm 逐元素比较)');
+  assert.equal(rt.state.lastConfirmedModels[0] && rt.state.lastConfirmedModels[0].id, 'b0', '快照保留首个受理读取的记录');
+  // 代际未发布:superseded 分类在该窗口内维持旧世界(superseded),不会把
+  // 降级缺席当删除证据升级 ok。
+  const d2 = rt.defer('list_models');
+  const p = rt.api.saveModel(SAVED_RECORD);
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  const d3 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();
+  d3.resolve({ models: [B_REC], active_model_id: 'b0', fallback: true }); // N+1 也降级:无发布
+  await p2.catch(() => {});
+  d2.resolve({ models: [SAVED_RECORD], active_model_id: 'm1' }); // N 作废
+  const outcome = await p;
+  assert.equal(outcome.refresh, 'superseded', '降级发布不携带代际——无证据维持 superseded 保护');
+  assert.equal(outcome.models, undefined, '无列表证据');
+  // 恢复正常受理读取后,冻结解冻、代际前进、守卫移交列表。
+  const d4 = rt.defer('list_models');
+  const p3 = rt.api.loadModels();
+  d4.resolve({ models: [B_REC], active_model_id: 'b0' });
+  await p3;
+  assert.equal(rt.state.modelsListLoadFailed, false, '下一次真实成功读取清失败标记');
+  await p2;
+});
+
+test('web loadModels degraded read mirrors the failure-equivalent contract (r13 P2)', async () => {
+  const rt = bootWebBridge();
+  // flat 不暴露 loadModels——走保存链观察:降级读取 ⇒ failed 裁定(入簿无证据)。
+  rt.setHandler('list_models', () => Promise.resolve({ models: [], active_model_id: null, fallback: true }));
+  const outcome = await rt.flat.saveModel(SAVED_RECORD);
+  assert.equal(outcome.refresh, 'failed', 'web lane 降级读取同样按失败等价:failed 裁定');
+  assert.equal(outcome.models, undefined, '无列表证据');
+});
+
+
+
 test('tauri saveModel: publications landing during the remaining refresh are read live at completion (r12 P2)', async () => {
   const rt = loadTauriSettings(makeState());
   // 预置受理世界 [B](publishedSeq=1)。

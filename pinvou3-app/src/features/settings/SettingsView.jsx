@@ -75,6 +75,18 @@ const inFlightModelCreates = new Set();
 inFlightModelCreates.committed = new Set();
 inFlightModelCreates.absentRetirable = new Set();
 inFlightModelCreates.listed = new Set();
+// superseded 簿键的受理请求序号(复审 P2 r13:迟到删除释放):作废裁定携带
+// requestedSeq——此后任何**受理**发布的代际 > 该序号 ⇒ 该观察起读于 upsert
+// 之后(与链尾活体升级同一不变量),缺席即已删,可退休 present-only 簿键。
+// 与 absentRetirable 的差异:那层地板在入簿时即授予;这层把信任推迟到
+// 「观察到更新的受理发布」的时点——保存链收尾时删除还在飞、其发布晚于
+// 裁定的交错(r11 对 stale 窗口镜像的否决在此不复发:代际 ≤ requestedSeq
+// 的观察仍不退休)。
+inFlightModelCreates.requestSeqByKey = new Map();
+// 表单弹窗代数(复审 P2 r13:完成的保存关闭新弹窗):每次挂载自增,提交时
+// 捕获,完成时比对——被作废/取消的保存链的迟到成功不得关闭**当前**弹窗
+// (模块计数跨实例存活,实例级 ref做不到)。
+let modelFormEpoch = 0;
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -454,7 +466,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
 
     // 添加/编辑模型模态弹窗。
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, onSaveCommitted }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, onSaveCommitted, onInFlightRelease }) => {
       const settingsCopy = t.uiSettingsDetail;
       // 复审 P2×2(晚到完成):按保存链尾裁定入簿。ok 且列表缺席 = 记录在
       // 刷新尾窗内被删——不入簿,簿键永无成功列表可确认,只会把合法同身份
@@ -474,6 +486,12 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           // 「预订期间被真删」一种交错,其代价与评审「未知证据保留保护」
           // 的处方一致,由应用重载兜底。
           absentRetirable: !!(outcome && (outcome.refresh === 'ok' || outcome.refresh === 'failed')),
+          // superseded 链携带自己的受理请求序号(r13 复审 P2:迟到删除释放)
+          // ——此后任何代际更新的**受理**发布缺席该键即可退休(镜像 effect
+          // 按代际判;deferred/旧桥无序号,维持 present-only)。
+          requestSeq: outcome && outcome.refresh === 'superseded' && outcome.requestedSeq != null
+            ? outcome.requestedSeq
+            : null,
         });
       };
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
@@ -522,6 +540,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
+      // 测试结果随生效输入失效(r13 复审 P3):resolve 时刻守卫(复审 M5)
+      // 只盯 base URL——同 URL 下 key / 免鉴权声明 / 凭据动作的变化同样
+      // 让已显示的结果不再描述当前输入,清掉避免误读。
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 失效清空是这条 effect 的全部目的;依赖即输入本身,不构成级联循环
+      useEffect(() => { setTestResult(null); }, [apiKey, noAuth, keyAction]);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
       // In-flight row key (row.key) for local candidate row adds: drives the
@@ -536,6 +559,13 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // never run two onSave calls for one identity. Also consulted by doSave
       // so a slow row add cannot interleave with a form save.
       const localAddInFlightRef = useRef(false);
+      // 提交弹窗代数(复审 P2 r13):挂载时领取,成功路径只在「本弹窗仍是
+      // 当前弹窗」时才调 onCancel——被取消的保存链的迟到成功不得清掉
+      // 用户已打开的另一个模型编辑器(草稿会被无痕丢弃)。useState 惰性
+      // 初始化只跑一次——useRef(++counter) 的实参每次渲染都会执行,会把
+      // 模块计数器按渲染次数推高,让所有已领取的代数失效(对话框永不在
+      // 保存成功后关闭)。
+      const [formEpoch] = useState(() => ++modelFormEpoch);
       // Failure of the last local row add, surfaced on THIS picker view:
       // saveError's only renderer sits in the form body, which the
       // initial.__new && pickerOpen early return never reaches, so a
@@ -967,6 +997,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           inFlightModelCreates.delete(pickIdentity);
           pickInFlightRef.current = false;
           setPickSavingModel(false);
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
@@ -1053,6 +1084,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           for (const rowIdentity of batchIdentities) inFlightModelCreates.delete(rowIdentity);
           addAllInFlightRef.current = false;
           setAddingAllModels(false); setAddAllModelsConfirm(null);
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
@@ -1232,13 +1264,21 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           // 若吞掉 list_models 失败,身份仍被拦,直到列表真正确认它;链尾裁定
           // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
           bookSaveOutcome(formIdentity, outcome);
-          onCancel();
+          // 关闭绑定到提交弹窗(复审 P2 r13):保存链可以比弹窗活得长(用户
+          // 可在在飞窗口取消/重开另一个模型)——只有本弹窗仍是当前弹窗时
+          // 才收起;迟到的成功不得清掉当前编辑器的草稿。簿记(bookSaveOutcome)
+          // 是模块级的,照常执行。
+          if (formEpoch === modelFormEpoch) onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
           setSaveError(String(e && e.message ? e.message : e));
         } finally {
           inFlightModelCreates.delete(formIdentity);
           setSavingModel(false);
+          // 释放可见性(r13 复审 P3):提交实例可能已卸载(在飞窗口取消),
+          // setSavingModel 是死实例上的空操作——模块簿的释放必须借父层
+          // 渲染驱动刷给**重开的**同身份表单,否则其 Save 按钮永久禁用。
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // 视觉模型选择:一律识图探测(无表内加速)——识别出测试图(supported)
@@ -1362,6 +1402,7 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           localAddInFlightRef.current = false;
           inFlightModelCreates.delete(rowIdentity);
           setLocalAddBusyKey(null);
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // 本机模型检测（本地选择页「检测」按钮）：只列出候选行，绝不自动填充表单——
@@ -1785,7 +1826,16 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // initial.id, so nothing is excluded.
       const editingSavedKey = initial && initial.id ? modelDuplicationKey(initial.model, initial.base_url) : null;
       const frozenListed = inFlightModelCreates.listed;
-      const duplicateSaved = formSavedKeys.has(formIdentityKey) || pendingSavedKeys.has(formIdentityKey)
+      // Identity-unchanged edits are exempt from the saved-key arm (review
+      // P2: a legacy duplicate pair blocked in-place edits): when the form
+      // identity equals the edited record's own stored key — credential
+      // rotation, name/alias touch-ups — the edit cannot change the
+      // duplicate topology (the native writer updates the selected record
+      // id in place), so a pre-existing twin must not force the dedupe
+      // hint. Identity-CHANGING edits on a twin still hit the arm (the
+      // resulting key would join the twin's slot = a new duplicate).
+      const editIdentityUnchanged = !!editingSavedKey && formIdentityKey === editingSavedKey;
+      const duplicateSaved = (!editIdentityUnchanged && formSavedKeys.has(formIdentityKey)) || pendingSavedKeys.has(formIdentityKey)
         || (formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed.has(formIdentityKey));
       // 按钮态与 doSave 的守卫同口径(r4 复审 MINOR):同身份在途(注册表,
       // 跨弹窗重开存活)或本地行添加挂起时守卫会静默吞掉点击——按钮不得在
@@ -3349,6 +3399,10 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
       // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
       // 把落库后的禁用态刷进同一次提交。
       const [, setJustSavedKeys] = useState(() => new Set());
+      // 模块簿释放的渲染驱动(r13 复审 P3):提交实例卸载后 setSavingModel
+      // 落在死实例上,重开的同身份表单必须借这次重渲重读模块簿。
+      const [, setInFlightRegistryVersion] = useState(0);
+      const bumpInFlightRegistryVersion = () => setInFlightRegistryVersion(v => v + 1);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖清单人工审阅:effect 消费 bs/userModels 派生 listed,并在有键退休时补一次渲染驱动(有界:退休后不再 setState,链路终止);补全依赖会造成渲染循环
       useEffect(() => {
         const failed = !!(bs && bs.modelsListLoadFailed);
@@ -3372,9 +3426,28 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
           // present-only rule: before the batch's closing reload, a read that
           // started before the upsert can still be the newest seq and a
           // successful list may legitimately not know the record yet.
-          if (!listed.has(key) && !inFlightModelCreates.absentRetirable.has(key)) continue;
+          // Generation release (review r13 P2: a successful deletion refresh
+          // arriving after a superseded booking): a key booked present-only
+          // from a superseded chain still carries its accepted REQUEST seq —
+          // when the successful list that just landed was published by a read
+          // with a GREATER seq, it started after this chain's upsert (the
+          // same post-upsert invariant the chain-end upgrade uses), so its
+          // absence is a confirmed deletion and the reservation releases.
+          // Observations at or below the booked seq stay without evidence —
+          // the r11 stale-window objection does not recur.
+          if (!listed.has(key) && !inFlightModelCreates.absentRetirable.has(key)) {
+            const bookedSeq = inFlightModelCreates.requestSeqByKey.get(key);
+            // 活体证据从 bridge facade 读(bs.models 是状态切片,不含函数);
+            // bridge 与 saveModel 的裁定同源(共享闭包),读到的就是链尾升级
+            // 用的同一发布序号。
+            const liveEvidence = typeof bridge.models?.readPublishedModelsEvidence === 'function'
+              ? bridge.models.readPublishedModelsEvidence()
+              : null;
+            if (!(liveEvidence && bookedSeq != null && liveEvidence.seq > bookedSeq)) continue;
+          }
           inFlightModelCreates.committed.delete(key);
           inFlightModelCreates.absentRetirable.delete(key);
+          inFlightModelCreates.requestSeqByKey.delete(key);
           retired = true;
         }
         // 退休本身发生在本次提交的 effect 里——本次渲染派生的
@@ -3394,6 +3467,11 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
         // 缺席退休地板只给链跑过刷新尾的簿键(裁定 ok/failed);deferred
         // 批量簿键无地板,只认 present(见镜像 effect 注释)。
         if (opts && opts.absentRetirable) inFlightModelCreates.absentRetirable.add(key);
+        // superseded 簿键的受理请求序号(r13 迟到删除释放):有就覆盖(同一
+        // 键的新链以新链为准),没有就清掉(同键从带序号链换到 deferred 链
+        // 时不得沿用旧序号)。
+        if (opts && opts.requestSeq != null) inFlightModelCreates.requestSeqByKey.set(key, opts.requestSeq);
+        else inFlightModelCreates.requestSeqByKey.delete(key);
         // state Set 从此只作渲染驱动(pendingSavedKeys 改读模块簿):落库后
         // 用一次重渲把禁用态刷出来;值本身不再被读取。
         setJustSavedKeys(prev => {
@@ -4154,7 +4232,8 @@ const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedTe
               onCancel={() => setEditingModel(null)}
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={onSaveModel}
-              onSaveCommitted={markSaveCommitted} />
+              onSaveCommitted={markSaveCommitted}
+              onInFlightRelease={bumpInFlightRegistryVersion} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}

@@ -21,7 +21,7 @@ export const desktopBridgeApi = {
   // saveModel reload tail — one loader burst after a confirmed add-all batch
   // whose rows were saved with { deferRefresh: true }. Lane-agnostic: both
   // bridges reload exactly what their own saveModel chain reloads.
-  models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeEndpointModels', 'probeLocalServerKind', 'reloadSavedModels', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
+  models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeEndpointModels', 'probeLocalServerKind', 'readPublishedModelsEvidence', 'reloadSavedModels', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
   interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['refreshRemoteControlQr', 'revokeRemoteHostWorkspace', 'startRemoteControl', 'stopRemoteControl'],

@@ -80,6 +80,26 @@ const normalizeBaseUrlKey = baseUrl => {
   if (text.toLowerCase().endsWith('/chat/completions')) {
     text = text.slice(0, -'/chat/completions'.length);
   }
+  // Mirror the Rust persistence migration (migrated_minimax_base_url,
+  // src-tauri/src/platform/prefs/model.rs): the deprecated api.minimax.chat
+  // origin is rewritten to api.minimaxi.com at save AND load, so a
+  // legacy-origin form URL and its migrated listed record are ONE endpoint
+  // in the persisted identity space — without this fold the second
+  // legacy-form save passes the guard and lands a duplicate pair (review
+  // P2: a legacy endpoint and its replacement compare as different
+  // identities here while the native writer normalizes both to the same
+  // endpoint and inserts by record id). Byte-identical swap: exact-origin
+  // match, or legacy prefix with a following '/', remainder case preserved
+  // (the Rust comparison also ASCII-lowercases; the trailing lowercase
+  // below folds the key either way).
+  const minimaxLegacyOrigin = 'https://api.minimax.chat';
+  if (text.length >= minimaxLegacyOrigin.length) {
+    const probe = text.slice(0, minimaxLegacyOrigin.length).toLowerCase();
+    if (probe === minimaxLegacyOrigin
+      && (text.length === minimaxLegacyOrigin.length || text.charAt(minimaxLegacyOrigin.length) === '/')) {
+      text = 'https://api.minimaxi.com' + text.slice(minimaxLegacyOrigin.length);
+    }
+  }
   return text.toLowerCase();
 };
 

@@ -103,6 +103,36 @@ test('modelDuplicationKey folds base URL case too (round-1 review minor)', () =>
   // 大小写折叠不得吞掉真正不同的端点。
   assert.notEqual(modelDuplicationKey('glm-5', 'https://a.com/v1'), modelDuplicationKey('glm-5', 'https://a.com/v2'));
 });
+test('modelDuplicationKey folds the MiniMax legacy origin exactly like the Rust migration (r13 review P2)', () => {
+  // migrated_minimax_base_url: api.minimax.chat → api.minimaxi.com(精确源,
+  // 或 legacy 前缀 + '/')。表单里的旧域名必须与迁移后的落库记录共享一个
+  // 去重键——否则第二次旧域名保存通过守卫、落成重复对(记录 id 不同,
+  // 原生按 id 原地插入)。
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.minimax.chat/v1'),
+    modelDuplicationKey('glm-5', 'https://api.minimaxi.com/v1'),
+  );
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.minimax.chat'),
+    modelDuplicationKey('glm-5', 'https://api.minimaxi.com'),
+  );
+  // 大小写无关地命中迁移(Rust 是 ASCII 小写比较)。
+  assert.equal(
+    modelDuplicationKey('glm-5', 'HTTPS://API.MINIMAX.CHAT/v1'),
+    modelDuplicationKey('glm-5', 'https://api.minimaxi.com/v1'),
+  );
+  // 前缀非边界不得迁移:同源更长主机名是另一个端点。
+  assert.notEqual(
+    modelDuplicationKey('glm-5', 'https://api.minimax.chat.example.com/v1'),
+    modelDuplicationKey('glm-5', 'https://api.minimaxi.com/v1'),
+  );
+  // 其他域名不受影响。
+  assert.equal(
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+    modelDuplicationKey('glm-5', 'https://api.example.com/v1'),
+  );
+});
+
 test('savedModelKeys reads SavedModel wire ids and tolerates junk', () => {
   const keys = [...savedModelKeys([
     { id: 'm1', model: 'DeepSeek-V4', base_url: 'https://api.deepseek.com' },

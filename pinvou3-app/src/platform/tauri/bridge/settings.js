@@ -153,7 +153,7 @@ function readPublishedModelsEvidence() { return pinvouSharedtauriSettings().read
      if (live.seq > tail.requestedSeq && !live.failed) {
        return { refresh: 'ok', models: live.models };
      }
-     return { refresh: 'superseded' };
+     return { refresh: 'superseded', requestedSeq: tail.requestedSeq };
    }
    return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
@@ -297,6 +297,7 @@ async function probeEndpointModels(request) { return pinvouSharedtauriSettings()
       discoverLocalVllm,
       getImageInputCapability,
       loadModels,
+      readPublishedModelsEvidence,
       saveModel,
       reloadSavedModels,
       revealModelApiKey,

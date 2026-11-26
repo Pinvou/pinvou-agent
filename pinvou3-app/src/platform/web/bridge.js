@@ -4677,7 +4677,7 @@ function readPublishedModelsEvidence() { return pinvouSharedweb().readPublishedM
      if (live.seq > tail.requestedSeq && !live.failed) {
        return { refresh: 'ok', models: live.models };
      }
-     return { refresh: 'superseded' };
+     return { refresh: 'superseded', requestedSeq: tail.requestedSeq };
    }
    return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
@@ -6388,6 +6388,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     saveSearchSettings,
     submitFeedback,
    saveModel,
+   readPublishedModelsEvidence,
    reloadSavedModels,
    revealModelApiKey,
    deleteModel,
