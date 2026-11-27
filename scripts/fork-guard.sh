@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 121 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 128 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,8 +15,8 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # 0.43 line and eslint 10; engine surfaces: bounded rate-limit recovery,
 # host model HTTP policies, idle engine retirement, shared route budget)
 # merged.
-EXPECTED_HEAD="cc2adf8ef927fff072e9493734a0a32f3a044996"
-EXPECTED_COMMITS=121
+EXPECTED_HEAD="44142616aa4aeeb1332c1f4496ea502baf880a29"
+EXPECTED_COMMITS=128
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.

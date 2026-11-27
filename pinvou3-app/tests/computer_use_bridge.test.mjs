@@ -966,6 +966,143 @@ function emit(harness, event, payload) {
 }
 
 
+// ── 32c. macOS virtual-display errors localize via stable markers ──
+// #914's refusal/timeout copy embeds live values (seconds, vendor and
+// product ids, serial numbers), so exact equality cannot match; the
+// marker table covers them, plus the two API-absence probe strings that
+// surface on the same settings detail line. The source pins keep the
+// backend copy from drifting away from the markers: a wording change on
+// either side must update both in the same change, or a user sees raw
+// backend English. The pins are per SHAPE (the full format-string
+// fragment), not per marker alone: the activation-timeout marker spans
+// two Rust sites, so a marker-level pin stays green when one site drifts.
+{
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(bridgeMessagesSource, context, { filename: 'shared/bridge-messages.js' });
+  const knownErrorText = context.window.PinvouBridgeMessages.computerUseKnownErrorText;
+  assert.equal(typeof knownErrorText, 'function', 'bridge-messages must publish computerUseKnownErrorText');
+  const backendMessages = [
+    ['did not become active within',
+      'the virtual display did not become active within 30 s; if macOS showed a Screen Mirroring alert for the new display, that alert closed when the session released the display \u2014 start a new session and choose "Extend" for the display in Control Center \u2192 Screen Mirroring (or System Settings \u2192 Displays if the choice was remembered)'],
+    ['did not become active within',
+      'the virtual display did not become active within the creation budget; if macOS showed a Screen Mirroring alert for the new display, that alert closed when the session released the display \u2014 start a new session and choose "Extend" for it in Control Center \u2192 Screen Mirroring (or System Settings \u2192 Displays if the choice was remembered)'],
+    ['came up as part of a mirror set',
+      'the virtual display came up as part of a mirror set, not as a separate desktop: the set\'s content \u2014 the user\'s desktop \u2014 is duplicated onto it, so driving and capturing it would drive and capture the user\'s desktop. Start a new session and choose "Extend" for the display in Control Center \u2192 Screen Mirroring (or System Settings \u2192 Displays if the choice was remembered)'],
+    ["became the main display while the user's own",
+      "the virtual display became the main display while the user's own displays are active: their menu bar and new windows moved onto it, so driving and capturing it would drive and capture the user's desktop. Start a new session and choose \"Extend\" for the display when macOS asks how to use it (Control Center \u2192 Screen Mirroring); if the arrangement was remembered, set your own display as the main display in System Settings \u2192 Displays"],
+    ['rejected every identity slot',
+      'CGVirtualDisplay rejected every identity slot (vendor 0xd695, product 0x959e, serials EA8300CF, EA8300D0, EA8300D1, EA8300D2); the usual cause is other Pinvou virtual displays still alive \u2014 one per concurrent session that has not ended, up to 4: quit the app to release them all immediately (stopping the other sessions\' computer use only helps once their sessions end), then start a new session'],
+  ];
+  for (const [marker, message] of backendMessages) {
+    for (const language of ['zh-Hans', 'en', 'ja']) {
+      const localized = knownErrorText(message, language);
+      assert.notEqual(localized, null, `${marker} must map for ${language}`);
+      assert.notEqual(localized, message, `${language} must receive the localized copy for ${marker}`);
+    }
+    assert.match(knownErrorText(message, 'zh-Hans'), /新开会话/, `${marker} zh must carry the recovery path`);
+    assert.match(knownErrorText(message, 'ja'), /新しいセッション/, `${marker} ja must carry the recovery path`);
+    assert.match(knownErrorText(message, 'en'), /new session/, `${marker} must carry the recovery path`);
+  }
+  // The API-absence probes: a preference-on creation with these probe
+  // verdicts falls back to the physical target in the same breath
+  // (resolve_target), so the localized copy carries the fallback and the
+  // settings preference — not the new-session recovery.
+  const probeMessages = [
+    'private macOS virtual display API not present on this macOS',
+    'private macOS virtual display API is missing the selector Sel("setModes:") on "CGVirtualDisplay" on this macOS',
+    'private macOS virtual display API is missing the selectors Sel("setProductName:") and Sel("setName:") on "CGVirtualDisplayDescriptor" on this macOS',
+  ];
+  for (const message of probeMessages) {
+    for (const language of ['zh-Hans', 'en', 'ja']) {
+      const localized = knownErrorText(message, language);
+      assert.notEqual(localized, null, `the API-absence probe must map for ${language}: ${message}`);
+      assert.notEqual(localized, message, `${language} must receive the localized probe copy`);
+    }
+    assert.match(knownErrorText(message, 'zh-Hans'), /真实屏幕/, 'zh probe copy must state the physical fallback');
+    assert.match(knownErrorText(message, 'ja'), /実際の画面/, 'ja probe copy must state the physical fallback');
+    assert.match(knownErrorText(message, 'en'), /fall back to your real screen/, 'en probe copy must state the physical fallback');
+  }
+  // Deliberate exclusions (documented scope): the machinery diagnostics
+  // — alloc/init failures, the main-thread budget, display-mode rejection —
+  // indicate an app bug or a pathological system state rather than a
+  // user-recoverable condition, and the creation-phase "no setter" case has
+  // no fallback for a localized copy to truthfully describe. Pin a few so a
+  // future marker expansion cannot silently swallow them.
+  for (const machinery of [
+    'CGVirtualDisplayMode init failed',
+    'virtual display creation did not complete on the main thread within the budget',
+    'the virtual display rejected the display mode settings',
+  ]) {
+    assert.equal(knownErrorText(machinery, 'zh-Hans'), null,
+      `machinery diagnostics stay raw passthrough: ${machinery}`);
+  }
+  // The markers are promises about backend copy: pin them against the Rust
+  // source so wording drift breaks this test instead of the settings page.
+  // Per SHAPE, not per marker: the timeout marker covers two sites (worker
+  // budget with real seconds, legacy budget), and a file-level marker pin
+  // stays green when exactly one of them drifts.
+  const macosVirtual = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'computer_use', 'platform', 'virtual_display', 'macos_virtual.rs'),
+    'utf8',
+  );
+  const backendShapePins = [
+    'did not become active within {} s',
+    'did not become active within the creation budget',
+    'came up as part of a mirror set',
+    "became the main display while the user's own",
+    'rejected every identity slot',
+    'private macOS virtual display API not present on this macOS',
+    'private macOS virtual display API is missing the selector',
+  ];
+  for (const shape of backendShapePins) {
+    assert.ok(macosVirtual.includes(shape), `backend source must contain the pinned copy shape: ${shape}`);
+  }
+  for (const marker of backendMessages.map(([marker]) => marker)) {
+    assert.ok(macosVirtual.includes(marker), `backend source must contain the bridge marker: ${marker}`);
+  }
+}
+
+
+// ── 32d. The status payload's virtualDisplayDetail localizes at the
+// projection point ──
+// The settings page renders virtualDisplayDetail verbatim next to a
+// trilingual lead-in, and the detail rides the status payload as data —
+// never as a command rejection — so localizeKnownError cannot reach it.
+// The projection (bridge/computer_use.js virtualDisplayPatch) must map it
+// through the shared table; otherwise the marker table is dead
+// configuration behind green tests. This pins the delivery, not just the
+// mechanism: known message → localized copy in the session language
+// (snake_case spelling included; no settings → zh default), unknown
+// machinery diagnostic → raw passthrough.
+{
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(bridgeMessagesSource, context, { filename: 'shared/bridge-messages.js' });
+  const knownErrorText = context.window.PinvouBridgeMessages.computerUseKnownErrorText;
+  const mirrorSetMessage = 'the virtual display came up as part of a mirror set, not as a separate desktop: the set\'s content \u2014 the user\'s desktop \u2014 is duplicated onto it, so driving and capturing it would drive and capture the user\'s desktop. Start a new session and choose "Extend" for the display in Control Center \u2192 Screen Mirroring (or System Settings \u2192 Displays if the choice was remembered)';
+  const deliveryCases = [
+    ['zh-Hans', { virtualDisplayState: 'unavailable', virtualDisplayDetail: `the last virtual session failed to start: unavailable: ${mirrorSetMessage}` }],
+    ['ja', { virtual_display_state: 'unavailable', virtual_display_detail: mirrorSetMessage }],
+    [null, { virtualDisplayState: 'unavailable', virtualDisplayDetail: mirrorSetMessage }],
+  ];
+  for (const [language, payload] of deliveryCases) {
+    const harness = createHarness({ status: { enabled: true, platform_supported: true, ...payload } });
+    if (language) harness.state.settings = { language };
+    await harness.feature.refreshStatus('s1');
+    const slice = harness.published().at(-1);
+    const expected = knownErrorText(mirrorSetMessage, language === 'en' || language === 'ja' ? language : 'zh-Hans');
+    assert.notEqual(expected, mirrorSetMessage, 'sanity: the mirror-set sample must match a marker');
+    assert.equal(slice.virtualDisplayState, 'unavailable');
+    assert.equal(slice.virtualDisplayDetail, expected,
+      `${language || 'default language'} must localize the status-carried detail at the projection point`);
+  }
+  const rawHarness = createHarness({ status: { enabled: true, platform_supported: true, virtualDisplayState: 'unavailable', virtualDisplayDetail: 'Xorg dummy driver detected' } });
+  rawHarness.state.settings = { language: 'zh-Hans' };
+  await rawHarness.feature.refreshStatus('s1');
+  assert.equal(rawHarness.published().at(-1).virtualDisplayDetail, 'Xorg dummy driver detected',
+    'an unknown machinery diagnostic must keep the raw string at the projection point');
+}
+
+
 // ── N. state_changed reconciles cross-window ────────────────────────
 {
   const harness = createHarness({ initialState: { enabled: true } });
