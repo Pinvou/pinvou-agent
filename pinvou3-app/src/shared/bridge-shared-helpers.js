@@ -1791,11 +1791,14 @@
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（实现在 bridge-messages 的计数器原语旁），内聚高于拆分
-  // PR r39-r46 并集端口：hooks.doneNotice 由调用方（bridge 注册壳）在换入
-  // 前完成预捕获/缓存失效（r40-M1/r41-minor-1/r46-MAJOR-3，含 refuseWhenBusy
-  // 拒绝臂与前台强制盘载重注水）后注入——done 通知条按其语义补挂（前台臂
-  // 在重载成功后挂，见 r42-minor-9 布尔契约）。无 hooks（main 测试/web 直调）
-  // 保持 main 语义不变。
+  // PR r39-r46 union port: hooks.doneNotice is injected by the caller (the
+  // bridge registration shell) after it completes the pre-swap capture and
+  // cache invalidation (r40-M1 / r41-minor-1 / r46-MAJOR-3, including the
+  // refuseWhenBusy refusal arm and the foreground force-durable-reload) -
+  // the done notice mounts according to its semantics (the foreground arm
+  // mounts after a successful reload; see the r42-minor-9 boolean
+  // contract). Without hooks (main's tests, direct web calls) main's
+  // semantics are unchanged.
   function handleChatCompactionEvent(e, hooks) {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;

@@ -6,23 +6,31 @@
 //! 与之同向（r42 M6）。平台差异用 `cfg` 表达、以显式接口暴露：非 Windows
 //! 恒返回空集（无再解析点概念，零开销）。
 
-/// 枚举 `root` 下的目录再解析点（junction / 目录 symlink），跳过 `skip_dirs`
-/// 中的目录名（大小写不敏感，与 SHADOW_EXCLUDES 的目录级排除同语义——排除
-/// 目录里的 junction 不进 index、不被 checkout/clean 触及，拒绝它们只会误伤
-/// pnpm 式联接农场）。
+/// Enumerate directory reparse points (junctions / directory symlinks)
+/// under `root`, skipping directory names listed in `skip_dirs`
+/// (case-insensitive, the same semantics as SHADOW_EXCLUDES' directory-level
+/// exclusions - junctions inside excluded directories never enter the index
+/// and are never touched by checkout/clean, so refusing them would only
+/// punish pnpm-style junction farms).
 ///
-/// r52 M2（评审 round-50 M2 落地）：判定不再依赖裸 reparse 位——Rust std 的
-/// `is_symlink()` 在 Windows 上按 reparse 位判定、与 tag 无关，OneDrive
-/// Files-On-Demand/KFM 给云同步目录打 `IO_REPARSE_TAG_CLOUD_*`（已水合、
-/// 可正常穿越），裸位判定把每个云管理目录误判为联接，快照/恢复/预览三路
-/// 永久 fail-closed 且成因不可行动。此处以 `FindFirstFileW` 读 reparse
-/// tag：只拒绝 `IO_REPARSE_TAG_MOUNT_POINT`（junction）与目录形态的
-/// `IO_REPARSE_TAG_SYMLINK`；云占位与其余 tag 放行；无法判定（探测失败：
-/// 路径竞态消失/权限）按 fail-closed 拒绝该条目。
+/// r52 M2 (review round-50 M2 landed): classification no longer relies on
+/// the raw reparse bit - Rust std's `is_symlink()` on Windows tests the
+/// reparse bit regardless of tag, and OneDrive Files-On-Demand/KFM marks
+/// synced directories with `IO_REPARSE_TAG_CLOUD_*` (hydrated and normally
+/// traversable), so the raw-bit test misclassified every cloud-managed
+/// directory as a junction and the snapshot/restore/preview paths failed
+/// closed permanently with an unactionable cause. This probe reads the
+/// reparse tag via `FindFirstFileW`: only `IO_REPARSE_TAG_MOUNT_POINT`
+/// (junctions) and directory-form `IO_REPARSE_TAG_SYMLINK` are refused;
+/// cloud placeholders and any other tag pass; an undecidable probe (path
+/// lost to a race / permissions) refuses the entry fail-closed.
 ///
-/// 条目预算与体积走读共享 [`super::SIZE_WALK_MAX_ENTRIES`]（200k）：预算内
-/// 未能完成枚举时返回 Err——覆盖不完备时「未检出 ≠ 不存在」，调用方必须
-/// fail-closed（r52 minor 9：此前无界且 read_dir 失败静默跳过子树）。
+/// The entry budget is shared with the size walk
+/// ([`super::SIZE_WALK_MAX_ENTRIES`], 200k): an enumeration that cannot
+/// complete within budget returns Err - with incomplete coverage "not found
+/// does not mean absent", so callers must fail closed (r52 minor 9: the
+/// walk used to be uncapped and silently skipped subtrees on read_dir
+/// errors).
 pub(crate) fn reparse_dir_paths_under(
     root: &std::path::Path,
     skip_dirs: &std::collections::HashSet<&str>,
@@ -38,9 +46,10 @@ pub(crate) fn reparse_dir_paths_under(
     }
 }
 
-/// 纯判别（单元可测）：该 reparse tag + 目录位是否要求拒绝。只拒 junction
-/// 与目录形态 symlink；云占位（IO_REPARSE_TAG_CLOUD_* 等）及其余未知 tag
-/// 不是穿越危害，放行。
+/// Pure classifier (unit-testable): whether this reparse tag plus the
+/// directory bit requires a refusal. Only junctions and directory-form
+/// symlinks are refused; cloud placeholders (IO_REPARSE_TAG_CLOUD_* etc.)
+/// and unknown tags are not traversal hazards and pass.
 #[cfg(windows)]
 fn reparse_tag_requires_refusal(tag: u32, is_directory: bool) -> bool {
     const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
@@ -48,9 +57,11 @@ fn reparse_tag_requires_refusal(tag: u32, is_directory: bool) -> bool {
     tag == IO_REPARSE_TAG_MOUNT_POINT || (tag == IO_REPARSE_TAG_SYMLINK && is_directory)
 }
 
-/// FindFirstFileW 读取路径的现势属性位 + reparse tag（dwReserved0 仅在
-/// reparse 位存在时有定义；枚举与探测之间再解析位解除的竞态按 tag=0
-/// 放行）。Err = 无法判定（路径消失/权限/FFI 失败）。
+/// Read the path's live attribute bits plus the reparse tag via
+/// FindFirstFileW (dwReserved0 is defined only while the reparse bit is
+/// set; a race that clears the bit between enumeration and probe passes
+/// with tag=0). Err = undecidable (path vanished / permissions / FFI
+/// failure).
 #[cfg(windows)]
 fn probe_reparse_attributes(path: &std::path::Path) -> std::io::Result<(u32, u32)> {
     use std::os::windows::ffi::OsStrExt;
@@ -64,9 +75,11 @@ fn probe_reparse_attributes(path: &std::path::Path) -> std::io::Result<(u32, u32
     if handle == INVALID_HANDLE_VALUE {
         return Err(std::io::Error::last_os_error());
     }
-    // r52 P2（评审）：FindFirstFileW 的搜索句柄必须以 FindClose 释放——
-    // CloseHandle 对搜索句柄是未定义的资源生命周期操作（内核搜索上下文
-    // 由 FindClose 专管），此处读值已完成，失败仅记 warn 不致命。
+    // r52 P2 (review): a FindFirstFileW search handle must be released with
+    // FindClose - CloseHandle on a search handle is an undefined resource
+    // lifetime operation (the kernel search context is owned by the Find*
+    // pair). The read is already complete here, so a failure stays a
+    // non-fatal warn.
     if unsafe { FindClose(handle) } == 0 {
         log::warn!(
             "[pinvou3][checkpoints] reparse probe FindClose failed for {}: {}",
@@ -80,7 +93,8 @@ fn probe_reparse_attributes(path: &std::path::Path) -> std::io::Result<(u32, u32
     Ok((data.dwFileAttributes, data.dwReserved0))
 }
 
-/// 带条目预算的枚举实现（`max_entries` 参数化以便测试钉住超限行为）。
+/// The budgeted enumeration implementation (`max_entries` is parameterized
+/// so tests can pin the over-budget behavior).
 #[cfg(windows)]
 pub(crate) fn walk_reparse_dirs(
     root: &std::path::Path,
@@ -92,8 +106,9 @@ pub(crate) fn walk_reparse_dirs(
     let mut seen = 0usize;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        // r52 minor 9：读失败的子树不得再静默消失——记 warn 后继续（单个
-        // 不可读目录不构成整次扫描不完备；预算超限才是）。
+        // r52 minor 9: a subtree that fails to read must no longer vanish
+        // silently - log a warn and continue (one unreadable directory does
+        // not make the whole scan incomplete; exceeding the budget does).
         let read = match std::fs::read_dir(&dir) {
             Ok(read) => read,
             Err(error) => {
@@ -119,8 +134,9 @@ pub(crate) fn walk_reparse_dirs(
                 continue;
             };
             if file_type.is_symlink() {
-                // std is_symlink = 裸 reparse 位（与 tag 无关）。以现势
-                // FindFirstFileW 数据判 tag；探测失败按 fail-closed 拒绝。
+                // std is_symlink = the raw reparse bit (tag-agnostic). Classify
+                // by the live FindFirstFileW data; a probe failure refuses the
+                // entry fail-closed.
                 match probe_reparse_attributes(&entry.path()) {
                     Ok((attributes, tag)) => {
                         let is_directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
@@ -320,9 +336,11 @@ mod tests {
         );
     }
 
-    /// r52 M2 纯判别钉：只拒 junction（MOUNT_POINT）与目录形态 symlink；
-    /// OneDrive 云占位 tag（CLOUD_* 家族）与未知 tag 放行——裸 reparse 位
-    /// 判定曾把每个云管理目录误拒，三路永久 fail-closed。
+    /// r52 M2 classifier pin: only junctions (MOUNT_POINT) and directory-form
+    /// symlinks are refused; OneDrive cloud-placeholder tags (the CLOUD_*
+    /// family) and unknown tags pass - the raw-reparse-bit test used to
+    /// refuse every cloud-managed directory, failing all three paths closed
+    /// permanently.
     #[test]
     fn reparse_tag_classifier_refuses_only_mount_points_and_dir_symlinks() {
         // tag 常量与 winnt.h 对齐（walk 内同值）。
@@ -345,8 +363,10 @@ mod tests {
         assert!(!super::reparse_tag_requires_refusal(0x8000_0000, true));
     }
 
-    /// r52 M2 预算钉：条目预算超限必须 Err（fail-closed）而非静默截断——
-    /// 覆盖不完备时「未检出 ≠ 不存在」。`max_entries` 参数化使预算可测。
+    /// r52 M2 budget pin: exceeding the entry budget must Err (fail-closed)
+    /// rather than truncate silently - with incomplete coverage "not found
+    /// does not mean absent". `max_entries` is parameterized so the budget
+    /// is testable.
     #[test]
     fn reparse_walk_budget_exceed_is_fail_closed() {
         let root = TestDir::new("budget");
@@ -365,8 +385,9 @@ mod tests {
         super::walk_reparse_dirs(root.path(), &skip, 200).expect("within budget");
     }
 
-    /// r52 M2 探测钉：junction 的现势 tag 必须读作 MOUNT_POINT（此前裸位
-    /// 判定无法区分 tag；FindFirstFileW dwReserved0 是唯一的用户态读法）。
+    /// r52 M2 probe pin: a junction's live tag must read as MOUNT_POINT (the
+    /// previous raw-bit test could not tell tags apart; FindFirstFileW's
+    /// dwReserved0 is the only user-mode read).
     #[test]
     fn probe_reads_mount_point_tag_from_a_real_junction() {
         let root = TestDir::new("probe");
@@ -382,7 +403,7 @@ mod tests {
         let (attributes, tag) = super::probe_reparse_attributes(&junc).expect("junction probe");
         assert_eq!(tag, 0xA000_0003, "junction dwReserved0 must be MOUNT_POINT");
         assert_ne!(attributes & 0x0400, 0, "junction carries the reparse bit");
-        // 普通目录：无 reparse 位 → tag=0。
+        // A plain directory: no reparse bit -> tag 0.
         let plain = root.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         let (_attributes, tag) = super::probe_reparse_attributes(&plain).expect("plain probe");

@@ -283,14 +283,16 @@ const expectedProtocolHashes = {
   // registration shell is restored per lane (pre-capture + hooks delegation
   // to the shared handler — PR r40-M1/r41-minor-1/r46-MAJOR-3 pre-capture
   // ported onto the #889 shared-module refactor); invoke payloads and event
-  // names are unchanged. Hash re-measured below.
+  // names are unchanged. Recomputed again when the registration shell's
+  // comment wording moved to English per CONTRIBUTING (listener bodies and
+  // comment wording are part of the digest).
   // Recomputed for the debtsweep L4 dedup rebased on the streaming htmlSource
   // addition: the payload bodies moved verbatim into bridge-shared-helpers.js
   // while the delta listener gained the htmlSource provenance cell; both
   // recomputations are combined below. Re-verified on the usage-meter
   // occupancy fix rebased on top: the per-request context_input_tokens
   // consumption rides in the shared payload body, so no lane signature moved.
-  chat: '0c3698151fed92e4f492ccf81d8410be110c7113b9f78e14d31bcb23e11e5d3f',
+  chat: 'd20512971494971c792d8f8d814e8cbe70100da4f22b7271e1c00c18a95097f6',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

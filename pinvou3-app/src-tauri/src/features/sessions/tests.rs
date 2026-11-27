@@ -5434,12 +5434,14 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     assert_eq!(record.removed_messages, messages[4..]);
 }
 
-/// r52-T1 行为 pin（步数预算通知剔除的截断腿）：底座以 ExternalUser
-/// provenance 落盘的 soft landing 通知（role=user 文本）不是 turn 边界。
-/// 通知随第 1 轮收尾落盘时，keep=1 的切点必须落在第 2 个真实用户 prompt
-/// （通知保留在 kept 段、随第 1 轮存续），rewound_turns = 1。删除 cut
-/// 过滤时本测试红（通知被误计为边界：切点落在通知本身、rewound_turns=2、
-/// 第 2 轮滞留）。
+/// r52-T1 behavioral pin (the step-budget notice exclusion, truncate leg):
+/// the soft-landing notice the foundation persists with ExternalUser
+/// provenance (role=user text) is not a turn boundary. When the notice rides
+/// at the end of turn 1, the keep=1 cut must land on the second real user
+/// prompt (the notice stays in the kept segment, surviving with turn 1), and
+/// rewound_turns = 1. Deleting the cut filter turns this test red (the
+/// notice is miscounted as a boundary: the cut lands on the notice itself,
+/// rewound_turns=2, and turn 2 lingers).
 #[test]
 fn rewind_truncation_excludes_step_budget_notification_from_boundaries() {
     let (store, _g) = isolated_store();
@@ -5464,13 +5466,13 @@ fn rewind_truncation_excludes_step_budget_notification_from_boundaries() {
 
     assert_eq!(
         outcome.rewound_turns, 1,
-        "通知不是边界：只截去第 2 轮（误计口径会报 2）"
+        "the notice is not a boundary: only turn 2 is cut (the miscounting caliber would report 2)"
     );
     let kept = store.load(&id).expect("load").messages;
     assert_eq!(
         kept,
         messages[..3],
-        "keep=1 保留第 1 轮全部消息 + 其收尾通知（切点在第 2 个真实 prompt）"
+        "keep=1 keeps all of turn 1 plus its closing notice (the cut lands on the second real prompt)"
     );
 }
 

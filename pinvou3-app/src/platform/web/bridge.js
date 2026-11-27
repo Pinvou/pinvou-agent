@@ -4447,15 +4447,16 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // （tauri 车道同段逐字一致）；此处仅保留 listen/onSessionEvent 注册壳。
   listen("chat:usage", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatUsageEvent(e); }); });
 
-  // Rewind/undo rehydration seam (work-mode ChatView) is desktop-only: the
-  // web lane has no session-buffer cache to invalidate (the compaction
-  // registration below stays shape-identical with the tauri lane — both
-  // delegate to the shared compaction handler through the same pre-capture),
-  // so bind null — the typeof guards make the resync/refusal arms no-ops
-  // and done falls to the plain-notice arm.
+  // The rewind/undo rehydration seam (work-mode ChatView) is desktop-only:
+  // the web lane has no session-buffer cache to invalidate (the compaction
+  // registration below stays shape-identical with the tauri lane - both
+  // delegate to the shared compaction handler through the same
+  // pre-capture), so bind null - the typeof guards make the resync/refusal
+  // arms no-ops and done falls to the plain-notice arm.
   const invalidateSessionBuffer = null;
   listen("chat:compaction", function (e) {
-    // r40 M1（PR）：换入前捕获（与 tauri 车道同款形状，原语缺席时为 no-op）。
+    // r40 M1 (PR): pre-swap capture (the same shape as the tauri lane; a
+    // no-op while the primitives are absent).
     const compactionSid = e.payload && e.payload.session_id;
     const prePhase = e.payload && e.payload.phase;
     const preBefore = Number(e.payload && e.payload.messages_before);
@@ -4470,7 +4471,8 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     const compactionInvalidated =
       compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
     onSessionEvent(e, function () {
-      // 共享 handler 无 hooks 时保持 main 语义（原语缺席的 web 车道恒走此臂）。
+      // Without hooks the shared handler keeps main semantics (the web
+      // lane, whose primitives are absent, always takes this arm).
       pinvouSharedweb().handleChatCompactionEvent(e, undefined);
     });
   });

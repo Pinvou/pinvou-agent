@@ -16,10 +16,12 @@
 //! 计数/截断定位点（本计数、rewind/fork 的边界枚举与 undo 计数）必须共用
 //! 同一个剔除后的列表，否则 keepTurns 口径分叉。
 //!
-//! r52-M7 口径披露：剔除使本列表与底座 `EditLastTurn` 的目标集不再完全
-//! 重合——底座编辑选择器仍把通知选为 Editable 目标。本仓库时间线已隐藏
-//! 通知，通知后点击编辑/重发的切点可能落在不可见通知上（根治 = cut-aware
-//! 编辑选择器，属 CodeWhale 上游修改，已列入上游跟进清单）。
+//! r52-M7 caliber disclosure: the exclusion makes this list's target set
+//! diverge from the foundation's `EditLastTurn`, which still selects notices
+//! as Editable. This repo's timeline hides notices, so an edit/resend click
+//! after a notice can cut at the invisible notice (root fix = a cut-aware
+//! edit selector, a CodeWhale upstream change filed on the upstream
+//! follow-up list).
 
 use deepseek_tui::models::{ContentBlock, Message, Role};
 use deepseek_tui::user_turn_prompt_indices;
@@ -131,11 +133,14 @@ mod tests {
         assert_eq!(count_user_turns(&messages), 2);
     }
 
-    /// r52-T1 行为 pin（评审 round-50 T1）：步数预算通知剔除的行为覆盖。
-    /// 底座把 soft landing / exhaustion 两条通知以 ExternalUser provenance
-    /// 落盘（role=user 文本），era 列表计入；cut 口径必须剔除——通知不是
-    /// turn 边界，且 cut 索引必须精确排除通知位置（定位锚定，而非仅计数）。
-    /// 删除 cut 过滤器时本测试红（count=4 / 索引含 2、3）。
+    /// r52-T1 behavioral pin (review round-50 T1): behavioral coverage for
+    /// the step-budget notice exclusion. The foundation persists the soft
+    /// landing / exhaustion notices with ExternalUser provenance (role=user
+    /// text), so the era list counts them; the cut caliber must exclude them
+    /// - notices are not turn boundaries, and the cut indices must exclude
+    /// the notice positions exactly (a locating anchor, not just a count).
+    /// Deleting the cut filter turns this test red (count=4 / indices
+    /// including 2 and 3).
     #[test]
     fn count_user_turns_excludes_step_budget_notices_between_real_turns() {
         let messages = vec![
@@ -153,7 +158,7 @@ mod tests {
         assert_eq!(
             indices,
             vec![0, 4],
-            "cut 口径只数两轮真实 turn，通知位置不占索引"
+            "the cut caliber counts only the two real turns; notice positions hold no index"
         );
         assert_eq!(count_user_turns(&messages), 2);
     }

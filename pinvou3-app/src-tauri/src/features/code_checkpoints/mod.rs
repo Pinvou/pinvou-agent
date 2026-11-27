@@ -1579,15 +1579,20 @@ fn migrate_index_to_v2(mut index: CheckpointIndex) -> CheckpointIndex {
     index
 }
 
-/// r52-M5 的 v2→v3 迁移腿（评审）：合并后的统一计数口径是「era 列表 −
-/// 步数预算通知剔除」（user_turn_prompt_cut_indices）。存量 v2 索引的 Turn
-/// 条目号来自两种互不相同的口径——main 构建的 v2 按裸 era 计（步数预算
-/// 通知计 turn），分支构建的 v2 按 per-message-minus-cut 计（post-provenance
-/// 粘贴摘要头不计）。任何一种与现口径在含通知或粘贴头的转录里都从首个
-/// 分歧点起整体错位：rewindEntriesByTurnId 把旧树配到错边界、keep_turns
-/// 截错位置，且静默（对账门比较的是两个同源的新计数，只有账本是陈旧的）。
-/// 沿 r13-M1 的保守失效模式：Turn 条目整体退役（PreRestore 保留供 undo），
-/// 旧边界诚实降级为仅对话，新 turn 起以 v3 口径从当前计数对齐。
+/// r52-M5 v2-to-v3 migration leg (review): the merged tree's unified
+/// counting caliber is "era list minus step-budget notice cut"
+/// (user_turn_prompt_cut_indices). Stored v2 indexes carry Turn numbers
+/// written under two mutually different calibers - main-built v2 counted
+/// the raw era (notices count as turns), branch-built v2 counted
+/// per-message-minus-cut (post-provenance pasted summary headers do not
+/// count). Either caliber diverges from the current one from the first
+/// notice-or-pasted-header onward: rewindEntriesByTurnId pairs old trees
+/// with wrong boundaries and keep_turns truncates at the wrong place,
+/// silently (the reconciliation gate compares two same-source fresh
+/// counts; only the ledger is stale). Following the r13-M1 conservative
+/// retire pattern: Turn entries retire wholesale (PreRestore survives for
+/// undo), old boundaries degrade honestly to conversation-only, and new
+/// turns align from the current count under the v3 caliber.
 fn migrate_index_to_v3(mut index: CheckpointIndex) -> CheckpointIndex {
     if index.version < 3 {
         let retired = index
@@ -1951,11 +1956,14 @@ fn create_checkpoint_preserving(
     // r22 R1：被否定行击穿而暂存的依赖/构建条目在此摘除（每回合幂等自愈，
     // 存量被击穿 index 无需迁移 marker），排除语义=「不进快照」而非 bail。
     purge_shadow_excludes_from_index(&repo, &execution_root)?;
-    // r52 M3（评审 round-50 M3 落地）：批量 icase purge 的 pathspec 匹配在
-    // 大小写敏感文件系统上会被否定规则反复击穿（`!.env` 压过 info/exclude，
-    // 变体族 `.env`+`.ENV` 每轮把幸存者重新收进 index——validate 每轮 bail、
-    // 快照永久 wedged 且成因误归因）。restore 路径的精确幸存者清除在此补上，
-    // create 与 restore/migration 同层防线。幂等：无幸存者时空扫描。
+    // r52 M3 (review round-50 M3 landed): the batch icase purge's pathspec
+    // matching is repeatedly defeated by negated ignore rules on a
+    // case-sensitive filesystem (`!.env` outranks info/exclude; the
+    // `.env`+`.ENV` variant family re-stages a survivor every turn -
+    // validate bails every round, the snapshot wedges permanently, and the
+    // cause is misattributed). The restore path's exact-survivor purge is
+    // added here so create shares the restore/migration defense line.
+    // Idempotent: an empty scan when no survivors exist.
     purge_secret_survivors_exactly(&repo, &execution_root)?;
     validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
@@ -2290,7 +2298,8 @@ pub fn write_pending_rewind(
     // sidecar 引用，应用内从此不可达（standalone restore 已移除）。
     // r32 MAJOR-1：读腿 fail-closed——真实 IO 错误不得吞成「无暂记」（否则
     // 覆写照常进行，P1 被替换 = 不可恢复孤儿）。
-    // r52 minor 1：已持锁，走无锁内层（公共入口会二次 flock 死锁）。
+    // r52 minor 1: already locked - use the lock-free inner (the public
+    // entry would deadlock on a second blocking flock).
     let existing = match live_pending_rewind_unlocked(ledger_root) {
         Ok(Some(existing)) => Some(existing),
         Ok(None) => None,
@@ -2384,9 +2393,11 @@ pub fn matching_pending_pre_restore(
         // r44 minor 3：删除前回读比对——成员校验（索引 IO）窗口内对端的
         // pending 写入可能整体替换文件，裸删会孤儿化对端崩溃 apply 的重试
         // 凭据。字节一致才删；已被替换则留给对端协议收口。
-        // r52 minor 1：比对窗口持 pending flock——字节级全同的写入（同边界
-        // 引导重试）比对无法区分先后，flock 令其串行化。锁不可用时跳过删除
-        // （保留现场，复用判定 Ok(None) 不变，下次对账再清）。
+        // r52 minor 1: the compare window holds the pending flock - a
+        // byte-identical write (same-boundary guided retry) cannot be ordered
+        // by comparison, so the flock serializes it. On lock failure the
+        // delete is skipped (the scene is kept; the Ok(None) reuse verdict
+        // is unchanged; the next reconcile cleans up).
         match lock_pending_rewind_file(ledger_root) {
             Ok(_lock) => match fs::read(&path) {
                 Ok(current) if current == bytes => {
@@ -2502,17 +2513,21 @@ pub fn peek_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
     Ok(Some(pending))
 }
 
-/// r52 minor 1（评审）：读/终结臂统一持 pending flock——淘汰臂「回读比对 +
-/// remove_file」的窗口可与对端**字节级全同**的写入（同边界引导重试写出的
-/// pending 与陈旧暂记逐字节一致，比对无法区分先后）交错；flock 令对端的
-/// 写窗口串行化。锁失败按 fail-closed 上抛（调用方既有的阻断/拒绝语义）。
+/// r52 minor 1 (review): the read and terminal arms hold the pending flock
+/// - the eviction arm's "reread-compare + remove_file" window can interleave
+/// with a peer's byte-identical write (a same-boundary guided retry writes a
+/// pending byte-identical to the stale one; the comparison cannot tell
+/// which came first); the flock serializes the peer's write window. Lock
+/// failure propagates fail-closed (the callers' existing block/refuse
+/// semantics).
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let _lock = lock_pending_rewind_file(ledger_root)?;
     live_pending_rewind_unlocked(ledger_root)
 }
 
-/// 无锁内层：调用方必须已持 pending flock（`write_pending_rewind` 的持锁
-/// 读腿走这里，避免同线程对同一锁文件的二次阻塞 flock 死锁）。
+/// Lock-free inner body: the caller must already hold the pending flock
+/// (`write_pending_rewind`'s locked read leg comes here, avoiding a
+/// same-thread blocking re-flock deadlock on the same lock file).
 fn live_pending_rewind_unlocked(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
     // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
@@ -3187,12 +3202,14 @@ pub fn diff_checkpoint(
     // r22 R1：与 create 路对称——击穿条目先摘除再校验，diff 预览不再把依赖
     // 目录误报为「回滚将删除」，也不把击穿 index 留给后续快照。
     purge_shadow_excludes_from_index(&repo, &execution_root)?;
-    // r52 M3（评审）：diff 路此前完全缺秘密清除——工作区 .gitignore 的
-    // `!.env` 会让每次 add -A 把秘密重新收进 index，validate 每轮 bail，
-    // 且 bail 的「自愈」被下一次 add -A 击败：预览永久失败，而 r4/r6 的
-    // 确认门（okDisabled={previewUndecided}）把整个回退对话框永久禁用——
-    // 同一会话 prepare/apply 本可执行该回退。补上与 create 同款的三件套
-    // （批量 icase + 精确幸存者），先于 validate。
+    // r52 M3 (review): the diff path had NO secret purge at all - a
+    // worktree `.gitignore` `!.env` makes every add -A re-stage the secret,
+    // validate bails every round, and the bail's "self-heal" is defeated by
+    // the next add -A: the preview fails permanently, and the r4/r6 confirm
+    // gate (okDisabled={previewUndecided}) permanently disables the whole
+    // rewind dialog - while prepare/apply on the same session could execute
+    // that rewind fine. The create-path purge trio (batch icase + exact
+    // survivors) runs here before validate.
     purge_secret_patterns_from_index(&repo, &execution_root)?;
     purge_secret_survivors_exactly(&repo, &execution_root)?;
     // r17 M1(c)：diff 路径的 add -A 同样需要 staged 校验——被否定的 index
@@ -3697,13 +3714,16 @@ pub(crate) ",
         );
     }
 
-    /// r52-M3 行为 pin（create 路双变体族）：工作区 .gitignore 的否定规则
-    /// （`!.env`）按 gitignore(5) 优先级压过影子库 info/exclude，把
-    /// `.env`+`.ENV` 变体族每轮重新收进影子 index；批量 icase rm 每次调用
-    /// 只移除一个大小写变体（r32 MAJOR-3 的 git 2.43 实证）。create 路此
-    /// 前缺精确幸存者清除（仅 migration/restore 有）→ validate 每轮 bail、
-    /// 快照永久 wedged 且成因误归因。create 必须成功、两变体都不进快照、
-    /// 工作区文件原样存活。
+    /// r52-M3 behavioral pin (create-path dual-variant family): the
+    /// worktree `.gitignore` negation rules (`!.env`) outrank the shadow
+    /// repo's info/exclude per gitignore(5) precedence, re-staging the
+    /// `.env`+`.ENV` variant family into the shadow index every turn; the
+    /// batch icase rm removes only ONE case variant per invocation (the
+    /// r32-MAJOR-3 git 2.43 finding). The create path previously lacked the
+    /// exact-survivor purge (only migration/restore had it), so validate
+    /// bailed every round: the snapshot wedged permanently with the cause
+    /// misattributed. Create must succeed, neither variant may be tracked,
+    /// and the worktree files must survive unchanged.
     #[test]
     fn create_purges_dual_variant_secret_family_left_by_negated_ignore() {
         if !git_available() {
@@ -3714,11 +3734,15 @@ pub(crate) ",
         exec.write(".gitignore", "!.env\n!.ENV\n");
         exec.write(".env", "SECRET=lower\n");
         exec.write(".ENV", "SECRET=upper\n");
-        // 变体族（`.env`+`.ENV` 同目录共存）要求大小写敏感文件系统——Windows
-        // NTFS 默认 case-insensitive，两名字是同一文件、后写覆盖先写，形态
-        // 不可表达（r52-M3 场景本身即 case-sensitive FS 击穿）。cfg 选择器按
-        // 架构边界只能落 platform 适配层，业务测试在写后探测：先写内容被
-        // 覆盖即当前 FS 无法表达该族，测试如实降级（Unix rust-test 执行）。
+        // The variant family (`.env`+`.ENV` coexisting in one directory)
+        // requires a case-sensitive filesystem - Windows NTFS defaults to
+        // case-insensitive, where the two names are one file and the later
+        // write overwrites the earlier, so the shape is inexpressible (the
+        // r52-M3 scenario is itself a case-sensitive-FS defeat). cfg
+        // selectors are confined to the platform adapter by the architecture
+        // boundary, so this business test probes after writing: if the first
+        // write was overwritten, the current FS cannot express the family and
+        // the test degrades honestly (the Unix rust-test leg executes it).
         if exec.read(".env").as_deref() != Some("SECRET=lower\n") {
             return;
         }
@@ -3730,7 +3754,9 @@ pub(crate) ",
             CheckpointKind::Turn,
             "t1",
         )
-        .expect("变体族幸存者不得使快照 bail（r52 M3 精确幸存者清除）");
+        .expect(
+            "the variant-family survivor must not bail the snapshot (r52 M3 exact-survivor purge)",
+        );
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(
@@ -3749,12 +3775,15 @@ pub(crate) ",
         assert_eq!(exec.read(".ENV").as_deref(), Some("SECRET=upper\n"));
     }
 
-    /// r52-M3 行为 pin（diff 路秘密清除缺失）：diff 的 add -A 每轮把否定
-    /// 规则击穿的 `.env` 重新收进 index，diff 路此前完全无秘密清除 →
-    /// validate 每轮 bail 且被下一次 add -A 击败自愈——预览永久失败，而
-    /// r4/r6 确认门（okDisabled={previewUndecided}）把整个回退对话框永久
-    /// 禁用，同一会话 prepare/apply 本可执行该回退。diff 必须成功且不把
-    /// 秘密列为「回滚将删除」。
+    /// r52-M3 behavioral pin (the diff path's missing secret purge): the
+    /// diff's add -A re-stages the negation-defeated `.env` every round; the
+    /// diff path previously had no secret purge at all, so validate bailed
+    /// every round with the self-heal defeated by the next add -A - the
+    /// preview failed permanently and the r4/r6 confirm gate
+    /// (okDisabled={previewUndecided}) permanently disabled the whole rewind
+    /// dialog, while prepare/apply on the same session could execute that
+    /// rewind fine. Diff must succeed and must not list the secret as
+    /// "rollback will delete".
     #[test]
     fn diff_purges_negated_secret_restaged_by_add_a() {
         if !git_available() {
@@ -3774,13 +3803,13 @@ pub(crate) ",
         )
         .expect("turn 1");
         let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, false)
-            .expect("diff 路必须清除否定规则重入的秘密（r52 M3 三件套）");
+            .expect("the diff path must purge the negation-restaged secret (r52 M3 trio)");
         assert!(
             !diff
                 .changes
                 .iter()
                 .any(|change| change.path.eq_ignore_ascii_case(".env")),
-            "预览不得把秘密列为「回滚将删除」: {:?}",
+            "the preview must not list the secret as rollback-will-delete: {:?}",
             diff.changes
         );
     }
@@ -3821,8 +3850,9 @@ pub(crate) ",
             index.entries[0].label, "legacy value",
             "a present label must still be read"
         );
-        // r13 M1 迁移 + r52-M5 口径统一：v1 一路盖到现行 v3（v3 迁移对已退役
-        // 后的条目集是幂等空转）。
+        // r13 M1 migration + r52-M5 caliber unification: a v1 index is
+        // stamped all the way to the current v3 (the v3 leg is an idempotent
+        // no-op over the already-retired entry set).
         assert_eq!(
             index.version, 3,
             "the index is stamped to the current version on load"
@@ -3844,11 +3874,14 @@ pub(crate) ",
         );
     }
 
-    /// r52-M5 行为 pin（口径统一迁移）：v2 索引的 Turn 条目号来自旧口径
-    /// （main 构建的裸 era 计数——步数预算通知计 turn）。含通知或粘贴头的
-    /// 转录里该号在新口径下从首个分歧点起整体错位，rewindEntriesByTurnId
-    /// 会把旧树配到错边界且静默。升级到 v3 时旧 Turn 边界必须诚实退役为
-    /// 「仅对话」，PreRestore 保留供 undo。纯 JSON：无需 git 夹具。
+    /// r52-M5 behavioral pin (caliber-unification migration): a v2 index's
+    /// Turn numbers were written under an old caliber (main's raw era
+    /// counting - notices count as turns). In transcripts containing notices
+    /// or pasted headers those numbers diverge from the new caliber from the
+    /// first divergence onward, and rewindEntriesByTurnId silently pairs old
+    /// trees with wrong boundaries. Upgrading to v3 must retire the old Turn
+    /// boundaries honestly as conversation-only; PreRestore survives for
+    /// undo. Pure JSON: no git fixture needed.
     #[test]
     fn index_upgrade_to_v3_retires_turn_entries_of_the_old_caliber() {
         let dir = TestDir::new("v3-migrate");

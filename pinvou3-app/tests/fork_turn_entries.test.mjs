@@ -117,10 +117,12 @@ assert.equal(forkEntriesByTurnId(null).size, 0);
 }
 
 
-// 9. frontendEcho turn（卡片答案的前端-only 回显）不占序号（r52 M6，评审）：
-// 后端 count_user_turns 不计 ToolResult 回显，rewindEntriesByTurnId 自评审
-// r5 起跳过该形态；fork 此前不跳过——从首个回显起 fork 序号整体 +1，
-// 「从此轮分叉」会多分一轮或错位报错。两侧注释声称的口径一致自此重新为真。
+// 9. A frontendEcho turn (a frontend-only card-answer echo) holds no
+// ordinal (r52 M6, review): the backend count_user_turns does not count
+// ToolResult echoes, and rewindEntriesByTurnId has skipped the shape since
+// review r5; fork did not - from the first echo onward fork ordinals ran
+// +1, so "fork from this turn" forked one turn too many or errored. The
+// parity both headers claim holds true again from now on.
 {
   const echoTurn = { id: 'echo', userItem: { type: 'user', text: '卡片答案', frontendEcho: true } };
   const entries = forkEntriesByTurnId([textTurn('t1'), echoTurn, textTurn('t2')]);

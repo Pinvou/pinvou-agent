@@ -6,14 +6,18 @@
 //!   单消息谓词 [`deepseek_tui::is_user_turn_prompt`] 表述，现以 era 列表为
 //!   准）：tool_result 与运行时内部信封同样以 `role = "user"` 落盘，按 role
 //!   定位会切在工具往返中间。
-//!   r52-M7 口径披露：与底座 `EditLastTurn` 的「同源」自此**不再完全成立**
-//!   ——本仓库统一再剔除步数预算通知（`user_turn_prompt_cut_indices`，
-//!   ExternalUser provenance 的两条通知不是对话边界），而底座编辑选择器仍
-//!   会把通知选为 Editable 目标（engine.rs 自述「can also target …
-//!   step-budget notice」）。后果与缓解：时间线已隐藏通知，通知后点击
-//!   编辑/重发的切点可能落在不可见通知上（重复轮 + 时间线失步）；根治
-//!   （cut-aware 编辑选择器）属 CodeWhale 上游修改，已列入上游跟进清单；
-//!   本文件头此前「同源」表述按此口径更正。
+//!   r52-M7 caliber disclosure: the "same-source" claim with the
+//!   foundation's `EditLastTurn` no longer fully holds - this repo
+//!   additionally excludes step-budget notices
+//!   (`user_turn_prompt_cut_indices`; the two ExternalUser-provenance
+//!   notices are not conversation boundaries), while the foundation's edit
+//!   selector still targets notices as Editable (engine.rs admits it "can
+//!   also target ... step-budget notice"). Consequence and mitigation: the
+//!   timeline hides notices, so after one an edit/resend click can cut at
+//!   the invisible notice (a duplicate turn plus a desynced timeline); the
+//!   root fix (a cut-aware edit selector) is a CodeWhale upstream change,
+//!   filed on the upstream follow-up list. This header's earlier
+//!   "same-source" wording is corrected accordingly.
 //! - 被截段落写入 sidecar `_rewound_turns.json`（纯数据备份，UI 不暴露 redo）。
 //! - 本方法是 [`super::transcript::looks_like_truncating_overwrite`] 守卫的显式
 //!   放行路径：守卫只拦 `update_messages` 这一通用入口，回退走这里的专用方法、

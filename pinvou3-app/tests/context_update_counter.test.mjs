@@ -306,7 +306,7 @@ assert.ok(
 );
 assert.ok(
   chatEventsJs.includes('handleChatCompactionEvent(e, compactionHooks);'),
-  'tauri 车道必须保留 chat:compaction 注册壳并经 hooks 转发共享体（round-52 集成后的壳形）',
+  'the tauri lane must keep its chat:compaction registration shell forwarding to the shared body through hooks (the post-round-52-integration shell shape)',
 );
 const bridgeMessagesJs = read('src', 'shared', 'bridge-messages.js');
 assert.ok(

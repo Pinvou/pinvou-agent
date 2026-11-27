@@ -177,16 +177,21 @@ async fn reconcile_pending_rewind(
     // r23 M2：sidecar 是真正的提交判定器（见函数头注释）。
     let committed = match store.latest_rewound_turns_record(session_id) {
         Ok(Some(record)) => {
-            // r52 M1（评审 round-50 M1 落地）：绑定本身不构成「截断已提交」
-            // 的证明。sidecar 记录先于 transcript 持久化写入，persist-split
-            // 崩溃窗里绑定记录后面是一个从未截断的完整 transcript；任何非
-            // 协议写者（edit_last_turn / compact_now / 计划任务投递）随后
-            // 推进 revision，旧的两态判别（「有绑定 + revision 前移」）会把
-            // 该态误读成已提交：清掉暂记、截断永不执行、undo 计数失配永久
-            // 失效。必须给出截断证明：记录自身的 truncated_revision 等于
-            // 当前 revision，或（旧记录无该字段时）transcript 已停在 kept
-            // 边界（轮数计数回退）。其余窗口路由不变：revision 未动走重放，
-            // 真已提交走清理。
+            // r52 M1 (review round-50 M1 landed): a bound record alone does
+            // not prove the truncation committed. The sidecar record is
+            // written BEFORE the transcript persists, so inside the
+            // persist-split crash window a bound record sits behind a
+            // transcript that never truncated; any non-protocol writer
+            // (edit_last_turn / compact_now / scheduled delivery) then
+            // advances the revision and the old two-state discriminator
+            // ("bound + revision moved") misreads that as committed: the
+            // pending is silently cleared, the truncation never applies, and
+            // undo is permanently dead. Truncation proof is required: the
+            // record's truncated_revision must equal the current revision,
+            // or (legacy records without the field) the transcript must sit
+            // at the kept boundary (turn-count fallback). All other windows
+            // route unchanged: an unmoved revision replays, a truly
+            // committed rewind clears.
             record.pre_restore_checkpoint_id.as_deref() == Some(pending.pre_restore_id.as_str())
                 && (!record.truncated_revision.is_empty()
                     && record.truncated_revision == current_revision
@@ -263,11 +268,14 @@ async fn reconcile_pending_rewind(
     let _root_guard = match gates.pools {
         Some((pool, _)) => match pool.begin_execution_root_rewind(execution) {
             Ok(guard) => {
-                // r52 minor 2（评审）：post-flag recheck——r44 minor 5 手动破坏
-                // 性门的同款窗口闭合。前奏捕获的 compaction_in_flight 布尔与
-                // 此处置根标志之间的窗口里落下的压缩入队，会在重放截断后把
-                // pre-rewind transcript 持久化回盘（重放白做 + 对话回退后
-                // 复活）。标志已在本臂手上，此刻重读即时闩才能盖住该窗口。
+                // r52 minor 2 (review): post-flag recheck - the same window close
+                // as the r44-minor-5 manual destructive gates. A compaction enqueue
+                // landing between the prelude's captured compaction_in_flight bool
+                // and the root-flag acquisition here would persist the pre-rewind
+                // transcript back to disk after the replay's truncate (the replay is
+                // wasted and the rewound-away conversation resurrects). With the
+                // flag already held by this arm, only re-reading the live latch now
+                // covers that window.
                 if pool.is_compaction_in_flight(session_id) {
                     log::warn!(
                         "[pinvou3][checkpoints] pending rewind replay deferred (compaction enqueued inside the root-flag window), blocking this turn's snapshot sid={session_id}"
@@ -1128,11 +1136,14 @@ pub async fn rewind_to_turn(
         .as_ref()
         .filter(|pending| pending.keep_turns == keep_turns)
     {
-        // r52 minor 3（评审）：sidecar 读失败不得吞成「无记录」——吞错把
-        // 已提交态误判为走普通流程（写侧守卫如实拒绝，用户看到的拒绝成因
-        // 与真实 IO 故障无关），与文件 fail-closed 约定同向改为上抛。
-        // r47 F3：记录还须绑定同一边界（同 PreRestore 不同边界的记录不得
-        // 完成此臂）。
+        // r52 minor 3 (review): a sidecar read failure must not be swallowed
+        // into "no record" - swallowing misclassifies the committed state into
+        // the ordinary flow (the write-side guard refuses honestly, so the
+        // user sees a refusal cause unrelated to the real IO fault), which
+        // contradicts this file's fail-closed creed; propagate instead.
+        // r47 F3: the record must also bind the same boundary (a record on a
+        // different boundary sharing the PreRestore must not complete this
+        // arm).
         let committed = store
             .inner()
             .latest_rewound_turns_record(&session_id)
@@ -3807,13 +3818,17 @@ fn ",
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
-    /// r52 M1 行为 pin（round-50 M1 验收，persist-split + 崩溃后带外编辑）：
-    /// 记录已写、截断已持久化，随后陈旧引擎把完整 transcript 原样重新落盘
-    /// （截断被覆盖、绑定记录仍在、暂记 revision 重新一致），再由非协议
-    /// 写者编辑尾部推进 revision。旧的两态判别（「有绑定 + revision 前移」）
-    /// 会把该态误判为已提交并直接清暂记：截断永不执行、undo 计数失配永久
-    /// 失效。对账必须判 not-committed 走重放臂：重放后 transcript 收敛到
-    /// kept 边界、暂记清除、本轮快照照常登记。
+    /// r52 M1 behavioral pin (round-50 M1 acceptance; persist-split with a
+    /// post-crash out-of-band edit): the record is written and the truncation
+    /// persisted, then a stale engine re-persists the full transcript
+    /// verbatim (the truncation is overwritten, the bound record survives,
+    /// the pending revision matches again), and a non-protocol writer edits
+    /// the tail to advance the revision. The old two-state discriminator
+    /// ("bound + revision moved") misreads that as committed and clears the
+    /// pending directly: the truncation never applies and undo is permanently
+    /// dead. The reconcile must classify not-committed and route to the
+    /// replay arm: afterwards the transcript converges to the kept boundary,
+    /// the pending clears, and the turn snapshot proceeds.
     #[tokio::test]
     async fn reconcile_persist_split_with_post_crash_edit_replays_the_truncation() {
         if !git_available() {
@@ -3857,8 +3872,10 @@ fn ",
             .update_messages(&id, full_messages.clone())
             .expect("seed turn 2");
 
-        // 崩溃窗：协议走到「apply 完成 + 记录已写 + 截断已持久化」后，陈旧
-        // 引擎把完整 transcript 原样重新落盘（截断被覆盖，绑定记录仍在）。
+        // Crash window: after the protocol reaches "apply done + record
+        // written + truncation persisted", a stale engine re-persists the
+        // full transcript verbatim (the truncation is overwritten; the bound
+        // record survives).
         let revision = {
             let session = store.load(&id).expect("load");
             crate::features::sessions::transcript_revision(&session.messages).expect("revision")
@@ -3875,8 +3892,10 @@ fn ",
         store
             .update_messages(&id, full_messages.clone())
             .expect("stale engine persist restores the full transcript");
-        // 非协议写者推进 revision：编辑第二轮答案（轮数计数不变，2 轮）。
-        // 此刻：记录已绑定、revision ≠ 暂记 revision、截断从未持久生效。
+        // A non-protocol writer advances the revision: edit the second
+        // turn's answer (the turn count stays 2). At this point the record is
+        // bound, the revision differs from the pending's, and the truncation
+        // never durably applied.
         store
             .update_messages(
                 &id,
@@ -3889,9 +3908,11 @@ fn ",
             )
             .expect("post-crash out-of-band edit advances the revision");
 
-        // 下一次发送：带外编辑后的 persist-split 窗 → 重放臂完成截断。
-        // 旧判别（绑定 + revision 前移 = committed）会在此直接清暂记并把
-        // 2 轮 transcript 留在盘上（count 断言即红）。
+        // Next send: the persist-split window with a post-crash edit routes
+        // to the replay arm, which completes the truncation. The old
+        // discriminator (bound + revision moved = committed) would clear the
+        // pending here and leave the 2-turn transcript on disk (the count
+        // assertion turns red).
         let snapshot = create_turn_checkpoint(
             &store,
             &id,
@@ -3902,17 +3923,17 @@ fn ",
             ReconcileGates::default(),
         )
         .await
-        .expect("重放后本轮快照必须照常登记");
+        .expect("the turn snapshot must register after the replay");
         assert_eq!(
             checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
             1,
-            "重放必须完成截断（保留第一轮；误判已提交会留下 2 轮）"
+            "the replay must complete the truncation (turn 1 kept; the committed misclassification would leave 2 turns)"
         );
         assert!(
             !ledger.join("pending_rewind.json").exists(),
-            "协议完成后暂记清除"
+            "the pending clears after the protocol completes"
         );
-        assert!(!snapshot.is_empty(), "本轮快照登记");
+        assert!(!snapshot.is_empty(), "the turn snapshot registers");
         let _ = std::fs::remove_dir_all(&ledger);
     }
     /// r35 MAJOR-2 行为 pin：planted pending（伪造 pre_restore_id）必须被

@@ -88,7 +88,7 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
     chatEvents.includes('doneNotice: function () {') &&
     chatEvents.includes('if (compactionOuterActive && typeof switchToSessionInternal === "function") {') &&
     chatEvents.includes('switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true })'),
-    '前台收缩臂必须强制盘载重注水——且仅在失效未被拒绝（busy/queued 会话拒绝后跳过重载，r46 MAJOR-3）时执行（r39 M1；round-52 集成后随 hooks 闭包注入共享 handler，预捕获仍在换入域外、语义不变）',
+    'the foreground shrink arm must force a durable reload - and only when the invalidation was not refused (busy/queued sessions refuse and skip the reload, r46 MAJOR-3) (r39 M1; since the round-52 integration the arm rides the hooks closure into the shared handler while the pre-capture stays outside the swap-in domain, semantics unchanged)',
   );
   // r42 minor 9 / r43 P2-6：前台臂的通知条必须闸在重载布尔契约上——失败的
   // 或被接管的 reload 仍会走 then()，把「压缩完成」通知条追加到当前缓冲
@@ -97,7 +97,7 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
   assert.ok(
     chatEvents.includes('.then(function (reloaded) {') &&
     chatEvents.includes('if (reloaded === true) {'),
-    '前台收缩臂的通知条必须闸在重载布尔返回值上（r42 minor 9 / r43 P2-6；round-52 壳形下通知文案内联于闭包）',
+    'the foreground arm\'s notice must be gated on the reload\'s boolean return (r42 minor 9 / r43 P2-6; under the round-52 shell the notice copy is inlined in the closure)',
   );
   const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n {2}\}\);/m);
   assert.ok(chatEventsContext, 'chat-events feature 装配必须存在');

@@ -1266,53 +1266,74 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   listen("chat:usage", function (e) { onSessionEvent(e, function () { handleChatUsageEvent(e); }); });
 
   listen("chat:compaction", function (e) {
-    // r40 M1（PR）：真实活动归属必须在进入 onSessionEvent **之前**捕获——
-    // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
-    // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
-    // 内分类：后台压缩恒走活动臂，把正在阅读/输入的用户强切到刚压缩完的
-    // 后台会话（前台抢占回归），「后台臂」沦为死代码。此捕获值语义：true
-    // 当且仅当被压缩会话在事件派发时刻就是前台会话（事件未携带 sid 的事件
-    // 不做重同步，只挂通知）。
+    // r40 M1 (PR): the real activity ownership must be captured BEFORE
+    // entering onSessionEvent - runSyncOnSession temporarily rewrites
+    // state.activeSessionId to the event's sid for background sessions
+    // (restored in finally), so anything read inside the handler is always
+    // the swapped-in value. The r39 first version classified inside the
+    // handler: background compactions always took the active arm, yanking a
+    // user who was reading or typing into the just-compacted background
+    // session (the foreground-steal regression) while the "background arm"
+    // became dead code. This captured value is true if and only if the
+    // compacted session was the foreground session at dispatch time (events
+    // without a sid do no resync; they only hang the notice).
     const compactionSid = e.payload && e.payload.session_id;
     const prePhase = e.payload && e.payload.phase;
     const preBefore = Number(e.payload && e.payload.messages_before);
     const preAfter = Number(e.payload && e.payload.messages_after);
     const compactionOuterActive =
       !!compactionSid && compactionSid === state.activeSessionId;
-    // r41 minor 1：缓存失效同样必须在换入域**之前**执行——
-    // invalidateSessionBuffer 的活动腿（清 live 工作集数组引用）在换入域内
-    // 会对后台 sid 误发：state.messages/chatItems 被清空后与工作集对象失联，
-    // 其后 addSystemItem 推入失联数组、finally 把失联内容持久化进孤儿对象，
-    // 通知条无处渲染。预换入失效让两条腿都自然走对：活动会话清 live 投影 +
-    // 换草稿，后台会话删缓存 + 换草稿。收缩判定也在此计算（payload 原样
-    // 可得），handler 只消费结果。
+    // r41 minor 1: the cache invalidation must likewise run BEFORE the
+    // swap-in domain - invalidateSessionBuffer's active leg (clearing the
+    // live working-set array references) misfires for a background sid
+    // inside the swap-in domain: after state.messages/chatItems are cleared
+    // they lose touch with the working-set objects, the following
+    // addSystemItem pushes into the detached arrays, and finally persists the
+    // detached content into orphan objects with nowhere to render. The
+    // pre-swap invalidation makes both legs route naturally: the active
+    // session clears the live projection + stashes the draft, a background
+    // session deletes the cache + stashes the draft. The shrink verdict is
+    // computed here too (the payload is available verbatim); the handler
+    // only consumes the results.
     const compactionShrank = prePhase === "done" &&
       (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
     const compactionResync = compactionShrank && !!compactionSid &&
       typeof invalidateSessionBuffer === "function" &&
       (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
-    // r46 MAJOR-3：refuseWhenBusy 传入压缩臂——busy/queued（排队追问正等待
-    // 发送）在场时失效被拒绝，缓存刻意保留（排队消息与 busy 不受压缩窗口
-    // 波及），前台臂的强制重载随之跳过（重载的工作集保存/替换会把
-    // queued/busy 清空，正好绕过拒绝）。拒绝时调和门继续诚实隐藏入口；
-    // 通知条照常挂载（缓存未失效，挂载落点正确）。
+    // r46 MAJOR-3: refuseWhenBusy feeds the compaction arm - when
+    // busy/queued (a queued follow-up waits to be sent) is present the
+    // invalidation is refused and the cache is deliberately kept (the queued
+    // messages and busy state are untouched by the compaction window), and
+    // the foreground arm's forced reload is skipped with it (the reload's
+    // working-set save/replace would wipe queued/busy, exactly bypassing the
+    // refusal). On refusal the reconciliation gate keeps honestly hiding the
+    // entries; the notice still mounts (the cache is intact, so the mount
+    // lands correctly).
     const compactionInvalidated =
       compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
     onSessionEvent(e, function () {
-      // r44 集成（main #834 并集经 #889 抽取为共享 handler）：压缩处理器
-      // 本体在共享模块（bridge-shared-helpers），PR 的换入前预捕获/失效与
-      // 前台强制盘载臂经 hooks 注入——共享 handler 无 hooks 时保持 main
-      // 语义（web/测试调用方零改动）。
+      // r44 integration (main's #834 union, extracted into the shared
+      // handler by #889): the compaction handler body lives in the shared
+      // module (bridge-shared-helpers); the PR's pre-swap capture and
+      // invalidation plus the foreground force-durable-reload arm are
+      // injected via hooks - without hooks the shared handler keeps main's
+      // semantics (zero change for the web/test callers).
       const compactionHooks = compactionInvalidated ? {
-        // r39 M1：真实收缩后（缓存已在换入前失效）前台会话立即强制盘载
-        // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，
-        // chips 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建
-        // 时间线，先挂会被吞掉）。r42 minor 9：布尔契约（成功 true，失败
-        // false，永不 reject）——失败/被取代的重载仍会走 then()，闸门按
-        // 布尔只在实际重载成功时补挂通知。后台收缩（已预失效）照常挂通知
-        // ——r41 minor 1 如实：换入域内的挂载对后台是尽力而为（空桩
-        // buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
-        // 以切回后的落盘时间线为准。
+        // r39 M1: after a real shrink (the cache was already invalidated
+        // before the swap-in) the foreground session immediately force-reloads
+        // from disk: the timeline rebuilds from the post-shrink transcript,
+        // ordinals realign with the ledger count, and the chips render again.
+        // The done notice attaches after the reload completes (a durable load
+        // rebuilds the whole timeline; mounting first would be swallowed).
+        // r42 minor 9: boolean contract (true on success, false on failure,
+        // never rejects) - a failed or superseded reload still runs then(),
+        // so the gate attaches the notice only when the reload actually
+        // succeeded. A background shrink (already invalidated) mounts the
+        // notice as usual - r41 minor 1, stated honestly: a mount inside the
+        // swap-in domain is best-effort for background sessions (a stub
+        // buffer's notice is not picked up by the switch fast path and
+        // disappears once the durable load lands); the background user's
+        // source of truth is the persisted timeline after switching back.
         doneNotice: function () {
           if (compactionOuterActive && typeof switchToSessionInternal === "function") {
             Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
