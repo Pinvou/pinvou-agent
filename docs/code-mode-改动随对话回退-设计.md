@@ -65,7 +65,7 @@
 
 **移植时的修正**：
 
-1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:637`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
+1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。现行统一口径是底座 era 列表（`user_turn_prompt_indices`）再剔除步数预算通知（`user_turn_prompt_cut_indices`，r10-M3：ExternalUser provenance 的 soft landing / exhaustion 通知不是对话边界）。**与底座 `EditLastTurn` 的同源自此不再完全成立**（r52-M7 口径披露）：底座编辑选择器仍把通知选为 Editable 目标，本仓库时间线已隐藏通知，通知后点击编辑/重发的切点可能落在不可见通知上（重复轮 + 时间线失步）；根治（cut-aware 编辑选择器）属 CodeWhale 上游修改，已列入上游跟进清单；`8d4d2a991`「编辑重发三层同口径」的表述按此更正。
 2. **模块落位**：feat 分支依赖 `code_sessions` 模块拆分，本方案不引入该重构；移植到现有 `codex_acp` 相邻位置或新建 `features/code_checkpoints/`，按架构守卫边界落位。
 3. **快照钩子**：保留原生车道两条缝——`chat_with_reservation`（`app/commands/chat.rs`）与 `accept_plan()`（`app/commands/interaction.rs`，车道门同口径），删除 ACP `codex_acp_prompt` 钩子。
 

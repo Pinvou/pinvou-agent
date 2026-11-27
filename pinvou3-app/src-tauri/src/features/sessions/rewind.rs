@@ -1,11 +1,19 @@
 //! 代码模式「改动随对话回退」的对话侧：把 transcript 截断到第 N 个用户 turn 末尾。
 //!
 //! 设计文档 `docs/code-mode-改动随对话回退-设计.md` §4：
-//! - 定位口径与 `code_checkpoints::count_user_turns`、底座 `EditLastTurn` 同源，
-//!   都读底座 era 列表 [`deepseek_tui::user_turn_prompt_indices`]（该列表的
-//!   Editable 分类曾以单消息谓词 [`deepseek_tui::is_user_turn_prompt`] 表述，
-//!   现以 era 列表为准）：tool_result 与运行时内部信封同样以
-//!   `role = "user"` 落盘，按 role 定位会切在工具往返中间。
+//! - 定位口径与 `code_checkpoints::count_user_turns` 同源，都读底座 era 列表
+//!   [`deepseek_tui::user_turn_prompt_indices`]（该列表的 Editable 分类曾以
+//!   单消息谓词 [`deepseek_tui::is_user_turn_prompt`] 表述，现以 era 列表为
+//!   准）：tool_result 与运行时内部信封同样以 `role = "user"` 落盘，按 role
+//!   定位会切在工具往返中间。
+//!   r52-M7 口径披露：与底座 `EditLastTurn` 的「同源」自此**不再完全成立**
+//!   ——本仓库统一再剔除步数预算通知（`user_turn_prompt_cut_indices`，
+//!   ExternalUser provenance 的两条通知不是对话边界），而底座编辑选择器仍
+//!   会把通知选为 Editable 目标（engine.rs 自述「can also target …
+//!   step-budget notice」）。后果与缓解：时间线已隐藏通知，通知后点击
+//!   编辑/重发的切点可能落在不可见通知上（重复轮 + 时间线失步）；根治
+//!   （cut-aware 编辑选择器）属 CodeWhale 上游修改，已列入上游跟进清单；
+//!   本文件头此前「同源」表述按此口径更正。
 //! - 被截段落写入 sidecar `_rewound_turns.json`（纯数据备份，UI 不暴露 redo）。
 //! - 本方法是 [`super::transcript::looks_like_truncating_overwrite`] 守卫的显式
 //!   放行路径：守卫只拦 `update_messages` 这一通用入口，回退走这里的专用方法、
@@ -543,11 +551,10 @@ impl SessionStore {
                 bail!("回退后对话内容已被编辑，不可反悔");
             }
         }
-        let restored_turns =
-            crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(
-                &record.removed_messages,
-            )
-            .len() as u32;
+        let restored_turns = crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(
+            &record.removed_messages,
+        )
+        .len() as u32;
         let restored = record.removed_messages.len();
         session.messages.extend(record.removed_messages);
         session.metadata.message_count = session.messages.len();

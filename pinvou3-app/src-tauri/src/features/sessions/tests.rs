@@ -5434,6 +5434,46 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     assert_eq!(record.removed_messages, messages[4..]);
 }
 
+/// r52-T1 行为 pin（步数预算通知剔除的截断腿）：底座以 ExternalUser
+/// provenance 落盘的 soft landing 通知（role=user 文本）不是 turn 边界。
+/// 通知随第 1 轮收尾落盘时，keep=1 的切点必须落在第 2 个真实用户 prompt
+/// （通知保留在 kept 段、随第 1 轮存续），rewound_turns = 1。删除 cut
+/// 过滤时本测试红（通知被误计为边界：切点落在通知本身、rewound_turns=2、
+/// 第 2 轮滞留）。
+#[test]
+fn rewind_truncation_excludes_step_budget_notification_from_boundaries() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("Step budget soft landing: 已在步数预算 80% 处收束本轮"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    let outcome = store
+        .truncate_to_user_turn(&id, 1, None)
+        .expect("rewind to turn 1");
+
+    assert_eq!(
+        outcome.rewound_turns, 1,
+        "通知不是边界：只截去第 2 轮（误计口径会报 2）"
+    );
+    let kept = store.load(&id).expect("load").messages;
+    assert_eq!(
+        kept,
+        messages[..3],
+        "keep=1 保留第 1 轮全部消息 + 其收尾通知（切点在第 2 个真实 prompt）"
+    );
+}
+
 /// New-writer/old-reader compatibility (round-7 review P2): older binaries
 /// define `RewoundTurnsRecord` with a REQUIRED `originalRevision` (no serde
 /// default), and the CLI shares this sidecar with the desktop app. A map

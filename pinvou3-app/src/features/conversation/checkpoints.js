@@ -94,6 +94,10 @@ export function summarizeCheckpointChanges(changes) {
  * r19-M1 类序号漂移会被掩盖）。宿主 turn 结束（busy→false）瞬间不再
  * 全部入口消失。
  */
+/// r52 minor 7：mismatch 告警指纹记忆——同签名只告警一次（持续渲染不再
+/// 刷屏；签名变化即缺口成因变化，重新留痕）。
+let lastMismatchWarnSignature = null;
+
 export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { busy = false } = {}) {
   const entries = new Map();
   const list = Array.isArray(checkpoints) ? checkpoints : [];
@@ -139,10 +143,17 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
     // r45 minor 8：诚实拒绝必须留下成因诊断——零日志时，未来谓词漂移与
     // 诚实拒绝在观测上不可区分（本轮评审点名的可观测性缺口）。dev 可见
     // 的 console.warn 不进用户 UI。
-    console.warn(
-      "[checkpoints] rewind entries hidden: timeline/userTurns mismatch",
-      JSON.stringify({ timelineTurns: ordinal, backendUserTurns, steeredBeyondBackend, busy }),
-    );
+    // r52 minor 7（评审）：mismatch 持续期间每次渲染都会触发本告警（日志
+    // 洪水淹没诊断本身）。按输入指纹门控：同签名只告警一次；签名变化
+    // （缺口成因或幅度变化）才再次留痕。
+    const mismatchSignature = `${ordinal}|${backendUserTurns}|${steeredBeyondBackend}|${busy}`;
+    if (mismatchSignature !== lastMismatchWarnSignature) {
+      lastMismatchWarnSignature = mismatchSignature;
+      console.warn(
+        "[checkpoints] rewind entries hidden: timeline/userTurns mismatch",
+        JSON.stringify({ timelineTurns: ordinal, backendUserTurns, steeredBeyondBackend, busy }),
+      );
+    }
     return new Map();
   }
   return entries;

@@ -116,3 +116,15 @@ assert.equal(forkEntriesByTurnId(null).size, 0);
   assert.equal(entries.get('t2'), 2);
 }
 
+
+// 9. frontendEcho turn（卡片答案的前端-only 回显）不占序号（r52 M6，评审）：
+// 后端 count_user_turns 不计 ToolResult 回显，rewindEntriesByTurnId 自评审
+// r5 起跳过该形态；fork 此前不跳过——从首个回显起 fork 序号整体 +1，
+// 「从此轮分叉」会多分一轮或错位报错。两侧注释声称的口径一致自此重新为真。
+{
+  const echoTurn = { id: 'echo', userItem: { type: 'user', text: '卡片答案', frontendEcho: true } };
+  const entries = forkEntriesByTurnId([textTurn('t1'), echoTurn, textTurn('t2')]);
+  assert.equal(entries.has('echo'), false, 'frontendEcho turn must not render a fork entry');
+  assert.equal(entries.get('t1'), 1);
+  assert.equal(entries.get('t2'), 2, 't2 keeps ordinal 2 after the echo (was 3 before the skip)');
+}

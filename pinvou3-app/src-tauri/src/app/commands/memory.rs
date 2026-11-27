@@ -852,6 +852,12 @@ pub async fn edit_last_turn(
     if acp_pool.is_acp(&sid) {
         return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
     }
+    // r52 minor 4（评审）：aux 侧聊（fork 同款拒绝形状）——原生车道经
+    // reserve→truncate→resend 改写 aux 会话历史不被 aux 引擎语义覆盖，
+    // 原始 IPC 可借原生道重写 aux 历史。
+    if crate::features::sessions::validators::is_aux_session_id(&sid) {
+        return Err("aux side-chats do not support edit_last_turn".to_string());
+    }
     let reservation = pool.reserve_turn(&sid).map_err(|e| {
         crate::platform::paths::redact_storage_prefix(&format!("reserve edit_last_turn: {e:#}"))
     })?;

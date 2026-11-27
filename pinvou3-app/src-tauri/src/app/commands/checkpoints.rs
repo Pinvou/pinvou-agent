@@ -177,7 +177,20 @@ async fn reconcile_pending_rewind(
     // r23 M2：sidecar 是真正的提交判定器（见函数头注释）。
     let committed = match store.latest_rewound_turns_record(session_id) {
         Ok(Some(record)) => {
+            // r52 M1（评审 round-50 M1 落地）：绑定本身不构成「截断已提交」
+            // 的证明。sidecar 记录先于 transcript 持久化写入，persist-split
+            // 崩溃窗里绑定记录后面是一个从未截断的完整 transcript；任何非
+            // 协议写者（edit_last_turn / compact_now / 计划任务投递）随后
+            // 推进 revision，旧的两态判别（「有绑定 + revision 前移」）会把
+            // 该态误读成已提交：清掉暂记、截断永不执行、undo 计数失配永久
+            // 失效。必须给出截断证明：记录自身的 truncated_revision 等于
+            // 当前 revision，或（旧记录无该字段时）transcript 已停在 kept
+            // 边界（轮数计数回退）。其余窗口路由不变：revision 未动走重放，
+            // 真已提交走清理。
             record.pre_restore_checkpoint_id.as_deref() == Some(pending.pre_restore_id.as_str())
+                && (!record.truncated_revision.is_empty()
+                    && record.truncated_revision == current_revision
+                    || current_turn_count == record.kept_turns)
         }
         Ok(None) => false,
         Err(error) => {
@@ -249,7 +262,20 @@ async fn reconcile_pending_rewind(
     // r24 minor 5：对端探针惰性化——仅当 pending 存在且走到重放臂时才枚举。
     let _root_guard = match gates.pools {
         Some((pool, _)) => match pool.begin_execution_root_rewind(execution) {
-            Ok(guard) => Some(guard),
+            Ok(guard) => {
+                // r52 minor 2（评审）：post-flag recheck——r44 minor 5 手动破坏
+                // 性门的同款窗口闭合。前奏捕获的 compaction_in_flight 布尔与
+                // 此处置根标志之间的窗口里落下的压缩入队，会在重放截断后把
+                // pre-rewind transcript 持久化回盘（重放白做 + 对话回退后
+                // 复活）。标志已在本臂手上，此刻重读即时闩才能盖住该窗口。
+                if pool.is_compaction_in_flight(session_id) {
+                    log::warn!(
+                        "[pinvou3][checkpoints] pending rewind replay deferred (compaction enqueued inside the root-flag window), blocking this turn's snapshot sid={session_id}"
+                    );
+                    return false;
+                }
+                Some(guard)
+            }
             Err(error) => {
                 log::warn!(
                     "[pinvou3][checkpoints] pending rewind replay deferred (execution-root rewind flag held), blocking this turn's snapshot sid={session_id}: {error:#}"
@@ -1102,13 +1128,18 @@ pub async fn rewind_to_turn(
         .as_ref()
         .filter(|pending| pending.keep_turns == keep_turns)
     {
+        // r52 minor 3（评审）：sidecar 读失败不得吞成「无记录」——吞错把
+        // 已提交态误判为走普通流程（写侧守卫如实拒绝，用户看到的拒绝成因
+        // 与真实 IO 故障无关），与文件 fail-closed 约定同向改为上抛。
+        // r47 F3：记录还须绑定同一边界（同 PreRestore 不同边界的记录不得
+        // 完成此臂）。
         let committed = store
             .inner()
             .latest_rewound_turns_record(&session_id)
-            .ok()
-            .and_then(|record| record)
+            .map_err(|error| format!("读取回退备份记录失败: {error:#}"))?
             .is_some_and(|record| {
                 record.pre_restore_checkpoint_id.as_deref() == Some(pending.pre_restore_id.as_str())
+                    && record.kept_turns == pending.keep_turns
                     && !record.truncated_revision.is_empty()
                     && record.truncated_revision == *transcript_revision
             });
@@ -3776,6 +3807,114 @@ fn ",
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
+    /// r52 M1 行为 pin（round-50 M1 验收，persist-split + 崩溃后带外编辑）：
+    /// 记录已写、截断已持久化，随后陈旧引擎把完整 transcript 原样重新落盘
+    /// （截断被覆盖、绑定记录仍在、暂记 revision 重新一致），再由非协议
+    /// 写者编辑尾部推进 revision。旧的两态判别（「有绑定 + revision 前移」）
+    /// 会把该态误判为已提交并直接清暂记：截断永不执行、undo 计数失配永久
+    /// 失效。对账必须判 not-committed 走重放臂：重放后 transcript 收敛到
+    /// kept 边界、暂记清除、本轮快照照常登记。
+    #[tokio::test]
+    async fn reconcile_persist_split_with_post_crash_edit_replays_the_truncation() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("persist-split-edit");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+        let full_messages = vec![
+            user_msg("第一轮"),
+            assistant_msg("答一"),
+            user_msg("第二轮"),
+            assistant_msg("答二"),
+        ];
+        store
+            .update_messages(&id, full_messages.clone())
+            .expect("seed turn 2");
+
+        // 崩溃窗：协议走到「apply 完成 + 记录已写 + 截断已持久化」后，陈旧
+        // 引擎把完整 transcript 原样重新落盘（截断被覆盖，绑定记录仍在）。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+        store
+            .truncate_to_user_turn(&id, 1, Some(undo.id.clone()))
+            .expect("truncate wrote the bound record");
+        store
+            .update_messages(&id, full_messages.clone())
+            .expect("stale engine persist restores the full transcript");
+        // 非协议写者推进 revision：编辑第二轮答案（轮数计数不变，2 轮）。
+        // 此刻：记录已绑定、revision ≠ 暂记 revision、截断从未持久生效。
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二（已编辑）"),
+                ],
+            )
+            .expect("post-crash out-of-band edit advances the revision");
+
+        // 下一次发送：带外编辑后的 persist-split 窗 → 重放臂完成截断。
+        // 旧判别（绑定 + revision 前移 = committed）会在此直接清暂记并把
+        // 2 轮 transcript 留在盘上（count 断言即红）。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("重放后本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "重放必须完成截断（保留第一轮；误判已提交会留下 2 轮）"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "协议完成后暂记清除"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
     /// r35 MAJOR-2 行为 pin：planted pending（伪造 pre_restore_id）必须被
     /// fail-closed 拒绝——不得触发重放臂的破坏性恢复 + 截断，工作区不动。
     #[tokio::test]

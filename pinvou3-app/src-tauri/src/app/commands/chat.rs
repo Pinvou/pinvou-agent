@@ -507,6 +507,7 @@ pub async fn steer_chat(
     session_id: Option<String>,
     content: String,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<String, String> {
     // Empty-content pre-check aligned with chat(): an empty steer would
@@ -517,6 +518,12 @@ pub async fn steer_chat(
         return Err("empty steer content".to_string());
     }
     let sid = require_active_sid(session_id, &store)?;
+    // r52 minor 4（评审）：第 7 个引擎触达入口的 ACP 栅栏——pool 对 ACP id
+    // 永不 spawn（今日不可达伤害），但「不变量在每个引擎入口成立」的论证
+    // 要求入口自查（r9 minor 10 缝内自持的同款纵深）。
+    if acp_pool.is_acp(&sid) {
+        return Err(ACP_CHAT_LANE_REJECTED.to_string());
+    }
     pool.steer(&sid, content)
         .await
         .map_err(|e| format!("steer_chat: {e:#}"))

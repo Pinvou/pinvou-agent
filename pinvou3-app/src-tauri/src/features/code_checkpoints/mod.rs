@@ -89,7 +89,8 @@ const RAW_STATUS_RECORD_LIMIT: usize = 1024 * 1024;
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
 const MAX_WORKSPACE_BYTES_FOR_SNAPSHOT: u64 = 2 * 1024 * 1024 * 1024;
 /// 体积估算的条目数上限（超出按超限处理，防止巨型目录树把估算本身变成负担）。
-const SIZE_WALK_MAX_ENTRIES: usize = 200_000;
+/// r52 M2：reparse 走读共享同一预算（预算内枚举不完备 → fail-closed）。
+pub(crate) const SIZE_WALK_MAX_ENTRIES: usize = 200_000;
 /// 影子仓库存储预算（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，
 /// 大文件项目单靠条目数守不住体积；超出时裁到一半条目并 gc 收敛。
 const MAX_SHADOW_REPO_BYTES: u64 = 500 * 1024 * 1024;
@@ -1578,13 +1579,40 @@ fn migrate_index_to_v2(mut index: CheckpointIndex) -> CheckpointIndex {
     index
 }
 
+/// r52-M5 的 v2→v3 迁移腿（评审）：合并后的统一计数口径是「era 列表 −
+/// 步数预算通知剔除」（user_turn_prompt_cut_indices）。存量 v2 索引的 Turn
+/// 条目号来自两种互不相同的口径——main 构建的 v2 按裸 era 计（步数预算
+/// 通知计 turn），分支构建的 v2 按 per-message-minus-cut 计（post-provenance
+/// 粘贴摘要头不计）。任何一种与现口径在含通知或粘贴头的转录里都从首个
+/// 分歧点起整体错位：rewindEntriesByTurnId 把旧树配到错边界、keep_turns
+/// 截错位置，且静默（对账门比较的是两个同源的新计数，只有账本是陈旧的）。
+/// 沿 r13-M1 的保守失效模式：Turn 条目整体退役（PreRestore 保留供 undo），
+/// 旧边界诚实降级为仅对话，新 turn 起以 v3 口径从当前计数对齐。
+fn migrate_index_to_v3(mut index: CheckpointIndex) -> CheckpointIndex {
+    if index.version < 3 {
+        let retired = index
+            .entries
+            .iter()
+            .filter(|e| e.kind == CheckpointKind::Turn)
+            .count();
+        if retired > 0 {
+            eprintln!(
+                "[checkpoints] counting-caliber unification (v3): retiring {retired} Turn entries (honest conversation-only degradation); new turns use the era-minus-cut caliber",
+            );
+        }
+        index.entries.retain(|e| e.kind != CheckpointKind::Turn);
+        index.version = 3;
+    }
+    index
+}
+
 fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
     let path = index_path(ledger_root);
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: Vec::new(),
             });
         }
@@ -1602,7 +1630,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // 「文件+对话」回退实际恢复早 k 轮的文件状态。保守失效：v1 索引
             // 的 Turn 条目整体退役（PreRestore 保留供 undo），该会话的旧边界
             // 诚实降级为仅对话；新 turn 起以 v2 口径从当前计数对齐。
-            index = migrate_index_to_v2(index);
+            index = migrate_index_to_v3(migrate_index_to_v2(index));
             // r20 M1：commit 字段按对象 id 形状校验（SHA-1 40 / SHA-256 64 位
             // 十六进制）。它被插进 git argv 的 rev 位（rev-parse / read-tree /
             // diff 等）且位于 `--no-textconv`/`--no-ext-diff` 等选项钉之后——
@@ -1684,7 +1712,7 @@ fn recheck_concurrent_index_rewrite(
     }
     // r43 P2-7：并发写者的新鲜索引可能是老二进制写的 v1 形态——与 load_index
     // 同过迁移腿归一，未迁移索引不得从恢复腿流出。
-    Some(migrate_index_to_v2(fresh))
+    Some(migrate_index_to_v3(migrate_index_to_v2(fresh)))
 }
 
 /// r20-M1 对象 id 形状校验（SHA-1 40 / SHA-256 64 位十六进制）。
@@ -1721,7 +1749,7 @@ fn quarantine_index_and_rebuild(path: &std::path::Path, judged_bytes: &[u8]) -> 
     // 磁盘内容 ≠ 本次判损字节 → 对端刚写入，直接采用其新鲜索引（含迁移）；
     // 一致才隔离。
     if let Some(fresh) = recheck_concurrent_index_rewrite(path, judged_bytes) {
-        return migrate_index_to_v2(fresh);
+        return migrate_index_to_v3(migrate_index_to_v2(fresh));
     }
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(_) => eprintln!(
@@ -1732,7 +1760,7 @@ fn quarantine_index_and_rebuild(path: &std::path::Path, judged_bytes: &[u8]) -> 
         ),
     }
     CheckpointIndex {
-        version: 2,
+        version: 3,
         entries: Vec::new(),
     }
 }
@@ -1873,7 +1901,7 @@ fn create_checkpoint_preserving(
     // 吸进影子 objects（unbound 布局下 agent 可经 git 读面检视根外文件）。
     // Turn 快照的 Err 走既有「快照失败不阻断 turn、入口如实降级」路径；
     // PreRestore（回退/反悔前奏）在此拒绝时一切破坏性动作尚未开始。
-    let reparse = execution_root_reparse_dirs(&execution_root);
+    let reparse = execution_root_reparse_dirs(&execution_root)?;
     if !reparse.is_empty() {
         reparse_dir_bail(&reparse)?;
     }
@@ -1923,6 +1951,12 @@ fn create_checkpoint_preserving(
     // r22 R1：被否定行击穿而暂存的依赖/构建条目在此摘除（每回合幂等自愈，
     // 存量被击穿 index 无需迁移 marker），排除语义=「不进快照」而非 bail。
     purge_shadow_excludes_from_index(&repo, &execution_root)?;
+    // r52 M3（评审 round-50 M3 落地）：批量 icase purge 的 pathspec 匹配在
+    // 大小写敏感文件系统上会被否定规则反复击穿（`!.env` 压过 info/exclude，
+    // 变体族 `.env`+`.ENV` 每轮把幸存者重新收进 index——validate 每轮 bail、
+    // 快照永久 wedged 且成因误归因）。restore 路径的精确幸存者清除在此补上，
+    // create 与 restore/migration 同层防线。幂等：无幸存者时空扫描。
+    purge_secret_survivors_exactly(&repo, &execution_root)?;
     validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
@@ -2256,7 +2290,8 @@ pub fn write_pending_rewind(
     // sidecar 引用，应用内从此不可达（standalone restore 已移除）。
     // r32 MAJOR-1：读腿 fail-closed——真实 IO 错误不得吞成「无暂记」（否则
     // 覆写照常进行，P1 被替换 = 不可恢复孤儿）。
-    let existing = match live_pending_rewind(ledger_root) {
+    // r52 minor 1：已持锁，走无锁内层（公共入口会二次 flock 死锁）。
+    let existing = match live_pending_rewind_unlocked(ledger_root) {
         Ok(Some(existing)) => Some(existing),
         Ok(None) => None,
         Err(error) => {
@@ -2349,12 +2384,20 @@ pub fn matching_pending_pre_restore(
         // r44 minor 3：删除前回读比对——成员校验（索引 IO）窗口内对端的
         // pending 写入可能整体替换文件，裸删会孤儿化对端崩溃 apply 的重试
         // 凭据。字节一致才删；已被替换则留给对端协议收口。
-        match fs::read(&path) {
-            Ok(current) if current == bytes => {
-                let _ = fs::remove_file(&path);
-            }
-            _ => log::warn!(
-                "[checkpoints] stale pending was replaced concurrently; leaving the peer's pending in place"
+        // r52 minor 1：比对窗口持 pending flock——字节级全同的写入（同边界
+        // 引导重试）比对无法区分先后，flock 令其串行化。锁不可用时跳过删除
+        // （保留现场，复用判定 Ok(None) 不变，下次对账再清）。
+        match lock_pending_rewind_file(ledger_root) {
+            Ok(_lock) => match fs::read(&path) {
+                Ok(current) if current == bytes => {
+                    let _ = fs::remove_file(&path);
+                }
+                _ => log::warn!(
+                    "[checkpoints] stale pending was replaced concurrently; leaving the peer's pending in place"
+                ),
+            },
+            Err(error) => log::warn!(
+                "[checkpoints] stale pending cleanup skipped (pending lock unavailable, scene kept): {error:#}"
             ),
         }
         return Ok(None);
@@ -2459,7 +2502,18 @@ pub fn peek_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
     Ok(Some(pending))
 }
 
+/// r52 minor 1（评审）：读/终结臂统一持 pending flock——淘汰臂「回读比对 +
+/// remove_file」的窗口可与对端**字节级全同**的写入（同边界引导重试写出的
+/// pending 与陈旧暂记逐字节一致，比对无法区分先后）交错；flock 令对端的
+/// 写窗口串行化。锁失败按 fail-closed 上抛（调用方既有的阻断/拒绝语义）。
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
+    let _lock = lock_pending_rewind_file(ledger_root)?;
+    live_pending_rewind_unlocked(ledger_root)
+}
+
+/// 无锁内层：调用方必须已持 pending flock（`write_pending_rewind` 的持锁
+/// 读腿走这里，避免同线程对同一锁文件的二次阻塞 flock 死锁）。
+fn live_pending_rewind_unlocked(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
     // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
     // None 会把对账的「暂记不可读 → 阻断快照」分支变成死代码，瞬态 EACCES
@@ -2736,11 +2790,13 @@ pub(crate) fn try_acquire_ledger_write_fence(ledger_root: &Path) -> Result<Optio
 /// node_modules 联接农场）不进 index、不被 checkout/clean 触及，拒绝它们
 /// 只会误伤。平台差异（枚举 + reparse 位判定）下沉在 [`platform`] 适配层，
 /// 非 Windows 恒空集（零开销）。
-fn execution_root_reparse_dirs(execution_root: &Path) -> Vec<PathBuf> {
+fn execution_root_reparse_dirs(execution_root: &Path) -> Result<Vec<PathBuf>> {
     let skip_dirs: std::collections::HashSet<&str> = SHADOW_EXCLUDES
         .iter()
         .map(|line| line.trim_end_matches('/'))
         .collect();
+    // r52 M2：预算内枚举不完备（>200k 条目）= 无法证明无联接，Err 传播后
+    // 由调用方 fail-closed 拒绝本轮操作。
     platform::reparse_dir_paths_under(execution_root, &skip_dirs)
 }
 
@@ -2778,7 +2834,7 @@ pub fn apply_restore(
     let _ledger_fence = acquire_ledger_write_fence(&ledger_fence_key)?;
     // r42 M6：恢复面的 junction 拒绝——checkout-index 穿联接写根外是 rc=0
     // 静默灾难，fail-closed 并如实给出联接清单。
-    let reparse = execution_root_reparse_dirs(&execution_root);
+    let reparse = execution_root_reparse_dirs(&execution_root)?;
     if !reparse.is_empty() {
         reparse_dir_bail(&reparse)?;
     }
@@ -3121,7 +3177,7 @@ pub fn diff_checkpoint(
     let _ledger_fence = acquire_ledger_write_fence(&ledger_fence_key)?;
     // r42 M6：diff 的 add -A 与 create 的 add -A 同样会递归进入 junction，
     // 把执行根外内容吸进影子 index/objects——同款 fail-closed。
-    let reparse = execution_root_reparse_dirs(&execution_root);
+    let reparse = execution_root_reparse_dirs(&execution_root)?;
     if !reparse.is_empty() {
         reparse_dir_bail(&reparse)?;
     }
@@ -3131,6 +3187,14 @@ pub fn diff_checkpoint(
     // r22 R1：与 create 路对称——击穿条目先摘除再校验，diff 预览不再把依赖
     // 目录误报为「回滚将删除」，也不把击穿 index 留给后续快照。
     purge_shadow_excludes_from_index(&repo, &execution_root)?;
+    // r52 M3（评审）：diff 路此前完全缺秘密清除——工作区 .gitignore 的
+    // `!.env` 会让每次 add -A 把秘密重新收进 index，validate 每轮 bail，
+    // 且 bail 的「自愈」被下一次 add -A 击败：预览永久失败，而 r4/r6 的
+    // 确认门（okDisabled={previewUndecided}）把整个回退对话框永久禁用——
+    // 同一会话 prepare/apply 本可执行该回退。补上与 create 同款的三件套
+    // （批量 icase + 精确幸存者），先于 validate。
+    purge_secret_patterns_from_index(&repo, &execution_root)?;
+    purge_secret_survivors_exactly(&repo, &execution_root)?;
     // r17 M1(c)：diff 路径的 add -A 同样需要 staged 校验——被否定的 index
     // 持久留存会让后续每个快照的校验都 bail（无自愈）。
     validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
@@ -3633,6 +3697,90 @@ pub(crate) ",
         );
     }
 
+    /// r52-M3 行为 pin（create 路双变体族）：工作区 .gitignore 的否定规则
+    /// （`!.env`）按 gitignore(5) 优先级压过影子库 info/exclude，把
+    /// `.env`+`.ENV` 变体族每轮重新收进影子 index；批量 icase rm 每次调用
+    /// 只移除一个大小写变体（r32 MAJOR-3 的 git 2.43 实证）。create 路此
+    /// 前缺精确幸存者清除（仅 migration/restore 有）→ validate 每轮 bail、
+    /// 快照永久 wedged 且成因误归因。create 必须成功、两变体都不进快照、
+    /// 工作区文件原样存活。
+    // 变体族（`.env`+`.ENV` 同目录共存）要求大小写敏感文件系统——Windows
+    // NTFS 默认 case-insensitive，两名字是同一文件，形态不可表达（r52-M3
+    // 场景本身即 case-sensitive FS 击穿）。Unix CI（rust-test）执行本测试。
+    #[cfg(unix)]
+    #[test]
+    fn create_purges_dual_variant_secret_family_left_by_negated_ignore() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("dualenv-ledger");
+        let exec = TestDir::new("dualenv-exec");
+        exec.write(".gitignore", "!.env\n!.ENV\n");
+        exec.write(".env", "SECRET=lower\n");
+        exec.write(".ENV", "SECRET=upper\n");
+        exec.write("ok.txt", "v1\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("变体族幸存者不得使快照 bail（r52 M3 精确幸存者清除）");
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(".env")),
+            "lower variant must not be tracked: {tracked}"
+        );
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(".ENV")),
+            "upper variant must not be tracked: {tracked}"
+        );
+        assert_eq!(exec.read(".env").as_deref(), Some("SECRET=lower\n"));
+        assert_eq!(exec.read(".ENV").as_deref(), Some("SECRET=upper\n"));
+    }
+
+    /// r52-M3 行为 pin（diff 路秘密清除缺失）：diff 的 add -A 每轮把否定
+    /// 规则击穿的 `.env` 重新收进 index，diff 路此前完全无秘密清除 →
+    /// validate 每轮 bail 且被下一次 add -A 击败自愈——预览永久失败，而
+    /// r4/r6 确认门（okDisabled={previewUndecided}）把整个回退对话框永久
+    /// 禁用，同一会话 prepare/apply 本可执行该回退。diff 必须成功且不把
+    /// 秘密列为「回滚将删除」。
+    #[test]
+    fn diff_purges_negated_secret_restaged_by_add_a() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("diffenv-ledger");
+        let exec = TestDir::new("diffenv-exec");
+        exec.write(".gitignore", "!.env\n");
+        exec.write(".env", "SECRET=lower\n");
+        exec.write("ok.txt", "v1\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("turn 1");
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, false)
+            .expect("diff 路必须清除否定规则重入的秘密（r52 M3 三件套）");
+        assert!(
+            !diff
+                .changes
+                .iter()
+                .any(|change| change.path.eq_ignore_ascii_case(".env")),
+            "预览不得把秘密列为「回滚将删除」: {:?}",
+            diff.changes
+        );
+    }
+
     /// Upgrade regression: index entries written before `CheckpointMeta.label`
     /// was restored carry no `label` key. The field must deserialize with its
     /// default instead of failing the whole index parse — a failed parse hits
@@ -3669,7 +3817,12 @@ pub(crate) ",
             index.entries[0].label, "legacy value",
             "a present label must still be read"
         );
-        assert_eq!(index.version, 2, "the index is stamped to v2 on load");
+        // r13 M1 迁移 + r52-M5 口径统一：v1 一路盖到现行 v3（v3 迁移对已退役
+        // 后的条目集是幂等空转）。
+        assert_eq!(
+            index.version, 3,
+            "the index is stamped to the current version on load"
+        );
         // No quarantine file may appear next to the index.
         let corrupt: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
@@ -3685,6 +3838,41 @@ pub(crate) ",
             corrupt.is_empty(),
             "the index must not be quarantined: {corrupt:?}"
         );
+    }
+
+    /// r52-M5 行为 pin（口径统一迁移）：v2 索引的 Turn 条目号来自旧口径
+    /// （main 构建的裸 era 计数——步数预算通知计 turn）。含通知或粘贴头的
+    /// 转录里该号在新口径下从首个分歧点起整体错位，rewindEntriesByTurnId
+    /// 会把旧树配到错边界且静默。升级到 v3 时旧 Turn 边界必须诚实退役为
+    /// 「仅对话」，PreRestore 保留供 undo。纯 JSON：无需 git 夹具。
+    #[test]
+    fn index_upgrade_to_v3_retires_turn_entries_of_the_old_caliber() {
+        let dir = TestDir::new("v3-migrate");
+        let path = index_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+  "version": 2,
+  "entries": [
+    {"id": "c1-1758000000000000000", "turn": 2, "kind": "turn",
+     "commit": "0123456789abcdef0123456789abcdef01234567", "createdAt": 1758000000},
+    {"id": "p1-1758000000000000001", "kind": "preRestore",
+     "commit": "fedcba9876543210fedcba9876543210fedcba98", "createdAt": 1758000060}
+  ]
+}"#,
+        )
+        .unwrap();
+        let index = load_index(dir.path()).expect("a v2 index must deserialize");
+        assert_eq!(
+            index.version, 3,
+            "the index is stamped to the unified-caliber version on load"
+        );
+        assert!(
+            index.entries.iter().all(|e| e.kind != CheckpointKind::Turn),
+            "old-caliber Turn boundaries retire honestly; only PreRestore survives for undo"
+        );
+        assert_eq!(index.entries.len(), 1, "the PreRestore entry survives");
     }
 
     /// Round-12 review: the label chain has no end-to-end pin — nothing
@@ -5346,7 +5534,7 @@ pub(crate) ",
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: vec![meta],
             },
         )
@@ -5414,7 +5602,7 @@ pub(crate) ",
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: vec![CheckpointMeta {
                     id: "c1-1".into(),
                     turn: Some(1),
@@ -6317,7 +6505,7 @@ pub(crate) ",
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: vec![CheckpointMeta {
                     id: "c1-1".into(),
                     turn: Some(1),
@@ -6430,7 +6618,7 @@ pub(crate) ",
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: vec![CheckpointMeta {
                     id: "c1-1".into(),
                     turn: Some(1),
@@ -6532,7 +6720,7 @@ pub(crate) ",
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 2,
+                version: 3,
                 entries: vec![CheckpointMeta {
                     id: "np-1".into(),
                     turn: Some(1),
@@ -6595,7 +6783,7 @@ pub(crate) ",
         use crate::platform::test_support::{loosen_to_world_readable_for_test, permission_bits};
         let ledger = TestDir::new("index-perms");
         let index = CheckpointIndex {
-            version: 2,
+            version: 3,
             entries: Vec::new(),
         };
         save_index(ledger.path(), &index).unwrap();

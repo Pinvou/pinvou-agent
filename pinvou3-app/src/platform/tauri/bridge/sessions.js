@@ -217,9 +217,19 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
       // two refusal lanes must honor the false return and skip the follow-up
       // action; keeping the queue across reloads is v2.
       const evicted = sessionStates[id];
+      // r52 M4（评审 round-50 M4 落地）：活跃会话的 sessionStates 缓存只在
+      // chat:done / 切走时同步，发送路径的 busy/queued 写在 live state 上。
+      // 只读缓存让本守卫对前台会话死线（mid-turn 自动压缩 → 拒绝判定恒
+      // false → 缓存被删、live 时间线清空、排队跟进静默丢失）。活跃会话读
+      // live 字段，后台会话仍以缓存为准。
+      const busySource =
+        state.activeSessionId === id
+          ? { busy: state.busy, queued: state.queued }
+          : evicted;
       if (
         refuseWhenBusy &&
-        (evicted.busy || (Array.isArray(evicted.queued) && evicted.queued.length))
+        (busySource.busy ||
+          (Array.isArray(busySource.queued) && busySource.queued.length))
       ) {
         return false;
       }

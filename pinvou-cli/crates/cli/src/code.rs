@@ -5845,8 +5845,10 @@ fn resolve_rewind_plan(
 /// same-boundary, and its bound backup record proves the truncation
 /// committed (truncated_revision matches the CURRENT transcript revision).
 /// Sidecar-map consults live here so the rewind body keeps no sidecar-map
-/// literal (r28 M2's source pin stays meaningful). IO errors fail closed
-/// (no record = replay the idempotent protocol, never fake completion).
+/// literal (r28 M2's source pin stays meaningful). r52 minor 3: sidecar IO
+/// errors abort the rewind honestly (previously they degraded to the replay
+/// path with the cause hidden; the replay stays reachable on retry), which
+/// still never fakes a completion.
 fn pending_retry_completes(
     store: &SessionStore,
     session: &str,
@@ -5854,25 +5856,30 @@ fn pending_retry_completes(
     pending_keep: u32,
     keep_turns: u32,
     current_revision: &str,
-) -> bool {
+) -> Result<bool, CliError> {
     if pending_keep != keep_turns {
-        return false;
+        return Ok(false);
     }
-    store
+    // r52 minor 3 (review): sidecar read errors are no longer swallowed into
+    // "no record" (which silently degraded the committed-crash verdict to the
+    // replay path with the cause misattributed) - they abort the rewind
+    // honestly. The replay stays reachable through the next retry.
+    let record = store
         .latest_rewound_turns_record(session)
-        .ok()
-        .and_then(|record| record)
-        .is_some_and(|record| {
-            // r47 MAJOR-1 (review): pair on the PreRestore/undo id - the same
-            // field the desktop reconcile matches (app/commands/checkpoints.rs
-            // binds `record.pre_restore_checkpoint_id == pending.pre_restore_id`).
-            // The pending's OTHER id (`checkpoint_id`) is the target Turn
-            // snapshot's id, a disjoint id space; comparing against it is
-            // constant-false and wedges headless recovery forever.
-            record.pre_restore_checkpoint_id.as_deref() == Some(pending_pre_restore_id)
-                && !record.truncated_revision.is_empty()
-                && record.truncated_revision == current_revision
-        })
+        .map_err(|error| {
+            crate::support::store_error("code", "checkpoints rewind", session, error)
+        })?;
+    Ok(record.is_some_and(|record| {
+        // r47 MAJOR-1 (review): pair on the PreRestore/undo id - the same
+        // field the desktop reconcile matches (app/commands/checkpoints.rs
+        // binds `record.pre_restore_checkpoint_id == pending.pre_restore_id`).
+        // The pending's OTHER id (`checkpoint_id`) is the target Turn
+        // snapshot's id, a disjoint id space; comparing against it is
+        // constant-false and wedges headless recovery forever.
+        record.pre_restore_checkpoint_id.as_deref() == Some(pending_pre_restore_id)
+            && !record.truncated_revision.is_empty()
+            && record.truncated_revision == current_revision
+    }))
 }
 
 fn checkpoints_rewind(
@@ -5985,7 +5992,7 @@ fn checkpoints_rewind(
             pending_keep,
             keep_turns,
             &current_revision,
-        ) {
+        )? {
             checkpoints::clear_pending_rewind(&ledger);
             if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns)
             {
