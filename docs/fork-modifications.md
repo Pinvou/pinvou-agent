@@ -797,9 +797,9 @@ gitlink == branch head with the r3 tag pinned at its closure
 ## CodeWhale baseline follow to 44142616aa (2026-11-27)
 
 The submodule gitlink follows pinvou3-clean to 44142616aa — seven reviewed
-squashes on top of cc2adf8ef: #172 `aeeabfdc67` (docs: fork note into the
-Indonesian guide), #173 `1cdc56ab07` (fix(web): Node floor raised to the lint
-toolchain's), #174 `41ef03a461` (chore: MSRV comment and advisory waivers
+squashes on top of cc2adf8ef: #172 `1cdc56ab07` (fix(web): the Node floor raised to the lint
+toolchain's), #173 `aeeabfdc67` (docs: the fork note carried into the
+Indonesian guide), #174 `41ef03a461` (chore: MSRV comment and advisory waivers
 aligned with the lock), #175 `552584de60` (fix(tui): the k3.1 ceiling row
 matched case-insensitively), #177 `90c07ff7d7` (fix(tui): the empty-object
 schema restored for schema-less MCP tools on every lane), #178 `7dec518923`

@@ -2652,6 +2652,14 @@ fn live_pending_rewind_unlocked(ledger_root: &Path) -> Result<Option<PendingRewi
         let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
+    if pending.aborted {
+        // r53 P2（评审）：被显式放弃（aborted）的暂记在**真正的对账读取层**
+        // 按「无暂记」处理——对账重放臂不得执行被拒绝的破坏性回退（普通消
+        // 息发送没有该权威）。首版把跳过误插进 matching_pending_pre_restore
+        // 的隔离块，live 读取路径未消费 aborted（评审 69dc3267c 内联实证
+        // doneNotice 零次触达同类死线），本处为唯一权威判定点。
+        return Ok(None);
+    }
     // r39 minor 4：目标成员校验 fail-closed——索引读失败与「已被淘汰」不再
     // 同判。淘汰才清暂记解除快照阻断并如实留痕；瞬态读失败上抛，快照前奏
     // 的 Err 臂照常阻断本轮快照（不得在暂记在飞时因一次读失败删暂记孤儿化

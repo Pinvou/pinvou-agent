@@ -159,14 +159,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # The pinned engine face this mirror ships against; see
 # test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed
-# 2026-11-24 onto the T11 close-out head cc2adf8ef: the Moonshot face
-# (#143) and the provider faces (#144/#145/#146) land on the gitlink, so
-# the layer-2 source assertions flip from the pre-T11 tripwire to the
-# shipped-face pins (anyOf cap 500, advisory strip, empty-items repair),
-# verified against the populated tree before flipping the pin. The
-# DeepSeek face (CodeWhale#147) is still open upstream and outside this
-# mirror's scope.
-_PINNED_CODEWHALE_GITLINK = "cc2adf8ef927fff072e9493734a0a32f3a044996"
+# 2026-11-27 onto the maintenance head 44142616aa: the batch
+# (#172/#173/#174/#175/#177/#178/#180) touches no MCP-schema source the
+# mirror pins (the #177 empty-object schema repair is in the engine's
+# tool-execution turn loop, not the mirror's pptx server face), verified
+# against the populated tree before flipping the pin. The prior T11
+# close-out pins (anyOf cap 500, advisory strip, empty-items repair)
+# remain the shipped face. The DeepSeek face (CodeWhale#147) is still
+# open upstream and outside this mirror's scope.
+_PINNED_CODEWHALE_GITLINK = "44142616aa4aeeb1332c1f4496ea502baf880a29"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
