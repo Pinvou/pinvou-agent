@@ -54,8 +54,8 @@ fn reparse_tag_requires_refusal(tag: u32, is_directory: bool) -> bool {
 #[cfg(windows)]
 fn probe_reparse_attributes(path: &std::path::Path) -> std::io::Result<(u32, u32)> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{FindFirstFileW, WIN32_FIND_DATAW};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
 
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
@@ -64,10 +64,12 @@ fn probe_reparse_attributes(path: &std::path::Path) -> std::io::Result<(u32, u32
     if handle == INVALID_HANDLE_VALUE {
         return Err(std::io::Error::last_os_error());
     }
-    if unsafe { CloseHandle(handle) } == 0 {
-        // 句柄关闭失败极罕见且读值已完成：记 warn 不致命。
+    // r52 P2（评审）：FindFirstFileW 的搜索句柄必须以 FindClose 释放——
+    // CloseHandle 对搜索句柄是未定义的资源生命周期操作（内核搜索上下文
+    // 由 FindClose 专管），此处读值已完成，失败仅记 warn 不致命。
+    if unsafe { FindClose(handle) } == 0 {
         log::warn!(
-            "[pinvou3][checkpoints] reparse probe CloseHandle failed for {}: {}",
+            "[pinvou3][checkpoints] reparse probe FindClose failed for {}: {}",
             path.display(),
             std::io::Error::last_os_error()
         );
