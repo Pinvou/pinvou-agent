@@ -120,9 +120,22 @@ impl RuntimeMaintenance {
         guard._spawning = Some(
             tokio::time::timeout(RELEASE_TIMEOUT, self.spawning.clone().write_owned())
                 .await
-                .map_err(|_| RELEASE_FAILED.to_string())?,
+                .map_err(|_| BUSY.to_string())?,
         );
         Ok(guard)
+    }
+
+    fn reject_failed_shutdown(&self) -> Result<(), String> {
+        for receipt in self.engines.lock().iter() {
+            let sender_closed = receipt.has_changed().is_err();
+            match *receipt.borrow() {
+                Some(EngineRunCompletion::NormalReturn) => {}
+                Some(_) => return Err(RELEASE_FAILED.into()),
+                None if sender_closed => return Err(RELEASE_FAILED.into()),
+                None => {}
+            }
+        }
+        Ok(())
     }
 
     async fn wait_for_shutdown(&self) -> Result<(), String> {
@@ -196,6 +209,9 @@ impl EnginePool {
         // New reservations cannot race this check while blocked is set.
         self.marketplace_uninstall
             .ensure_idle(&self.turn_lifecycles)?;
+        // A previously failed release cannot be repaired by retiring another
+        // actor. Keep the final wait for receipts that settle during retirement.
+        self.marketplace_uninstall.reject_failed_shutdown()?;
         // App admission cannot observe every autonomous turn. Ask each actor
         // to seal its own complete idle boundary before using destructive
         // reclaim. A busy actor keeps its tasks, pending results and goal timer.
@@ -317,6 +333,19 @@ mod tests {
         match begin.await {
             Err(error) => assert!(error.is_cancelled()),
             Ok(_) => panic!("cancelled preflight must not complete"),
+        }
+        assert!(!*maintenance.blocked.lock());
+        drop(reader);
+        assert!(maintenance.begin().await.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn upload_uninstall_spawn_lock_timeout_is_retryable() {
+        let maintenance = RuntimeMaintenance::default();
+        let reader = maintenance.read().await;
+        match maintenance.begin().await {
+            Err(error) => assert_eq!(error, BUSY),
+            Ok(_) => panic!("the spawn lock is still held by active work"),
         }
         assert!(!*maintenance.blocked.lock());
         drop(reader);

@@ -143,11 +143,35 @@ fn upload_uninstall_native_failed_receipt_preserves_package_and_configuration() 
                 )
                 .unwrap();
 
+            let engine = pool.get_or_spawn(&session.metadata.id).await.unwrap();
+            let boot = engine.handle.bootstrap_mcp().await;
+            let idle = wait_for_native_actor_idle(&engine.handle).await;
             pool.insert_uninstall_failure_for_test(
                 deepseek_tui::core::engine::EngineRunCompletion::AbnormalTermination,
             );
             let outcome = uninstall_marketplace_tool(id.into(), app.state()).await;
+            let retained = pool.handle_for(&session.metadata.id).await;
+            let same_actor = retained.as_ref().is_some_and(|retained| {
+                Arc::ptr_eq(&retained.scheduled_unattended, &engine.scheduled_unattended)
+            });
+            let usable = engine.handle.get_session_snapshot().await;
+            pool.evict(&session.metadata.id).await;
+            let completion = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                engine.handle.wait_run_completion(),
+            )
+            .await;
+            boot.unwrap();
+            idle.unwrap();
+            assert_eq!(
+                completion.expect("owned actor teardown must finish"),
+                deepseek_tui::core::engine::EngineRunCompletion::NormalReturn
+            );
             assert_eq!(outcome.unwrap_err(), "marketplace_uninstall_release_failed");
+            assert!(
+                same_actor && usable.is_ok(),
+                "failed receipt must preserve a healthy actor"
+            );
             assert_eq!(
                 std::fs::read(package.join("mcp/server.py")).unwrap(),
                 script

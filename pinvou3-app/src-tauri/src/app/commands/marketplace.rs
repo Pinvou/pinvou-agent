@@ -241,7 +241,12 @@ pub async fn install_marketplace_tool(
     // server until respawn (the exact staleness mark_mcp_config_updated
     // exists to close). After a validation rollback the file no longer
     // carries the server and the refresh is a harmless re-read.
-    let post_install = install_marketplace_tool_post_install(tool_id).await;
+    let worker_pool = pool.inner().clone();
+    let runtime = tokio::runtime::Handle::current();
+    let post_install = install_marketplace_tool_post_install(tool_id, move || {
+        runtime.block_on(worker_pool.prepare_upload_uninstall())
+    })
+    .await;
     // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
@@ -270,8 +275,9 @@ pub async fn install_marketplace_tool(
 /// remote validation's discovered tool inventory (empty when the pack does
 /// not declare validation) so the command can hand the validation report to
 /// the UI instead of discarding it.
-pub(super) async fn install_marketplace_tool_post_install(
+pub(super) async fn install_marketplace_tool_post_install<G>(
     tool_id: String,
+    upload_preflight: impl FnOnce() -> Result<G, String> + Send + 'static,
 ) -> Result<Vec<String>, String> {
     // The consent sync must run IMMEDIATELY after the install commit, BEFORE
     // the network validation — for initialized scopes the stored list is the
@@ -312,18 +318,18 @@ pub(super) async fn install_marketplace_tool_post_install(
                 // post-return strip here — a strip after the uninstall returns
                 // would sit outside the transaction and import locks and could
                 // wipe a concurrent same-id install's fresh registration, while
-                // a FAILED uninstall must keep the rows
-                // fail-closed (installed + denied).
+                // a failed uninstall leaves the post-install registration
+                // and its consent rows intact.
                 let rollback_result = tokio::task::spawn_blocking(move || {
                     crate::features::marketplace::MarketplaceManager::new()
-                        .uninstall(&rollback_tool_id)
+                        .uninstall_with_upload_preflight(&rollback_tool_id, upload_preflight)
                 })
                 .await;
                 // Best-effort compensation: LOG a rollback failure instead of
                 // discarding it — the validation error remains the one returned
                 // (round-28 nit: the rollback result is not surfaced to the user;
-                // on a failed rollback the pack remains installed — fail-closed
-                // state, the log line is the only trace).
+                // on a failed rollback the pack remains installed and the
+                // log records why the rollback could not finish).
                 match &rollback_result {
                     Err(e) => {
                         log::warn!(

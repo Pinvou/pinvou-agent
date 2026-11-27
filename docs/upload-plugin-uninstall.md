@@ -42,8 +42,24 @@ removal and shutdown. Blocking filesystem work also continues if the invoking
 future is dropped. Retrying observes the resulting installed/recycled state.
 Waiting for spawn exclusion, each idle request and completion receipts is
 bounded to 15 seconds. A timed-out idle proposal cannot shut down the engine
-later. Once an engine is removed, its reclaim is not abandoned on a timeout;
-an unfinished receipt refuses the move and permits a later retry.
+later. Once an engine is removed, its reclaim is not abandoned on a timeout.
+A still-pending receipt can finish normally, so retrying after it settles can
+succeed. An abnormal or unobserved completion cannot establish release and is
+retained for the lifetime of the pool. Since the pool tracks all spawned
+engines, this can block uploaded-package uninstall for unrelated packages.
+A known failed receipt is checked before retiring otherwise healthy actors.
+Restarting the application clears that pool state. The filesystem move can
+still fail if an external owner holds the package.
+
+The fence temporarily excludes new turns across the pool, and retiring idle
+engines rebuild lazily on next use. Failed remote connection validation uses
+the same fence when rollback would recycle an uploaded package. If runtime
+preparation refuses, rollback preserves the package, registration and
+consent state as they stood after the install committed. The command returns
+the original validation error. Check the installed tools list after that error.
+If the tool is still listed, the application log can show why rollback failed.
+After resolving the release failure, retry removal from the installed tools list.
+Re-import and update use a separate rename path.
 
 Standalone uploaded skills use the same protection. Preset uninstall and
 connector disconnect keep their existing behavior. Existing eager companion

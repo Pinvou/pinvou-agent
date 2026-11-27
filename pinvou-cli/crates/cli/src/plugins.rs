@@ -899,8 +899,8 @@ fn tools_install(
         }
     }
     // The GUI validates remote MCP connections right after install
-    // (validate_on_install manifests) and, on a failed handshake, UNINSTALLS
-    // the tool again. The handshake runs on the foundation's async MCP stack,
+    // (validate_on_install manifests) and tries to uninstall the tool if
+    // the handshake fails. The handshake runs on the foundation's async MCP stack,
     // unavailable headless, so neither the check nor its rollback happens
     // here: surface an explicit warning naming both halves instead of
     // pretending the connection was verified.
@@ -927,8 +927,8 @@ fn tools_install(
     if validation_skipped {
         human.push_str(&format!(
             "\nwarning: remote connection validation skipped (headless CLI), and so was the \
-             rollback it guards: the desktop uninstalls a tool whose handshake fails, this \
-             install is left in place either way; check 'pinvou plugins tools auth {id}'"
+             rollback it guards: the desktop attempts to uninstall a tool whose handshake fails; \
+             the CLI leaves this install in place. Check 'pinvou plugins tools auth {id}'"
         ));
         value["validation_rollback"] = serde_json::json!("skipped");
     }
