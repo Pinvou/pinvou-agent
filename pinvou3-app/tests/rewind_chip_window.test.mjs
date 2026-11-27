@@ -54,4 +54,3 @@ assert.doesNotMatch(
   /setVisibleCount\(REWIND_FILE_LIST_INITIAL_ROWS\);\s*\}, \[changes\]\)/,
   'the reset must not be an effect (setState-in-effect cascading lint)',
 );
-
