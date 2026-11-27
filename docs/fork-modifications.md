@@ -71,8 +71,8 @@
 
 ## 0. 当前状态（2026-11-24）
 
-- 当前公开维护头与父仓 gitlink：`cc2adf8ef927fff072e9493734a0a32f3a044996`（2026-11-24）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。2026-11-24 批合入 #127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/#164/#165/#166/#167/#168/#169/#170/#171 共 21 个提交，其中 T11 的 Moonshot 面（#143）与 provider 面（#144/#145/#146）随父仓 close-out re-pin 一并落地，父仓 gitlink 随之跟随（见 §3 表首）。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 121 个提交，r1 `1fafee7e2` 之上 106 个；118 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`44142616aa4aeeb1332c1f4496ea502baf880a29`（2026-11-27，2026-11-27 批新增 #172/#173/#174/#175/#177/#178/#180 共 7 个提交，其中 #180 为 host 事件的工具取消结果元数据保持——行为变化，§「CodeWhale baseline follow」登记）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。2026-11-24 批合入 #127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/#164/#165/#166/#167/#168/#169/#170/#171 共 21 个提交，其中 T11 的 Moonshot 面（#143）与 provider 面（#144/#145/#146）随父仓 close-out re-pin 一并落地，父仓 gitlink 随之跟随（见 §3 表首）。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 128 个提交（2026-11-27 批 +7，全部带签署），r1 `1fafee7e2` 之上 106 个；125 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：583 files, +150708/-54594，净增 96114；384 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
@@ -792,3 +792,25 @@ the official v0.9.12 root (dcd4c200) and the immutable r1 closure are
 unchanged ancestors, and the public-head transition contract stays
 gitlink == branch head with the r3 tag pinned at its closure
 (61cb769be).
+
+
+## CodeWhale baseline follow to 44142616aa (2026-11-27)
+
+The submodule gitlink follows pinvou3-clean to 44142616aa — seven reviewed
+squashes on top of cc2adf8ef: #172 `aeeabfdc67` (docs: fork note into the
+Indonesian guide), #173 `1cdc56ab07` (fix(web): Node floor raised to the lint
+toolchain's), #174 `41ef03a461` (chore: MSRV comment and advisory waivers
+aligned with the lock), #175 `552584de60` (fix(tui): the k3.1 ceiling row
+matched case-insensitively), #177 `90c07ff7d7` (fix(tui): the empty-object
+schema restored for schema-less MCP tools on every lane), #178 `7dec518923`
+(build(cargo): the local default test stack aligned with CI's 16 MiB floor),
+and #180 `44142616aa` (fix(engine): tool cancellation preserved in host
+events — cancellation-result metadata; a behavior change in the child).
+
+Parent-side consumers: none of the seven touch files the parent mirrors or
+re-implements; the parent consumes the delta through the gitlink only. The
+behavioral delta (#180's cancellation-result metadata in host events) is
+covered by the child's own suite; the parent's event-compat surface was
+reviewed for it in the round-53 incremental review. Guard bookkeeping:
+EXPECTED_HEAD / EXPECTED_COMMITS move to 44142616aa / 128 and this register
+row is the required record for the gitlink-only-plus-child-behavior change.
