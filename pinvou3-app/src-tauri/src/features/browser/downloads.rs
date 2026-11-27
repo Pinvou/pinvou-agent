@@ -1650,10 +1650,29 @@ mod tests {
             .expect("a usable working directory");
         assert!(absolute.is_absolute());
         assert!(absolute.ends_with("relative/downloads"));
+        // An already-absolute staging root passes through unchanged. The
+        // fixture must be genuinely absolute on every target: a POSIX-style
+        // "/already/absolute" is rooted but has no drive/UNC prefix, so
+        // `Path::is_absolute()` is false on Windows and the passthrough
+        // precondition would not even hold there.
+        let already_absolute = std::env::temp_dir().join("pinvou3-already-absolute");
         assert_eq!(
-            absolute_staging_root_with(Path::new("/already/absolute"), None),
-            Some(PathBuf::from("/already/absolute"))
+            absolute_staging_root_with(&already_absolute, None),
+            Some(already_absolute.clone())
         );
+        // The bare rooted path passes through exactly where it is absolute
+        // (POSIX); where it is not (Windows: rooted without a drive/UNC
+        // prefix), with no working directory to join there is honestly no
+        // absolute form and the coordinator sees None. The expectation
+        // follows the runtime predicate instead of a target cfg, so the
+        // assertion stays exact on every platform.
+        let bare = Path::new("/already/absolute");
+        let expected = if bare.is_absolute() {
+            Some(PathBuf::from("/already/absolute"))
+        } else {
+            None
+        };
+        assert_eq!(absolute_staging_root_with(bare, None), expected);
     }
 
     #[test]
@@ -2805,10 +2824,17 @@ mod tests {
             absolute_staging_root_with(Path::new("rel/downloads"), Some(Path::new("/cwd"))),
             Some(PathBuf::from("/cwd/rel/downloads"))
         );
-        assert_eq!(
-            absolute_staging_root_with(Path::new("/already/absolute"), None),
+        // Rooted-only paths are absolute on POSIX but not on Windows (no
+        // drive/UNC prefix): the expectation follows the runtime predicate
+        // (`Path::is_absolute`) instead of a target cfg, staying exact on
+        // every platform.
+        let bare = Path::new("/already/absolute");
+        let expected = if bare.is_absolute() {
             Some(PathBuf::from("/already/absolute"))
-        );
+        } else {
+            None
+        };
+        assert_eq!(absolute_staging_root_with(bare, None), expected);
     }
 
     #[test]
