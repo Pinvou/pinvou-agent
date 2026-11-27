@@ -162,7 +162,7 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # 2026-11-27 onto the maintenance head 44142616aa: the batch
 # (#172/#173/#174/#175/#177/#178/#180) touches no MCP-schema source the
 # mirror pins (the #177 empty-object schema repair is in the engine's
-# tool-execution turn loop, not the mirror's pptx server face), verified
+# Anthropic request adapter, client/anthropic.rs, not the mirror's pptx server face), verified
 # against the populated tree before flipping the pin. The prior T11
 # close-out pins (anyOf cap 500, advisory strip, empty-items repair)
 # remain the shipped face. The DeepSeek face (CodeWhale#147) is still

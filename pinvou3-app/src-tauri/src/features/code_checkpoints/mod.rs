@@ -2430,6 +2430,12 @@ pub fn matching_pending_pre_restore(
         let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
+    if pending.aborted {
+        // r53 P2（评审）：aborted 暂记不是重试复用候选——显式重试必须以
+        // 当前工作区新拍 PreRestore（复用旧 P1 会把回退前的旧树带回来，
+        // 重试成功后的 undo 抹掉其间的编辑）。
+        return Ok(None);
+    };
     if pending.checkpoint_id != checkpoint_id
         || pending.keep_turns != keep_turns
         || pending.transcript_revision != transcript_revision
@@ -2617,6 +2623,11 @@ pub fn peek_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
         Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
+        return Ok(None);
+    };
+    if pending.aborted {
+        // r53 P2（评审）：aborted 暂记对入口窥视（不同边界拒绝门）同样按
+        // 「无暂记」处理——放弃操作不得以陈旧标记阻断新的不同边界重试。
         return Ok(None);
     };
     Ok(Some(pending))
@@ -5668,6 +5679,105 @@ pub(crate) ",
 "
             ),
             "service-account/ 目录内容回退后必须存活"
+        );
+    }
+
+    /// r53-P2 可执行回归（评审 69dc3267c 内联）：abort → 工作区编辑 → 显式
+    /// 重试 → undo 全链路。被拒绝回退的暂记持久标记 aborted 后，对一切消费
+    /// 方按「无暂记」处理（peek/matching/live/degraded 四读取层）；显式同边
+    /// 界重试覆盖 aborted 标记、以当前工作区新拍 PreRestore（绝不复用被放
+    /// 弃操作的旧 P1），undo 恢复到重试前状态——其间的编辑不得丢失。
+    #[test]
+    fn aborted_pending_is_invisible_and_retry_snapshots_current_files() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("abortretry-ledger");
+        let exec = TestDir::new("abortretry-exec");
+        exec.write(
+            "ok.txt", "v1
+",
+        );
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("turn 1");
+        exec.write(
+            "ok.txt", "v2
+",
+        );
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .expect("turn 2");
+
+        // 被拒绝回退的形态：prepare（登记 P1undo，回滚点=当前 v2 树）+ 落
+        // 暂记；随后 ACP 拒绝臂清理失败、aborted 标记成功持久化。
+        let revision = "rev-marker";
+        let (_target_p1, undo_p1) =
+            prepare_restore(ledger.path(), exec.path(), &first.id, None).expect("prepare");
+        write_pending_rewind(ledger.path(), &first.id, 1, &undo_p1.id, &revision).expect("pending");
+        assert!(
+            mark_pending_rewind_aborted(ledger.path()),
+            "aborted 标记必须成功持久化"
+        );
+
+        // 四读取层一致：aborted 暂记按「无暂记」处理。
+        assert!(
+            peek_pending_rewind(ledger.path()).unwrap().is_none(),
+            "peek"
+        );
+        assert!(
+            matching_pending_pre_restore(ledger.path(), &first.id, 1, &revision)
+                .unwrap()
+                .is_none(),
+            "aborted 暂记不得作为重试复用候选"
+        );
+        assert!(
+            pending_pre_restore_for_degraded(ledger.path(), &revision)
+                .unwrap()
+                .is_none(),
+            "aborted 暂记不得为降级回退绑定 P1"
+        );
+        assert!(
+            live_pending_rewind(ledger.path()).unwrap().is_none(),
+            "live"
+        );
+
+        // 显式同边界重试：覆盖 aborted 标记（aborted=false 的新暂记），并以
+        // **当前工作区**（v2）新拍 PreRestore——绝不复用被放弃操作的旧 P1。
+        let (target_retry, undo_p2) =
+            prepare_restore(ledger.path(), exec.path(), &first.id, None).expect("retry prepare");
+        assert_ne!(
+            undo_p2.id, undo_p1.id,
+            "重试必须新拍 PreRestore（复用 P1 会把 v1 旧树带回 undo）"
+        );
+        write_pending_rewind(ledger.path(), &first.id, 1, &undo_p2.id, &revision)
+            .expect("retry pending");
+        let fresh = peek_pending_rewind(ledger.path())
+            .unwrap()
+            .expect("fresh pending");
+        assert!(!fresh.aborted, "重试暂记不得继承 aborted");
+
+        // 重试执行 + undo：恢复到重试前状态（v2——其间的编辑保留），而非被
+        // 放弃操作瞄准的 v1。
+        apply_restore(ledger.path(), exec.path(), &target_retry).expect("retry apply");
+        restore_checkpoint(ledger.path(), exec.path(), &undo_p2.id).expect("undo of the retry");
+        assert_eq!(
+            exec.read("ok.txt").as_deref(),
+            Some(
+                "v2
+"
+            ),
+            "undo 必须回到重试前状态（v2 保留其间的编辑；复用 P1 会错回 v1）"
         );
     }
 
