@@ -2283,6 +2283,11 @@ pub(crate) struct PendingRewind {
     /// 编辑/成功回退/撤销都会改变它，届时退回「新建 PreRestore」（对那些
     /// 场景新建才是正确语义：undo 应绑定重试时刻的真实前置状态）。
     pub(crate) transcript_revision: String,
+    /// r53 P2（评审）：暂记被显式放弃（拒绝臂清理失败时的持久化中止标记）
+    /// ——对账必须跳过重放、仅清除标记，普通消息发送不得执行被拒绝的
+    /// 破坏性回退。serde(default)：旧暂记字节无该字段 = 未放弃。
+    #[serde(default)]
+    pub(crate) aborted: bool,
 }
 
 impl PendingRewind {
@@ -2341,6 +2346,11 @@ pub fn write_pending_rewind(
     // r52 minor 1: already locked - use the lock-free inner (the public
     // entry would deadlock on a second blocking flock).
     let existing = match live_pending_rewind_unlocked(ledger_root) {
+        Ok(Some(existing)) if existing.aborted => {
+            // r53 P2（评审）：aborted 暂记是已放弃的操作——显式重试（同边界）
+            // 覆盖它即为重试边界本身，不受 r36-M2 拒绝。
+            None
+        }
         Ok(Some(existing)) => Some(existing),
         Ok(None) => None,
         Err(error) => {
@@ -2384,6 +2394,7 @@ pub fn write_pending_rewind(
         keep_turns,
         pre_restore_id: pre_restore_id.to_string(),
         transcript_revision: transcript_revision.to_string(),
+        aborted: false,
     };
     // r14 M-A：崩溃恢复契约文件——原子+私有（0600）+O_EXCL 暂存+rename 抗
     // symlink 植入；unbound 布局下账本位于 agent 可写的工作树内。
@@ -2479,6 +2490,13 @@ pub fn pending_pre_restore_for_degraded(
         let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
+    if pending.aborted {
+        // r53 P2（评审）：被显式放弃（aborted）的暂记对一切消费方按「无暂
+        // 记」处理——对账重放臂不得执行被拒绝的破坏性回退（普通消息发送
+        // 没有该权威）；显式重试经 write_pending_rewind 的放行覆盖它，标记
+        // 本身惰性留存（对桌面/CLI 均不可见，直到被覆盖）。
+        return Ok(None);
+    };
     // r33 MAJOR-2：绑定判定只看 transcript revision——revision 匹配证明该
     // 暂记属于本次回退上下文（apply 已把工作区带到目标树），此时绑定 P1 是
     // 连贯语义（无论 apply 是否跑过）；keep_turns 不再参与判定——不同边界
@@ -2525,6 +2543,43 @@ pub fn try_clear_pending_rewind(ledger_root: &Path) -> bool {
         },
         Err(_) => false,
     }
+}
+
+/// r53 P2（评审）：清理未决时的持久化放弃——把暂记标记为 aborted，对账
+/// 臂据此跳过重放（普通消息发送不再执行被拒绝的破坏性回退），仅清标记。
+/// 返回 false = 放弃标记本身也未能落盘（锁/IO 失败），调用方如实上抛。
+pub fn mark_pending_rewind_aborted(ledger_root: &Path) -> bool {
+    let _lock = match lock_pending_rewind_file(ledger_root) {
+        Ok(lock) => lock,
+        Err(_) => return false,
+    };
+    // 直读直写（不走 live 读取层）：live 层对 aborted 暂记按「无暂记」跳过，
+    // 而本函数恰恰要在「清理失败后」把标记盖上——二次失败时读取到的仍是
+    // 未放弃的原始暂记，或已放弃的（幂等重盖）。
+    let path = pending_rewind_path(ledger_root);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let mut pending = match serde_json::from_slice::<PendingRewind>(&bytes) {
+        Ok(pending) => pending,
+        Err(_) => return false,
+    };
+    pending.aborted = true;
+    match serde_json::to_vec_pretty(&pending) {
+        Ok(out) => crate::platform::filesystem::atomic_write_private(&path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// r53 P2：活暂记是否已被显式放弃（对账短路的判定输入）。IO 失败由调用方
+/// 既有 fail-closed 分支承接。
+pub fn live_pending_rewind_is_aborted(ledger_root: &Path) -> Result<bool> {
+    let _lock = lock_pending_rewind_file(ledger_root)?;
+    Ok(match live_pending_rewind_unlocked(ledger_root)? {
+        Some(pending) => pending.aborted,
+        None => false,
+    })
 }
 
 /// r19 M6 崩溃对账读取：任何「活」暂记（存在、可解析、目标仍在索引）。
@@ -4213,8 +4268,10 @@ pub(crate) ",
 
         // 恢复到第一个快照：clean -fd 之后两文件仍在且内容未动。
         restore_checkpoint(&ledger, &exec, &first.id).expect("restore");
+        // r53 P2：暂记序列化随 aborted 协议字段更新（新写恒为 false；旧字节
+        // 无该字段按 default=false 读，向后兼容）。
         let expected_pending = format!(
-            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"pre-1\",\"transcript_revision\":\"rev-x\"}}",
+            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"pre-1\",\"transcript_revision\":\"rev-x\",\"aborted\":false}}",
             first.id
         );
         assert_eq!(

@@ -1266,14 +1266,17 @@ pub async fn rewind_to_turn(
         )
         .await
         {
-            // r53 P2 跟进（评审）：取消必须真实——锁不可用导致暂记未能移除
-            // 时，把「回退仍在暂记态、下一条消息会完成它」如实写进拒绝文案，
-            // 不留静默重放隐患。
-            if !checkpoints::try_clear_pending_rewind(&ledger) {
+            // r53 P2（评审）：取消必须有持久边界——移除失败时把暂记持久
+            // 标记为 aborted（对账重放臂据此跳过，普通消息发送不得执行被
+            // 拒绝的回退）；放弃标记本身也未能落盘时，才如实告知「重放仍
+            // 可能发生」。
+            if !checkpoints::try_clear_pending_rewind(&ledger)
+                && !checkpoints::mark_pending_rewind_aborted(&ledger)
+            {
                 return Err(format!(
                     "{refusal}
 
-另：回退暂记未能清除（暂记锁不可用）——该回退仍处于暂记状态，下一条普通消息发送时会自动完成它；请知悉后再继续。"
+另：回退暂记既未能清除也未能标记放弃（暂记锁不可用）——下一条普通消息发送时可能自动完成该回退；请知悉后再继续。"
                 ));
             }
             return Err(refusal);
