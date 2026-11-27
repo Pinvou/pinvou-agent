@@ -2008,7 +2008,7 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
             // failed-hot-sync shape as every other switch surface — re-read
             // the authoritative state so the receipt tracks the effective
             // mode and mark the session for the edit-resend guard.
-            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt, lanePreMode);
+            await pinvouSharedweb().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt, lanePreMode, laneDefault);
           }
         }
         await syncActivePersona();
@@ -5667,7 +5667,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
+    } catch (e) { await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode, mode); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -5718,7 +5718,7 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
       }
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); notify();
+      await pinvouSharedweb().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode, "yolo"); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();

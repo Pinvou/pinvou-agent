@@ -426,7 +426,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       }
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); notify();
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode, "yolo"); notify();
       return;
     }
     patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
@@ -486,7 +486,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     } catch (e) {
       patchItemByIdFor(sid, itemId, { submitting: false });
-      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); notify(); return;
+      await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode, "auto"); notify(); return;
     }
     try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
     catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
@@ -528,7 +528,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       if (outcome && outcome.ask_error) {
         addSystemItemFor(sid, bt("modeAskPersistFailed") + outcome.ask_error);
       }
-    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
+    } catch (e) { await pinvouSharedtauriInteraction().handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode, mode); }
     notify();
   }
   // Per-session "ask on guardrail hit" toggle: optimistic flip (the backend hot-syncs the engine's

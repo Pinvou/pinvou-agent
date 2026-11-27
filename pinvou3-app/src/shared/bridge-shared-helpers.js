@@ -4399,7 +4399,7 @@
     modeSyncUnresolvedArmedBy.delete(sid);
     return true;
   }
-  async function handleModeSwitchFailure(sid, error, failCopy, attempt, preMode) {
+  async function handleModeSwitchFailure(sid, error, failCopy, attempt, preMode, requestedMode) {
     // A stale rejection (a newer-dispatched result already settled) is
     // dropped wholesale: the newer settlement's own receipt governs the
     // display, and re-arming here would re-block a repaired session.
@@ -4420,21 +4420,40 @@
       // the newer settlement's own receipt governs, and re-applying a
       // stale read here would misreport the session's effective state.
       if ((modeSyncSettled.get(sid) || 0) > attempt) return;
-      // Pre-write rejection vs applied-but-unsynchronized (review P2): the
-      // caller captures the session's authoritative mode at dispatch time.
-      // A readback still showing that pre-dispatch mode proves the command
-      // rejected BEFORE landing — nothing is unsynchronized, so the receipt
-      // is the plain failure (no "effective" claim) and the edit-resend
-      // guard releases; only the attempt that armed the marker may release
-      // it, so an older failure's genuine guard survives. A CHANGED readback
-      // is the hot-sync failure shape: the mode landed, the receipt tracks
-      // the effective state, and the guard stays.
+      // Pre-write rejection vs same-mode post-write publication failure
+      // (review P2, same-mode contrast): the mode commands' store write is
+      // unconditional and precedes the fallible publish, so an unchanged
+      // readback alone proves nothing — a same-mode request can land its
+      // write and still fail the publish with the label unchanged, and the
+      // guard must NOT release in that shape. The release therefore
+      // additionally requires the caller's requested target to DIFFER from
+      // the pre-dispatch mode: only then does an unchanged readback prove
+      // the store was never touched (a landed write would read back the
+      // requested mode), so the command rejected BEFORE landing — the
+      // receipt is the plain failure (no "effective" claim) and only the
+      // attempt that armed the marker may release it, so an older failure's
+      // genuine guard survives. Same-mode requests and faces without a
+      // pinned target keep the guard armed (conservative: a later
+      // successful switch clears it) with the plain failure copy. A CHANGED
+      // readback is the hot-sync failure shape: the mode landed, the
+      // receipt tracks the effective state, and the guard stays.
       const effectiveMode = currentMode && (currentMode.mode || "auto");
-      if (preMode != null && effectiveMode === preMode) {
+      const rejectionProven = preMode != null && requestedMode != null &&
+        requestedMode !== preMode && effectiveMode === preMode;
+      if (rejectionProven) {
         if (modeSyncUnresolvedArmedBy.get(sid) === attempt) {
           modeSyncUnresolvedSids.delete(sid);
           modeSyncUnresolvedArmedBy.delete(sid);
         }
+        addSystemItemFor(sid, failCopy + error);
+        return;
+      }
+      if (effectiveMode === preMode) {
+        // Ambiguous unchanged readback (same-mode target, or a face whose
+        // target could not be pinned): the write may have landed while the
+        // publish failed, so the guard stays and the receipt is the plain
+        // failure copy — no "effective" claim is possible when nothing
+        // demonstrably changed.
         addSystemItemFor(sid, failCopy + error);
         return;
       }
@@ -4474,7 +4493,7 @@
         // persisted — an unsaved note, not a failure.
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { await handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode); }
+    } catch (e) { await handleModeSwitchFailure(sid, e, bt("switchModeFailed"), switchAttempt, preSwitchMode, "plan"); }
     notify();
   }
 
@@ -4557,7 +4576,7 @@
       if (outcome && outcome.persist_error) {
         addSystemItemFor(sid, bt("modePersistFailed") + outcome.persist_error);
       }
-    } catch (e) { await handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode); }
+    } catch (e) { await handleModeSwitchFailure(sid, e, bt("exitPlanFailed"), switchAttempt, preSwitchMode, "yolo"); }
     notify();
   }
 
