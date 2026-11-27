@@ -115,7 +115,9 @@ test("one download's outcome cannot hide another that still waits for the user",
   state = downloadNoticesReducer(state, started('c'));
   state = downloadNoticesReducer(state, reported('cancelled', 'b'));
   assert.equal(latestDownloadNotice(state).downloadId, 'b');
-  assert.deepEqual(Object.keys(state), ['c', 'b']);
+  // The dismissed entry stays as a tombstone key (seen identity), hidden
+  // from the visible selection; 'c' was re-inserted after it.
+  assert.deepEqual(Object.keys(state), ['a', 'c', 'b']);
 
   state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'b' });
   state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'c' });
@@ -260,6 +262,29 @@ test('a mount-time backfill fills only the notices this session does not know', 
     known,
   );
   assert.deepEqual(downloadNoticesReducer(undefined, { type: 'backfill', notices: [] }), {});
+});
+
+test('a dismissal outlives an in-flight mount snapshot (no ghost resurrection)', () => {
+  // Ordering from review P2: the mount query is dispatched, its snapshot
+  // captures unsaved A, the live saved event for A lands and the user
+  // dismisses the terminal notice BEFORE the query resolves. The stale
+  // snapshot must not resurrect the notice: the backend record is already
+  // gone (Save as is refused as not retryable, Discard emits nothing), and
+  // the picker prioritizes `unsaved`, so the ghost would pin the slot.
+  let state = downloadNoticesReducer(undefined, reported('saved', 'a'));
+  state = downloadNoticesReducer(state, { type: 'dismiss', downloadId: 'a' });
+  state = downloadNoticesReducer(
+    state,
+    { type: 'backfill', notices: [finished('unsaved', browserEn, 'a')] },
+  );
+  assert.equal(latestDownloadNotice(state), null, 'the dismissed identity survives the stale snapshot');
+  assert.notEqual(state.a.status, 'unsaved', 'the stale unsaved record is not resurrected');
+
+  // A genuinely new event for the same download replaces the tombstone and
+  // becomes visible again.
+  state = downloadNoticesReducer(state, reported('saved', 'a'));
+  assert.equal(latestDownloadNotice(state).downloadId, 'a');
+  assert.equal(latestDownloadNotice(state).status, 'saved');
 });
 
 test('the notice history stays bounded so one map entry per download cannot accumulate', () => {

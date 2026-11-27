@@ -90,8 +90,17 @@ export function downloadNoticesReducer(state, action) {
     case 'dismiss': {
       const key = action.downloadId || UNKNOWN_DOWNLOAD;
       if (!(key in (state || {}))) return state || {};
-      const next = { ...state };
-      delete next[key];
+      // Tombstone instead of delete: the key must keep holding this
+      // session's seen/dismissed identity even after the notice leaves the
+      // visible rotation. A mount query dispatched before the dismissal can
+      // still land an old snapshot afterwards — finding the key absent, the
+      // `backfill` guard would accept that stale `unsaved` record and
+      // resurrect a notice the backend can no longer resolve (Save as is
+      // refused as not retryable, Discard emits nothing), and the picker
+      // prioritizes `unsaved`, so the ghost would pin the slot. A tombstone
+      // occupies the key, `backfill` skips it, and a genuinely new event for
+      // the same download re-reports through `report`, replacing it.
+      const next = { ...state, [key]: { status: 'dismissed', downloadId: key, message: '' } };
       return next;
     }
     case 'reset':
@@ -128,7 +137,11 @@ function trimNotices(notices) {
 // slots, and its staged file is lost when the app closes. Everything else
 // shows the most recently updated download.
 export function latestDownloadNotice(state) {
-  const notices = Object.values(state || {});
+  // Dismissal tombstones hold the seen identity but are not notices; the
+  // visible selection never reads them.
+  const notices = Object.values(state || {}).filter(
+    (notice) => notice.status !== 'dismissed',
+  );
   if (!notices.length) return null;
   const actionable = notices.filter((notice) => notice.status === 'unsaved');
   return actionable.length
