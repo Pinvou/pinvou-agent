@@ -3704,10 +3704,6 @@ pub(crate) ",
     /// 前缺精确幸存者清除（仅 migration/restore 有）→ validate 每轮 bail、
     /// 快照永久 wedged 且成因误归因。create 必须成功、两变体都不进快照、
     /// 工作区文件原样存活。
-    // 变体族（`.env`+`.ENV` 同目录共存）要求大小写敏感文件系统——Windows
-    // NTFS 默认 case-insensitive，两名字是同一文件，形态不可表达（r52-M3
-    // 场景本身即 case-sensitive FS 击穿）。Unix CI（rust-test）执行本测试。
-    #[cfg(unix)]
     #[test]
     fn create_purges_dual_variant_secret_family_left_by_negated_ignore() {
         if !git_available() {
@@ -3718,6 +3714,14 @@ pub(crate) ",
         exec.write(".gitignore", "!.env\n!.ENV\n");
         exec.write(".env", "SECRET=lower\n");
         exec.write(".ENV", "SECRET=upper\n");
+        // 变体族（`.env`+`.ENV` 同目录共存）要求大小写敏感文件系统——Windows
+        // NTFS 默认 case-insensitive，两名字是同一文件、后写覆盖先写，形态
+        // 不可表达（r52-M3 场景本身即 case-sensitive FS 击穿）。cfg 选择器按
+        // 架构边界只能落 platform 适配层，业务测试在写后探测：先写内容被
+        // 覆盖即当前 FS 无法表达该族，测试如实降级（Unix rust-test 执行）。
+        if exec.read(".env").as_deref() != Some("SECRET=lower\n") {
+            return;
+        }
         exec.write("ok.txt", "v1\n");
         create_checkpoint(
             ledger.path(),

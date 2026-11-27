@@ -31,7 +31,7 @@ export const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
     const AVATAR_N = 50;
 function avatarSrc(id) {
       let h = 0; const s = String(id || '');
-      for (let i = 0; i < s.length; i++) h = (h * 31 + s.codePointAt(i)) >>> 0;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + (s.codePointAt(i) || 0)) >>> 0;
       const n = (h % AVATAR_N) + 1;
       return 'avatars/avatar-' + (n < 10 ? '0' + n : n) + '.svg';
     }

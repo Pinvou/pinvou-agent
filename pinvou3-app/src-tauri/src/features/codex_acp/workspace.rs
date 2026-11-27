@@ -3888,6 +3888,8 @@ mod tests {
         // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; lib tests
         // run with --test-threads=1, env writes are serialized in-process.
         unsafe { std::env::set_var("GIT_AUTHOR_NAME", "env-author") };
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; lib tests
+        // run with --test-threads=1, env writes are serialized in-process.
         unsafe { std::env::set_var("GIT_COMMITTER_NAME", "env-committer") };
         let result = checkout_workspace_branch(
             root.path(),

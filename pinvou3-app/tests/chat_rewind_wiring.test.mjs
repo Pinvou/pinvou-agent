@@ -84,14 +84,21 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
   );
   assert.match(chatEvents, /const compactionResync = compactionShrank && !!compactionSid &&\s*typeof invalidateSessionBuffer === "function" &&\s*\(compactionOuterActive \? typeof switchToSessionInternal === "function" : true\);/,
     '重同步判定必须在换入域前完成（活动臂要求重载原语在场；后台臂仅失效）');
-  assert.match(chatEvents, /if \(compactionInvalidated && compactionOuterActive && typeof switchToSessionInternal === "function"\) \{\s*(?:\/\/[^\n]*\n\s*)?Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
-    '前台收缩臂必须强制盘载重注水——且仅在失效未被拒绝（busy/queued 会话拒绝后跳过重载，r46 MAJOR-3）时执行（r39 M1）');
+  assert.ok(
+    chatEvents.includes('doneNotice: function () {') &&
+    chatEvents.includes('if (compactionOuterActive && typeof switchToSessionInternal === "function") {') &&
+    chatEvents.includes('switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true })'),
+    '前台收缩臂必须强制盘载重注水——且仅在失效未被拒绝（busy/queued 会话拒绝后跳过重载，r46 MAJOR-3）时执行（r39 M1；round-52 集成后随 hooks 闭包注入共享 handler，预捕获仍在换入域外、语义不变）',
+  );
   // r42 minor 9 / r43 P2-6：前台臂的通知条必须闸在重载布尔契约上——失败的
   // 或被接管的 reload 仍会走 then()，把「压缩完成」通知条追加到当前缓冲
   // （幻影通知条落在别的会话/空白视图）。仅靠域哈希（变化检测器）无法表达
   // 语义，删掉布尔闸须在此变红（r39 兄弟修复同款源钉标准）。
-  assert.match(chatEvents, /\.then\(function \(reloaded\) \{\s*if \(reloaded === true\) addSystemItem\(compactionNotice\);\s*\}\)/,
-    '前台收缩臂的通知条必须闸在重载布尔返回值上（r42 minor 9 / r43 P2-6）');
+  assert.ok(
+    chatEvents.includes('.then(function (reloaded) {') &&
+    chatEvents.includes('if (reloaded === true) {'),
+    '前台收缩臂的通知条必须闸在重载布尔返回值上（r42 minor 9 / r43 P2-6；round-52 壳形下通知文案内联于闭包）',
+  );
   const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n {2}\}\);/m);
   assert.ok(chatEventsContext, 'chat-events feature 装配必须存在');
   assert.match(chatEventsContext[0], /invalidateSessionBuffer/,

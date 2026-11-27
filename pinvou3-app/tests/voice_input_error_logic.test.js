@@ -63,16 +63,28 @@ const zhTable = new Function(`return ({${zhTableMatch[1]}});`)();
 const bt = (key) => zhTable[key] !== undefined ? zhTable[key] : key;
 // The slice must include VOICE_ERROR_CODE_KEYS: code-bearing error assertions
 // depend on that table (short-circuit evaluation once masked its absence).
-const start = source.indexOf("  const VOICE_ERROR_CODE_KEYS = {");
-const end = source.indexOf("\n  function stopMediaTracks(", start);
+// Both the table and the impl moved to shared/bridge-shared-helpers.js with
+// the tauri↔web dedup (table hoisted to a cluster-level const), so the slice
+// haystack follows them there and the table is evaluated as vm context.
+const sharedHelpersPath = path.join(__dirname, "..", "src", "shared", "bridge-shared-helpers.js");
+const sharedHelpersSource = fs.readFileSync(sharedHelpersPath, "utf8");
+const tableStart = sharedHelpersSource.indexOf("  const VOICE_ERROR_CODE_KEYS = {");
+const tableEnd = sharedHelpersSource.indexOf("\n  };", tableStart) + "\n  };".length;
+const implStart = sharedHelpersSource.indexOf("  function normalizeVoiceError(");
+const implEnd = sharedHelpersSource.indexOf("\n  function requestVoiceMedia(", implStart);
 
-assert.notStrictEqual(start, -1, "normalizeVoiceError must exist");
-assert.notStrictEqual(end, -1, "normalizeVoiceError boundary must exist");
+assert.notStrictEqual(tableStart, -1, "VOICE_ERROR_CODE_KEYS table must exist in shared helpers");
+assert.notStrictEqual(tableEnd, -1, "VOICE_ERROR_CODE_KEYS boundary must exist in shared helpers");
+assert.notStrictEqual(implStart, -1, "normalizeVoiceError must exist in shared helpers");
+assert.notStrictEqual(implEnd, -1, "normalizeVoiceError boundary must exist in shared helpers");
 
-const context = { bt };
+const context = {
+  bt,
+  VOICE_ERROR_CODE_KEYS: new Function(`${sharedHelpersSource.slice(tableStart, tableEnd)}; return VOICE_ERROR_CODE_KEYS;`)(),
+};
 vm.createContext(context);
-vm.runInContext(`${source.slice(start, end)}\nthis.normalizeVoiceError = normalizeVoiceError;`, context, {
-  filename: bridgePath,
+vm.runInContext(`${sharedHelpersSource.slice(implStart, implEnd)}\nthis.normalizeVoiceError = normalizeVoiceError;`, context, {
+  filename: sharedHelpersPath,
 });
 
 const { normalizeVoiceError } = context;
@@ -1133,17 +1145,22 @@ assert.strictEqual(codedTooLong.diagnostic, "录音时长超过上限（60 秒�
 // trilingual copy — with a category it takes the dedicated branch, and with
 // only a code the final codeKey branch catches it (same semantics as the
 // tauri lane).
-const webVoiceStart = webBridgeSource.indexOf("  const VOICE_ERROR_CODE_KEYS = {");
-const webVoiceEnd = webBridgeSource.indexOf("\n  function stopMediaTracks(", webVoiceStart);
-assert.ok(webVoiceStart >= 0 && webVoiceEnd > webVoiceStart, "web voice error-mapping block must exist");
+// After the tauri↔web dedup the web lane delegates normalizeVoiceError (with
+// the VOICE_ERROR_CODE_KEYS table) to the shared cluster; pin the delegation
+// wiring here and exercise the same shared impl slice with the web bt table.
+assert.match(
+  webBridgeSource,
+  /function normalizeVoiceError\(err, fallbackStage\) \{ return pinvouSharedweb\(\)\.normalizeVoiceError\(err, fallbackStage\); \}/,
+  "web lane must delegate normalizeVoiceError to the shared cluster",
+);
 const webTableMatch = webBridgeSource.match(/^ {4}zh: \{([\s\S]*?)\r?\n {4}\},/m);
 assert.notStrictEqual(webTableMatch, null, "web BT_TABLE zh block must exist");
 const webZhTable = new Function(`return ({${webTableMatch[1]}});`)();
 const webBt = (key) => (webZhTable[key] !== undefined ? webZhTable[key] : key);
-const webVoiceContext = { bt: webBt };
+const webVoiceContext = { bt: webBt, VOICE_ERROR_CODE_KEYS: context.VOICE_ERROR_CODE_KEYS };
 vm.createContext(webVoiceContext);
 vm.runInContext(
-  `${webBridgeSource.slice(webVoiceStart, webVoiceEnd)}\nthis.normalizeVoiceError = normalizeVoiceError;`,
+  `${sharedHelpersSource.slice(implStart, implEnd)}\nthis.normalizeVoiceError = normalizeVoiceError;`,
   webVoiceContext,
   { filename: "web/bridge.js" },
 );
@@ -1176,9 +1193,12 @@ assert.strictEqual(
 );
 
 // (3) Drift guard: every Rust VoiceCommandError error code must appear in
-// both lanes' mapping tables, and the two key sets must stay identical —
-// adding a code without a mapping turns this red instead of silently falling
-// back to the Chinese raw message.
+// the shared VOICE_ERROR_CODE_KEYS table (post-extraction the lanes
+// delegate to it — the round-7 collapse removed the per-lane lockstep, so
+// this checks the shared table against the Rust inventory and asserts
+// neither lane file carries a private copy) — adding a code without a
+// mapping turns this red instead of silently falling back to the Chinese
+// raw message.
 const rustVoiceErrorSources = `${rustVoiceSource}\n${fs.readFileSync(
   path.join(__dirname, "..", "src-tauri", "src", "app", "commands", "remote_control.rs"),
   "utf8",
@@ -1196,19 +1216,17 @@ function extractVoiceCodeKeys(laneSource, laneName) {
   assert.notStrictEqual(mapMatch, null, `${laneName} VOICE_ERROR_CODE_KEYS must exist`);
   return new Set([...mapMatch[1].matchAll(/^\s{4}([a-z0-9_]+):/gm)].map((entry) => entry[1]));
 }
-const tauriVoiceCodeKeys = extractVoiceCodeKeys(source, "tauri");
-const webVoiceCodeKeys = extractVoiceCodeKeys(webBridgeSource, "web");
+// Since the dedup, the single mapping table lives in shared helpers; assert
+// neither lane file still carries a private copy (a reintroduced lane-local
+// table would fork the mapping while every shared-table pin keeps passing).
+// The Rust drift guard below is the real inventory check.
+const tauriVoiceLaneSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js"), "utf8");
+const webVoiceLaneSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8");
+assert.doesNotMatch(tauriVoiceLaneSource, /const VOICE_ERROR_CODE_KEYS/, "tauri voice lane must not carry a private VOICE_ERROR_CODE_KEYS copy");
+assert.doesNotMatch(webVoiceLaneSource, /const VOICE_ERROR_CODE_KEYS/, "web voice lane must not carry a private VOICE_ERROR_CODE_KEYS copy");
+const sharedVoiceCodeKeys = extractVoiceCodeKeys(sharedHelpersSource, "shared");
 for (const code of rustVoiceCodes) {
-  assert.ok(tauriVoiceCodeKeys.has(code), `tauri VOICE_ERROR_CODE_KEYS is missing Rust code "${code}"`);
-  assert.ok(webVoiceCodeKeys.has(code), `web VOICE_ERROR_CODE_KEYS is missing Rust code "${code}"`);
-}
-assert.strictEqual(
-  tauriVoiceCodeKeys.size,
-  webVoiceCodeKeys.size,
-  "tauri and web VOICE_ERROR_CODE_KEYS must stay in lockstep",
-);
-for (const code of tauriVoiceCodeKeys) {
-  assert.ok(webVoiceCodeKeys.has(code), `web VOICE_ERROR_CODE_KEYS is missing tauri code "${code}"`);
+  assert.ok(sharedVoiceCodeKeys.has(code), `shared VOICE_ERROR_CODE_KEYS is missing Rust code "${code}"`);
 }
 
 // (4) Passthrough-chain guard: the desktop proxy must hand the structured

@@ -653,7 +653,8 @@ export function CodexAcpView({
   if (!acpConfigOperationTrackerRef.current) {
     acpConfigOperationTrackerRef.current = createAcpSessionOperationTracker(activeId);
   }
-  const acpConfigOperationTracker = acpConfigOperationTrackerRef.current;
+  // init-once above guarantees non-null; the cast only restores that for tsc.
+  const acpConfigOperationTracker = /** @type {ReturnType<typeof createAcpSessionOperationTracker>} */ (acpConfigOperationTrackerRef.current);
   const [acpConfigOperation, setAcpConfigOperation] = useState(null);
   const activeAcpConfigOperation = acpConfigOperationTracker.isCurrent(acpConfigOperation)
     && acpConfigOperation?.sessionId === activeId
@@ -666,7 +667,8 @@ export function CodexAcpView({
       activeId || DRAFT_ATTACHMENT_KEY,
     );
   }
-  const acpSendOperationTracker = acpSendOperationTrackerRef.current;
+  // init-once above guarantees non-null; the cast only restores that for tsc.
+  const acpSendOperationTracker = /** @type {ReturnType<typeof createAcpSessionOperationTracker>} */ (acpSendOperationTrackerRef.current);
   const [acpSendOperation, setAcpSendOperation] = useState(null);
   const activeAcpSendOperation = acpSendOperationTracker.isCurrent(acpSendOperation)
     && acpSendOperation?.sessionId === (activeId || DRAFT_ATTACHMENT_KEY)
@@ -857,8 +859,10 @@ export function CodexAcpView({
   const cancelledAttachmentIdsRef = useRef(new Set());
   const skipNextActiveLoadRef = useRef(null);
   const sessionLoadRequestRef = useRef(0);
+  /** @type {import('react').MutableRefObject<ReturnType<typeof createAcpEventSeqTracker> | null>} */
   const acpEventSeqTrackerRef = useRef(null);
   if (!acpEventSeqTrackerRef.current) acpEventSeqTrackerRef.current = createAcpEventSeqTracker();
+  /** @type {import('react').MutableRefObject<ReturnType<typeof createAcpGapResyncScheduler> | null>} */
   const acpGapResyncRef = useRef(null);
   if (!acpGapResyncRef.current) {
     acpGapResyncRef.current = createAcpGapResyncScheduler(sessionId => {
@@ -1868,7 +1872,7 @@ export function CodexAcpView({
   // as gaps.
   function rebaseAcpEventSeqTracker(sessionId, timeline) {
     const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
-    acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
+    acpEventSeqTrackerRef.current?.rebase(sessionId, maxSeq);
   }
 
 
@@ -1955,10 +1959,10 @@ export function CodexAcpView({
     setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
       setDraft('');
-      const keysToClear = [
+      const keysToClear = /** @type {string[]} */ ([
         DRAFT_ATTACHMENT_KEY,
         activeId || lastActiveSessionIdRef.current,
-      ].filter(Boolean);
+      ].filter(Boolean));
       keysToClear.forEach(key => {
         const attachmentsToClear = attachmentDraftsRef.current[key] || [];
         cancelPendingAcpAttachments(attachmentsToClear, cancelledAttachmentIdsRef.current);
@@ -2398,9 +2402,9 @@ export function CodexAcpView({
       // skips a stalled predecessor, later events still arrive in order, and
       // appendAcpEvent alone would silently keep the hole; on a detected gap,
       // debounce-refetch the authoritative timeline to self-heal.
-      if (incoming && acpEventSeqTrackerRef.current.note(incoming.sessionId, incoming.seq) === 'gap'
+      if (incoming && acpEventSeqTrackerRef.current?.note(incoming.sessionId, incoming.seq) === 'gap'
           && incoming.sessionId === activeIdRef.current) {
-        acpGapResyncRef.current.schedule(incoming.sessionId);
+        acpGapResyncRef.current?.schedule(incoming.sessionId);
       }
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
@@ -2440,7 +2444,7 @@ export function CodexAcpView({
     });
     return () => {
       disposed = true;
-      acpGapResyncRef.current.cancel();
+      acpGapResyncRef.current?.cancel();
       if (unlisten) unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe

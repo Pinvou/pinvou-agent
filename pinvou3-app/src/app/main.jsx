@@ -498,7 +498,7 @@ const App = () => {
             degradeOnHideFailure: options?.degradeOnHideFailure
               ?? (options?.channel === 'session' || options?.channel === 'view'),
           };
-          result = browserUiTransitionGateRef.current.run((transition) => {
+          result = browserUiTransitionGateRef.current?.run((transition) => {
             browserTransitionPublishingRef.current += 1;
             return settleBrowserUiPublicationAfterCommit({
               publish: async () => {
@@ -543,7 +543,7 @@ const App = () => {
         );
         const needsNativeHide = !!context.visible && !keepsDesktopBrowserVisible;
         if (!needsNativeHide) {
-          browserUiTransitionGateRef.current.invalidate('view');
+          browserUiTransitionGateRef.current?.invalidate('view');
           scheduleViewTransition(() => setCurrentViewState(resolvedView));
           return true;
         }
@@ -555,7 +555,7 @@ const App = () => {
         });
       }, [runBrowserUiTransition]);
       const publishRightDockOcclusion = useCallback((occlusionId, publish) => (
-        browserUiTransitionGateRef.current.run(({ isCurrent }) => {
+        browserUiTransitionGateRef.current?.run(({ isCurrent }) => {
           if (!isCurrent()) return false;
           const published = publish();
           if (published === false) return false;
@@ -569,7 +569,7 @@ const App = () => {
         })
       ), [requestBrowserUiCommitAck]);
       const releaseRightDockOcclusion = useCallback((occlusionId) => {
-        browserUiTransitionGateRef.current.invalidate(`right-dock-occlusion:${occlusionId}`);
+        browserUiTransitionGateRef.current?.invalidate(`right-dock-occlusion:${occlusionId}`);
         setRightDockOcclusionPublications((current) => (
           current.includes(occlusionId)
             ? current.filter((id) => id !== occlusionId)
@@ -667,19 +667,19 @@ const App = () => {
       // the dead session, or mark it live and restore its pane). Callers keep
       // their own liveness gate (isActive) and error-handling nuance.
       const reconcileBrowserSessionStatus = useCallback((sessionId, isActive) => {
-        const eventEpoch = browserLifecycleEventEpochRef.current.snapshot(sessionId);
-        const requestEpoch = browserLifecycleStatusRequestEpochRef.current.advance(
+        const eventEpoch = browserLifecycleEventEpochRef.current?.snapshot(sessionId);
+        const requestEpoch = browserLifecycleStatusRequestEpochRef.current?.advance(
           sessionId,
         );
         return invokeTauri('browser_status', { sessionId }).then((st) => {
           if (
             (isActive && !isActive())
             || browserSessionIdRef.current !== sessionId
-            || !browserLifecycleEventEpochRef.current.isCurrent(
+            || !browserLifecycleEventEpochRef.current?.isCurrent(
               sessionId,
               eventEpoch,
             )
-            || !browserLifecycleStatusRequestEpochRef.current.isCurrent(
+            || !browserLifecycleStatusRequestEpochRef.current?.isCurrent(
               sessionId,
               requestEpoch,
             )
@@ -724,8 +724,8 @@ const App = () => {
           if (disposed) return;
           const sessionId = event.payload?.sessionId;
           if (!sessionId) return;
-          browserLifecycleEventEpochRef.current.advance(sessionId);
-          browserLifecycleStatusRequestEpochRef.current.advance(sessionId);
+          browserLifecycleEventEpochRef.current?.advance(sessionId);
+          browserLifecycleStatusRequestEpochRef.current?.advance(sessionId);
           setBrowserSessions((current) => ({ ...current, [sessionId]: true }));
           setBrowserPaneStates((current) => activateBrowserPane(current, sessionId));
           const attempt = browserOpenAttemptsRef.current[sessionId] || 0;
@@ -743,8 +743,8 @@ const App = () => {
         const registerStopped = tauriEvents.listen('browser:stopped', (event) => {
           if (disposed) return;
           const sessionId = event.payload?.sessionId;
-          browserLifecycleEventEpochRef.current.advance(sessionId || null);
-          browserLifecycleStatusRequestEpochRef.current.advance(sessionId || null);
+          browserLifecycleEventEpochRef.current?.advance(sessionId || null);
+          browserLifecycleStatusRequestEpochRef.current?.advance(sessionId || null);
           if (sessionId) {
             browserOpenAttemptSequenceRef.current += 1;
             browserOpenAttemptsRef.current[sessionId] = browserOpenAttemptSequenceRef.current;
@@ -3655,7 +3655,7 @@ const App = () => {
       useLayoutEffect(() => {
         let disposed = false;
         if (!browserOverlayIntent) {
-          browserUiTransitionGateRef.current.invalidate('overlay');
+          browserUiTransitionGateRef.current?.invalidate('overlay');
           setPublishedBrowserOverlayIntent('');
           return () => { disposed = true; };
         }

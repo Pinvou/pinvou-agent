@@ -41,7 +41,7 @@ function normalizeGlobalShortcutDraft(value) {
 function globalShortcutDraftToRust(value) {
   return normalizeGlobalShortcutDraft(value)
     .split('+')
-    .map((part) => (part.replace(/\s+/g, '').toLowerCase() === 'ctrl/cmd' ? 'CmdOrCtrl' : part.trim()))
+    .map((part) => (part.replaceAll(/\s+/g, '').toLowerCase() === 'ctrl/cmd' ? 'CmdOrCtrl' : part.trim()))
     .join('+');
 }
 
@@ -49,7 +49,7 @@ function globalShortcutDraftToRust(value) {
 // alias spelling" decisions (Rust normalization folds control+alt+KeyP /
 // Ctrl + Alt + P onto one canonical string); never for the submitted value.
 function foldGlobalShortcutDraft(value) {
-  return normalizeGlobalShortcutDraft(value).replace(/\s+/g, '').toLowerCase();
+  return normalizeGlobalShortcutDraft(value).replaceAll(/\s+/g, '').toLowerCase();
 }
 
 // Shape modifier+...+key: at least two parts, every part non-empty, at
@@ -60,7 +60,7 @@ function foldGlobalShortcutDraft(value) {
 function isPlausibleGlobalShortcutAccelerator(value) {
   const parts = globalShortcutDraftToRust(value).split('+').map(part => part.trim().toLowerCase());
   if (parts.length < 2) return false;
-  if (!parts.every(part => part.length > 0)) return false;
+  if (parts.some(part => part.length <= 0)) return false;
   const mainKey = parts[parts.length - 1];
   if (GLOBAL_SHORTCUT_MODIFIER_KEYS.has(mainKey)) return false;
   return parts.slice(0, -1).some(part => GLOBAL_SHORTCUT_MODIFIER_KEYS.has(part));

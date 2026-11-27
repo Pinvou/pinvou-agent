@@ -4450,6 +4450,52 @@ mod tests {
         }
     }
 
+    /// The identity-slot loop is the concurrency core of the pool, and its
+    /// semantics are behaviorally exercised only by the opt-in live test,
+    /// which no CI leg runs. This source-shape pin holds the loop's
+    /// contract: a built display that later fails stays a hard `Err`
+    /// (retrying it on another slot would stack live displays), only a nil
+    /// init (`Ok(None)`, the identity rejection) moves to the next slot, a
+    /// success returns, and exhaustion answers with the pool detail. A
+    /// mutation that drops the loop body (first slot only) or folds the
+    /// `Err` arm into a slot retry must fail here even though every CI leg
+    /// still compiles and passes.
+    #[test]
+    fn identity_slot_loop_semantics_stay_pinned_in_source() {
+        let prod = production_source();
+        let start = prod
+            .find("fn create_and_read_id_with_slots(")
+            .expect("the identity slot loop must exist");
+        let end = prod[start..]
+            .find("fn create_and_read_id_for_slot(")
+            .expect("the per-slot attempt must follow the loop")
+            + start;
+        let body = &prod[start..end];
+        for needle in [
+            "for &serial_slot in slots",
+            "Ok(Some(pair)) => return Ok(pair)",
+            "Ok(None) => continue",
+            "Err(error) => return Err(error)",
+            "identity_pool_exhausted_detail(),",
+        ] {
+            assert!(
+                body.contains(needle),
+                "the identity slot loop must keep `{needle}`"
+            );
+        }
+        // The nil-init -> next-slot contract lives in the per-slot attempt:
+        // a nil `build_display` is an identity rejection, not a failure, and
+        // it is the only path that moves on to the next slot.
+        assert!(
+            prod.contains("let Some(display) = build_display(&descriptor)? else {"),
+            "the per-slot attempt must keep the nil-init branch"
+        );
+        assert!(
+            prod.contains("return Ok(None);"),
+            "a rejected identity must return Ok(None) for the next slot"
+        );
+    }
+
     /// The chromaticities are Chromium's helper values byte-for-byte (a
     /// P3-ish panel: sRGB red would be 0.640, 0.330 — these are not that);
     /// a drifting value would silently change what the host is told about

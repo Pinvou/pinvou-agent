@@ -6364,6 +6364,12 @@ mod tests {
         let tmp = marker.with_extension("json.tmp");
         let fifo_path = std::ffi::CString::new(tmp.as_os_str().to_str().unwrap()).unwrap();
         assert_eq!(
+            // SAFETY: libc::mkfifo FFI contract: fifo_path is a NUL-terminated
+            // CString (bound above, alive across the call; the pointer is not
+            // retained after mkfifo returns). The path resolves inside this
+            // test's TempHome dir (unique per test, removed on drop), so the
+            // FIFO side effect is confined to this test's fixture; failure is
+            // reported by the -1 return the assert below checks.
             unsafe { libc::mkfifo(fifo_path.as_ptr(), libc::S_IFIFO | 0o644) },
             0,
             "fixture: the FIFO must be created"
@@ -6417,6 +6423,12 @@ mod tests {
         let tmp = marker.with_extension("json.tmp");
         let fifo_path = std::ffi::CString::new(tmp.as_os_str().to_str().unwrap()).unwrap();
         assert_eq!(
+            // SAFETY: libc::mkfifo FFI contract: fifo_path is a NUL-terminated
+            // CString (bound above, alive across the call; the pointer is not
+            // retained after mkfifo returns). The path resolves inside this
+            // test's TempHome dir (unique per test, removed on drop), so the
+            // FIFO side effect is confined to this test's fixture; failure is
+            // reported by the -1 return the assert below checks.
             unsafe { libc::mkfifo(fifo_path.as_ptr(), libc::S_IFIFO | 0o644) },
             0,
             "fixture: the FIFO must be created"

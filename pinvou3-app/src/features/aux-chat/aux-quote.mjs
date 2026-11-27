@@ -44,7 +44,6 @@ function quoteIdentity(text) {
 
 /**
  * Append the staged quotes to an aux message as one fenced block.
- *
  * @param {{ text: string }[]} quotes - staged quotes
  * @returns {string} the suffix to append (empty when there is nothing to send)
  */
@@ -59,12 +58,11 @@ export function buildAuxQuoteBlock(quotes) {
 
 /**
  * Split an aux message back into visible text and quoted excerpts.
- *
  * @param {string} text - raw aux message text
- * @returns {{ visibleText: string, quotes: { text: string }[] }}
+ * @returns {{ visibleText: string, quotes: { text: string }[] }} text with quote blocks removed and the decoded excerpts
  */
 export function parseAuxQuotedMessage(text) {
-  const raw = String(text || '');
+  const raw = text || '';
   if (!raw) return { visibleText: '', quotes: [] };
   const quotes = [];
   const visible = raw.replaceAll(QUOTE_BLOCK_PATTERN, (match, body) => {
@@ -86,14 +84,13 @@ export function parseAuxQuotedMessage(text) {
 
 /**
  * Validate and append one selection to the staged quotes.
- *
  * @param {{ text: string }[]} existingQuotes - already staged quotes
  * @param {string} text - the selected excerpt
- * @returns {{ ok: boolean, duplicate?: boolean, reason?: 'empty'|'single'|'count'|'total', quotes: { text: string }[] }}
+ * @returns {{ ok: boolean, duplicate?: boolean, reason?: 'empty'|'single'|'count'|'total', quotes: { text: string }[] }} validation result with the updated staged list
  */
 export function addAuxQuote(existingQuotes, text) {
-  const trimmed = String(text || '').trim();
-  const quotes = Array.isArray(existingQuotes) ? existingQuotes.slice() : [];
+  const trimmed = (text || '').trim();
+  const quotes = Array.isArray(existingQuotes) ? [...existingQuotes] : [];
   if (!trimmed) return { ok: false, reason: 'empty', quotes };
   if (trimmed.length > AUX_QUOTE_LIMITS.single) return { ok: false, reason: 'single', quotes };
   const identity = quoteIdentity(trimmed);
@@ -122,25 +119,23 @@ function publishQuotes(taskId, quotes) {
 
 /**
  * Read the staged quotes for a task (defensive copy).
- *
  * @param {string} taskId - main session id
- * @returns {{ text: string }[]}
+ * @returns {{ text: string }[]} staged quotes for the task (empty when unknown)
  */
 export function getAuxQuotes(taskId) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   if (!key) return [];
   return (pendingQuotesByTask.get(key) || []).map((quote) => ({ text: quote.text }));
 }
 
 /**
  * Stage one selection for a task.
- *
  * @param {string} taskId - main session id
  * @param {string} text - selected excerpt
- * @returns {{ ok: boolean, duplicate?: boolean, reason?: string, quotes: { text: string }[] }}
+ * @returns {{ ok: boolean, duplicate?: boolean, reason?: string, quotes: { text: string }[] }} staging result with the updated staged list
  */
 export function stageAuxQuote(taskId, text) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   const result = addAuxQuote(getAuxQuotes(key), text);
   if (result.ok && !result.duplicate && key) {
     pendingQuotesByTask.set(key, result.quotes.map((quote) => ({ text: quote.text })));
@@ -151,14 +146,13 @@ export function stageAuxQuote(taskId, text) {
 
 /**
  * Drop one staged quote by index.
- *
  * @param {string} taskId - main session id
- * @param {number} index
+ * @param {number} index - position in the staged list
  */
 export function removeAuxQuote(taskId, index) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   const quotes = getAuxQuotes(key);
-  if (!Number.isInteger(index) || index < 0 || index >= quotes.length) return;
+  if (!Number.isSafeInteger(index) || index < 0 || index >= quotes.length) return;
   quotes.splice(index, 1);
   if (quotes.length) pendingQuotesByTask.set(key, quotes);
   else pendingQuotesByTask.delete(key);
@@ -176,12 +170,11 @@ export function removeAuxQuote(taskId, index) {
  * passed through the same staging trim, so the snapshot lands exactly, and
  * every staged entry whose identity matches is removed. Nothing matching
  * means no change and no broadcast.
- *
  * @param {string} taskId - main session id
  * @param {{ text: string }[]} quotesToRemove - staged-quote snapshot taken at send time
  */
 export function dropAuxQuotes(taskId, quotesToRemove) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   const identities = new Set(
     (Array.isArray(quotesToRemove) ? quotesToRemove : [])
       .map((quote) => quoteIdentity(quote && quote.text))
@@ -202,11 +195,10 @@ export function dropAuxQuotes(taskId, quotesToRemove) {
  * purgeTask): pendingQuotesByTask is module-scoped for the SPA's lifetime
  * and has no natural delete site of its own, so a deleted task's staged
  * excerpts would otherwise leak per task.
- *
  * @param {string} taskId - main session id
  */
 export function clearAuxQuotes(taskId) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   if (!key || !pendingQuotesByTask.has(key)) return;
   pendingQuotesByTask.delete(key);
   publishQuotes(key, []);
@@ -214,13 +206,12 @@ export function clearAuxQuotes(taskId) {
 
 /**
  * Subscribe to staged-quote changes for one task.
- *
  * @param {string} taskId - main session id
- * @param {(quotes: { text: string }[]) => void} listener
+ * @param {(quotes: { text: string }[]) => void} listener - callback receiving the staged list on change
  * @returns {() => void} unsubscribe
  */
 export function subscribeAuxQuotes(taskId, listener) {
-  const key = String(taskId || '');
+  const key = taskId || '';
   if (!key || typeof listener !== 'function') return () => {};
   let listeners = quoteListenersByTask.get(key);
   if (!listeners) {

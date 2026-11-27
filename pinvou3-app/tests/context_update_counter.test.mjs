@@ -296,9 +296,17 @@ assert.ok(
   chatEventsJs.includes('payload.context_updates_total'),
   'transcript_committed 监听器必须接线 context_updates_total 重同步',
 );
+// Debtsweep L4 dedup：compaction payload 体（含基线重置完整 if 行）移入
+// bridge-shared-helpers.js（handleChatCompactionEvent），双车道共用同一份正文，
+// 完整行针改钉在共享体上；车道壳针保证注册转发不被悄悄丢弃。
+const sharedChatBodyJs = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(
-  chatEventsJs.includes('if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {'),
-  'tauri 车道的 compaction done 必须以完整 if 行接线计数基线重置（r7 M2 + r8 完整行针）',
+  sharedChatBodyJs.includes('if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {'),
+  '共享 compaction 体的 done 腿必须以完整 if 行接线计数基线重置（r7 M2 + r8 完整行针）',
+);
+assert.ok(
+  chatEventsJs.includes('handleChatCompactionEvent(e, compactionHooks);'),
+  'tauri 车道必须保留 chat:compaction 注册壳并经 hooks 转发共享体（round-52 集成后的壳形）',
 );
 const bridgeMessagesJs = read('src', 'shared', 'bridge-messages.js');
 assert.ok(
@@ -311,8 +319,8 @@ assert.ok(
 );
 const webBridgeJs = read('src', 'platform', 'web', 'bridge.js');
 assert.ok(
-  webBridgeJs.includes('if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {'),
-  'web 车道的 compaction done 必须以完整 if 行接线基线重置（r8：完整行针同时咬住删除与 if false && 禁用——裸调用名针会被禁用突变骗绿）',
+  webBridgeJs.includes('pinvouSharedweb().handleChatCompactionEvent(e, undefined);'),
+  'web 车道必须保留 chat:compaction 注册壳并转发共享体（r8：完整行针在共享体上同时咬住删除与 if false && 禁用——裸调用名针会被禁用突变骗绿）',
 );
 assert.ok(
   chatEventsJs.indexOf('remoteAdmissionKeys.includes(admissionKey)') <

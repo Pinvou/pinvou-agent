@@ -35,14 +35,16 @@ const LONGPRESS_MS = 350;
           pickedRef.current = true;
           timerRef.current = null;
           // 客户端像素:按下点相对标签左上角的偏移 + 标签尺寸 + 起点 → 喂给 DOM avatar 锁定相对位置。
-          const r = startRef.current.rect;
+          const s = startRef.current;
+          if (!s) return;
+          const r = s.rect;
           const info = {
-            dx: startRef.current.x - r.left,
-            dy: startRef.current.y - r.top,
+            dx: s.x - r.left,
+            dy: s.y - r.top,
             w: r.width,
             h: r.height,
-            startX: startRef.current.x,
-            startY: startRef.current.y,
+            startX: s.x,
+            startY: s.y,
           };
           if (onPickUp) onPickUp(info);
         }, LONGPRESS_MS);

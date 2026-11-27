@@ -340,6 +340,39 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language} dictionary misses zh keys (renders undefined): ${missing.slice(0, 10).join(', ')}`,
     );
   }
+  // 存在性断言挡不住「key 在、文案为空串」——archiveConfirmDetail 正是这
+  // 个形状（key 三语齐全，zh 值为 ''，确认框静默少一行说明）。钉住：凡 en
+  // 孪生带实质文案（非空白字符串或参数化函数）的叶子，zh/ja 侧必须同为带
+  // 实质文案——空串、null、数字都会渲染成空行（round-8 审查补钉：原实现
+  // 的 typeof==='string' 判定放过 null 值逃逸；今天三语叶子类型全库一致
+  // ——字符串对字符串、函数对函数——该收紧零误报）。反向同样钉住：en
+  // 空白而 zh/ja 带文案会重新武装同一腐烂形状（今天全库无此 key，一并入
+  // 钉防回潮）。
+  const carriesCopy = (value) => (typeof value === 'string' && !!value.trim()) || typeof value === 'function';
+  const blankCopies = [];
+  for (const language of ['zh', 'ja']) {
+    for (const key of zhKeys) {
+      const value = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict[language]);
+      const enValue = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict.en);
+      if (carriesCopy(enValue) && !carriesCopy(value)) {
+        blankCopies.push(`${language}:${key}`);
+      }
+    }
+  }
+  for (const key of zhKeys) {
+    const enValue = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict.en);
+    if (carriesCopy(enValue)) continue;
+    const localized = ['zh', 'ja'].some((language) => {
+      const value = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict[language]);
+      return carriesCopy(value);
+    });
+    if (localized) blankCopies.push(`en:${key}`);
+  }
+  assert.deepEqual(
+    blankCopies,
+    [],
+    `copy presence diverges across locales (silent missing line): ${blankCopies.slice(0, 10).join(', ')}`,
+  );
 }
 
 // Connector card desc overlay parity (wecom): localizeTool spreads the
@@ -498,6 +531,25 @@ for (const language of ['zh', 'en', 'ja']) {
       'virtualNoteMacos',
       'grantMacCaveat',
       ['overlap-free', '重なり', '不重叠'],
+    ],
+    // The #919 follow-up scenario sentences are consent-critical too (the
+    // mirroring prompt decides virtual-vs-mirrored, the identity pool caps
+    // concurrency, and the refused-start recovery is the only path after a
+    // refusal): anchor each so a single-language drop fails the suite.
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['Screen Mirroring prompt', '画面をミラーリング」の確認', '屏幕镜像」询问'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['pool of at most four', '（最大 4 つ）のプール', '身份池'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['a refused start recovers', '開始が拒否された場合', '启动被拒绝时'],
     ],
     ['virtualNoteLinux', 'grantLinuxCaveat', ['raw Wayland', 'raw Wayland', 'raw Wayland']],
     // R18: the Linux wind-down abruptness (group SIGKILL at Stop, unsaved

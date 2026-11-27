@@ -84,10 +84,15 @@ function toolLocations(name, input) {
     }
     if (typeof input.patch === 'string') {
       for (const line of input.patch.split(/\r?\n/)) {
-        const marker = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/);
+        const marker = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(\S.*)$/);
         if (marker) add(marker[1]);
-        const unified = line.match(/^\+\+\+\s+(?:b\/)?(.+)$/);
-        if (unified) add(unified[1]);
+        const unified = line.match(/^\+\+\+\s+(?:b\/\s*)?([^\s].*)$/);
+        // `b/` 前缀吞掉尾随空白后取路径；无路径的退化头（`+++ b/ ` 尾部全
+        // 空白）旧 (.+) 捕获 trim 后为空、被 add 丢弃，[^\s] 捕获体无法再现
+        // 空捕获，按行补一枚守卫精确丢弃；裸 `+++ b/`（路径恰为 "b"）不带
+        // 尾随空白，不受守卫影响（round-8 审查：[^\s] 紧缩让 b/ 后带空格的
+        // 头回溯出字面 `b/ …` 路径，此处连同守卫一起恢复旧行为）。
+        if (unified && !/^\+\+\+\s+b\/\s+$/.test(line)) add(unified[1]);
       }
     }
   }
@@ -109,6 +114,7 @@ function turnStatusFromAgent(agent) {
  * 把裸消息数组整形成单个 turn（一个子智能体 = 一次任务 = 一个 turn）。
  * `agent` 是落盘摘要（mergeAgentSnapshots 输出），提供终态与错误。
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 落盘消息形态的一对一展示投影：分支与持久化的消息/块类型逐项对应，机械拆分会破坏对照可读性；复杂度收敛留待专项重构。
 export function projectSubagentTranscript({ messages, agent, options = {} }) {
   const items = [];
   const byToolUseId = new Map();
@@ -297,10 +303,12 @@ export function resolveSubagentIdentity(role, personas, agentId, agentType) {
   if (roleId.startsWith('exp-')) {
     const match = (personas || []).find((card) => {
       if (!card || !card.id) return false;
-      const slug = String(card.id)
-        .toLowerCase()
-        .replace(/[^a-z0-9._-]/g, '-')
-        .replace(/^-+|-+$/g, '');
+      let slug = String(card.id).toLowerCase().replaceAll(/[^a-z0-9._-]/g, '-');
+      // 去掉替换产生的首尾连字符（替代原 /h+-|h+$/g 交替正则，后者被
+      // sonarjs 判为回溯风险）。逐段 slice 每次复制剩余串，最坏 O(n²)，
+      // 入参是 persona 卡片短 id，实际开销可忽略。
+      while (slug.startsWith('-')) slug = slug.slice(1);
+      while (slug.endsWith('-')) slug = slug.slice(0, -1);
       return `exp-${slug}` === roleId || roleId.startsWith(`exp-${slug}-`);
     });
     if (match) {
@@ -438,8 +446,9 @@ const ORDINAL_GLYPHS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', 
 
 /** 序号后缀：同角色仅一个实例不加；超出 ⑩ 回退 #N。 */
 export function subagentOrdinalLabel(ordinal) {
-  if (!ordinal || !(ordinal.count > 1)) return '';
-  return ` ${ORDINAL_GLYPHS[ordinal.seq - 1] || `#${ordinal.seq}`}`;
+  if (!ordinal || ordinal.count <= 1) return '';
+  const glyph = ORDINAL_GLYPHS[ordinal.seq - 1] || `#${ordinal.seq}`;
+  return ` ${glyph}`;
 }
 
 /**
@@ -468,7 +477,7 @@ export function subagentObjectiveName(text, maxLength = 12) {
     .filter(Boolean);
   if (!lines.length) return null;
 
-  const marker = /^(?:[-*#>]\s*)*(?:question|task|objective|goal|assignment|任务|目标|问题)\s*[:：]\s*(.+)$/i;
+  const marker = /^(?:[-*#>]\s*)*(?:question|task|objective|goal|assignment|任务|目标|问题)\s*[:：]\s*(\S.*)$/i;
   const marked = lines.map(line => line.match(marker)).find(Boolean);
   let candidate = marked ? marked[1] : lines.find(line => {
     const normalized = line.replace(/^(?:[-*#>]\s*)+/, '').trim();
@@ -484,7 +493,7 @@ export function subagentObjectiveName(text, maxLength = 12) {
     .replace(/^(?:请(?:你|帮我|协助)?|帮我|负责|执行|完成|尝试)\s*/i, '')
     .split(/[。！？!?；;\n]/, 1)[0]
     .replace(/[:：]["“'‘].*$/, '')
-    .replace(/\s+/g, ' ')
+    .replaceAll(/\s+/g, ' ')
     .trim();
   if (!candidate) return null;
   // 截断复用 compactSubagentDisplayName(同一展示规则),不在内联一份。
@@ -492,7 +501,7 @@ export function subagentObjectiveName(text, maxLength = 12) {
 }
 
 function compactSubagentDisplayName(value, maxLength = 12) {
-  const candidate = String(value || '').replace(/\s+/g, ' ').trim();
+  const candidate = String(value || '').replaceAll(/\s+/g, ' ').trim();
   if (!candidate) return null;
   const characters = [...candidate];
   return characters.length > maxLength
@@ -535,7 +544,7 @@ export function resolveSubagentPresentation({
       || objectiveName
       || (identity.kind === 'custom'
         ? identity.name
-        : ((roleCards && roleCards[identity.roleKey])
+        : ((roleCards && roleCards[identity.roleKey ?? 'general'])
           || (roleCards && roleCards.general)
           || identity.roleKey));
   const subtitle = identity.kind === 'expert'

@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {let pinvouSharedtauriChatEventsCache = null;
 function pinvouSharedtauriChatEvents() {
-  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state, addChatItem, bt, flushPendingTextBlock, autoCreateScheduledTaskDraft, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning });
+  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state, addChatItem, bt, flushPendingTextBlock, autoCreateScheduledTaskDraft, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning, turnUsageDirty, applyAuthoritativeModeState, runSyncOnSession, timeStr, notify, getBuffer, addSystemItem, addOrMergePruneCompaction });
   return pinvouSharedtauriChatEventsCache;
 }
 
@@ -85,6 +85,14 @@ function pinvouSharedtauriChatEvents() {
       cancelPendingStreamNotify(state.activeSessionId);
       immediateNotify();
     }
+
+    // usage/compaction/plan 事件 payload 处理体统一在 shared/bridge-shared-helpers.js
+    // （web 车道同段逐字一致）；lane 只保留 listen/onSessionEvent 注册壳并转发。
+    function handleChatUsageEvent(e) { return pinvouSharedtauriChatEvents().handleChatUsageEvent(e); }
+    function handleChatCompactionEvent(e) { return pinvouSharedtauriChatEvents().handleChatCompactionEvent(e); }
+    function handleChatPlanSnapshotEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanSnapshotEvent(e); }
+    function handleChatPlanReadyEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanReadyEvent(e); }
+    function handleChatPlanResolvedEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanResolvedEvent(e); }
 
     function scheduleStreamNotify(sid, firstDelta) {
       // A first delta publishes immediately so the visible bubble paints
@@ -265,7 +273,6 @@ function pinvouSharedtauriChatEvents() {
     const persistMessagesFor = context.persistMessagesFor;
     const captureSteerPositions = context.captureSteerPositions || function () {};
     const recordSteeredMessages = context.recordSteeredMessages || function () {};
-    const composePlanMarkdown = context.composePlanMarkdown;
     const refreshHistoryList = context.refreshHistoryList;
     const isShellExecutionTool = context.isShellExecutionTool;
     const mentionsShellTool = context.mentionsShellTool;
@@ -1256,51 +1263,20 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     })();
   });
 
-  listen("chat:usage", function (e) { onSessionEvent(e, function () {
-    const sid = e.payload && e.payload.session_id;
-    // 真实窗口是模型能力常量，不随轮内请求数变化，必须先于 dirty guard 消费：
-    // 工具轮（最常见的 Agent 场景）只跳过不可信的累计 input，分母仍要更新。
-    const windowTok = Number(e.payload && e.payload.context_window) || 0;
-    if (windowTok > 0 && windowTok !== state.tokens.max) {
-      state.tokens.max = windowTok; // 云端真实窗口，替代 32K 假分母
-      notify(); // 窗口变化也要通知 UI（即使本轮 input 不可信）
-    }
-    // 逐请求占用口径（context_input_tokens：本轮最后一次父请求的 reported
-    // input = 回合结束时真实上下文占用）。chat:usage 每轮只在 TurnComplete
-    // 发一次，而本轮任意 tool_start 都会把 turnUsageDirty 锁到下一轮发送才
-    // 解——只消费累计口径意味着工具轮的读数永远冻结在「— / … · 0%」，只有
-    // 手动压缩的 post_tokens 能刷新。逐请求值不是累加值，dirty 口径保护不
-    // 适用：先于 dirty guard 消费，且消费后不得再让累计口径覆写。
-    const ctxInput = Number(e.payload && e.payload.context_input_tokens || 0);
-    if (ctxInput > 0) {
-      // 超窗同累计口径的守卫：分母声明失真时不透出超上限数字，保留上个准确值。
-      if (ctxInput <= state.tokens.max) {
-        state.tokens = { input: ctxInput, max: state.tokens.max };
-        notify();
-      }
-      return;
-    }
-    if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加 input 不可信，保留上个准确值
-    const input = Number(e.payload && e.payload.input_tokens || 0);
-    // 累加值超过窗口说明仍有多请求（内部重试等无事件轮），跳过避免显示超上限
-    if (input > 0 && input <= state.tokens.max) {
-      state.tokens = { input, max: state.tokens.max };
-      notify();
-    }
-  }); });
+  listen("chat:usage", function (e) { onSessionEvent(e, function () { handleChatUsageEvent(e); }); });
 
   listen("chat:compaction", function (e) {
-    const compactionSid = e.payload && e.payload.session_id;
-    const prePhase = e.payload && e.payload.phase;
-    const preBefore = Number(e.payload && e.payload.messages_before);
-    const preAfter = Number(e.payload && e.payload.messages_after);
-    // r40 M1：真实活动归属必须在进入 onSessionEvent **之前**捕获——
+    // r40 M1（PR）：真实活动归属必须在进入 onSessionEvent **之前**捕获——
     // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
     // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
     // 内分类：后台压缩恒走活动臂，把正在阅读/输入的用户强切到刚压缩完的
     // 后台会话（前台抢占回归），「后台臂」沦为死代码。此捕获值语义：true
     // 当且仅当被压缩会话在事件派发时刻就是前台会话（事件未携带 sid 的事件
     // 不做重同步，只挂通知）。
+    const compactionSid = e.payload && e.payload.session_id;
+    const prePhase = e.payload && e.payload.phase;
+    const preBefore = Number(e.payload && e.payload.messages_before);
+    const preAfter = Number(e.payload && e.payload.messages_after);
     const compactionOuterActive =
       !!compactionSid && compactionSid === state.activeSessionId;
     // r41 minor 1：缓存失效同样必须在换入域**之前**执行——
@@ -1322,114 +1298,38 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // 通知条照常挂载（缓存未失效，挂载落点正确）。
     const compactionInvalidated =
       compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）+ r40-M1 预捕获 + #834 标记账本本就贴着上限；r7 M2 的计数基线重置以单个条件位并入 done 腿，内聚高于拆分
     onSessionEvent(e, function () {
-    if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
-    const phase = e.payload && e.payload.phase;
-    const msg = e.payload && e.payload.message || "";
-    const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
-    const compactId = e.payload && e.payload.id;
-    const before = Number(e.payload && e.payload.messages_before);
-    const after = Number(e.payload && e.payload.messages_after);
-    const looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
-    const pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
-      phase === "done" &&
-      Number.isFinite(before) &&
-      Number.isFinite(after) &&
-      before === after &&
-      looksLikePruneOnly &&
-      msg.indexOf("Emergency compaction") !== 0;
-    // The compaction in-flight marker: start sets it, a terminal
-    // (done/fail/cancel) clears it, and the main lane's compact entry
-    // disables off it (the same mechanism as the code lane's
-    // lane.compacting). start stores a timestamp: the terminal event may
-    // never arrive (evicting the engine aborts its forwarder — see the
-    // reclaim_engine_entry comment in engine_pool.rs; a desktop restart on
-    // the web side loses it the same way), so the read side heals after 15
-    // minutes, the same fallback as Rust's MAX_COMPACTION_LATCH_AGE, and
-    // the entry is not disabled forever. The fallback reads the wall clock
-    // (Date.now), not a Rust-side monotonic Instant: a clock jump or resume
-    // from sleep re-enables early, and a compaction running past 15 minutes
-    // re-enables the entry before the engine finishes — the cost of a
-    // duplicate enqueue equals the Rust latch expiring (pool.compact_now
-    // does not coalesce enqueues), which is accepted; no extra
-    // monotonic-clock alignment machinery is introduced for it.
-    // The post_tokens carried by done is a post-compaction usage estimate
-    // (the forwarder gained it to refresh the usage bar; the Rust side
-    // computes it as a conservative estimated_input_tokens). The compaction
-    // turn already set turnUsageDirty, so subsequent usage accumulations
-    // are untrustworthy and the usage bar can only be refreshed by this
-    // post_tokens — it must not be swallowed by the dirty semantics.
-    const sid = compactionSid;
-    // The compactionStarts signal is persistent BY DESIGN: it survives the
-    // terminal and prune-only merges, so the UI can reconcile a manual
-    // compact marker whose start and terminal coalesced before any render
-    // (review 5874108926 follow-up) — cleared with the session.
-    // The compactionStarts signal carries the bridge's monotonic
-    // compaction sequence (NOT a wall-clock time — review 5876783763:
-    // timestamp ordering of persistent events breaks on
-    // same-millisecond collisions and clock rollbacks). It survives
-    // the terminal and prune-only merges, so the UI can reconcile a
-    // manual compact marker whose start and terminal coalesced before
-    // any render (review 5874108926 follow-up) — cleared with the
-    // session.
-    if (sid) {
-      if (phase === "start") {
-        state.compactingSessions[sid] = Date.now();
-        state.compactionSeq = (state.compactionSeq || 0) + 1;
-        state.compactionStarts[sid] = state.compactionSeq;
-      } else delete state.compactingSessions[sid];
-      notify();
-    }
-    // r39 M1：真实收缩后（缓存已在换入前失效——见上）前台会话立即强制盘载
-    // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
-    // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
-    // 会被吞掉）。后台会话不重载（r40 M1：那会把用户前台视图切走），照常
-    // 挂 done 通知条——r41 minor 1 如实：换入域内的挂载对后台是尽力而为
-    // （空桩 buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
-    // 以切回后的落盘时间线为准。压缩多发生在 turn 途中（上下文超限自动
-    // 触发）：盘载与在途流式并存时，未决 token 积累在 pending 缓冲、随消息
-    // 边界落在新 buffer 上，chat:done 对账兜底——宁可短暂闪动也不留陈旧
-    // 全量时间线。
-    const compactionNotice = bt("compactDone") + auto + " " + msg;
-    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
-    else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
-    else if (phase === "done") {
-      if (compactionInvalidated && compactionOuterActive && typeof switchToSessionInternal === "function") {
-        // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
-        Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
-          // r42 minor 9: boolean contract (true on success, false on failure,
-          // never rejects) — a failed or superseded reload still runs then()
-          // and would append the notice to whatever buffer is current (a
-          // phantom compaction pill on another session / a blanked view).
-          // Gate on the boolean: attach only when the reload succeeded.
-          .then(function (reloaded) {
-            if (reloaded === true) addSystemItem(compactionNotice);
-          })
-          .catch(function () {});
-      } else {
-        // 后台收缩（已预失效）/非收缩 done/原语缺席：照常挂通知。
-        addSystemItem(compactionNotice);
-      }
-    }
-    else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
-    else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
-    if (phase === "done") {
-      // <context_update> 计数基线在真重写（after < before）后重置（r7 M2）：
-      // 压缩把旧漂移增量从磁盘转写里摘除，而客户端气泡仍携带压缩前的
-      // 老 vintage——不重置的话权威重同步会被老消费量钳在 0（序号整体
-      // 低计）。实现与 prune-only 语义见 bridge-messages 的
-      // healRuntimeContextUpdatesVintageAfterCompaction；返回是否有改动。
-      if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {
-        notify();
-      }
-      const postTokens = Number(e.payload && e.payload.post_tokens);
-      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
-        state.tokens = { input: postTokens, max: state.tokens.max };
-        notify();
-      }
-    }
-  }); });
+      // r44 集成（main #834 并集经 #889 抽取为共享 handler）：压缩处理器
+      // 本体在共享模块（bridge-shared-helpers），PR 的换入前预捕获/失效与
+      // 前台强制盘载臂经 hooks 注入——共享 handler 无 hooks 时保持 main
+      // 语义（web/测试调用方零改动）。
+      const compactionHooks = compactionInvalidated ? {
+        // r39 M1：真实收缩后（缓存已在换入前失效）前台会话立即强制盘载
+        // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，
+        // chips 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建
+        // 时间线，先挂会被吞掉）。r42 minor 9：布尔契约（成功 true，失败
+        // false，永不 reject）——失败/被取代的重载仍会走 then()，闸门按
+        // 布尔只在实际重载成功时补挂通知。后台收缩（已预失效）照常挂通知
+        // ——r41 minor 1 如实：换入域内的挂载对后台是尽力而为（空桩
+        // buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
+        // 以切回后的落盘时间线为准。
+        doneNotice: function () {
+          if (compactionOuterActive && typeof switchToSessionInternal === "function") {
+            Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
+              .then(function (reloaded) {
+                if (reloaded === true) {
+                  addSystemItem(bt("compactDone") + (e.payload && e.payload.auto ? bt("compactAuto") : "") + " " + (e.payload && e.payload.message || ""));
+                }
+              })
+              .catch(function () {});
+          } else {
+            addSystemItem(bt("compactDone") + (e.payload && e.payload.auto ? bt("compactAuto") : "") + " " + (e.payload && e.payload.message || ""));
+          }
+        },
+      } : undefined;
+      handleChatCompactionEvent(e, compactionHooks);
+    });
+  });
 
   // Sub-agent tool gates happen inside the foundation and do not produce an
   // approval card. Project the final allow/deny decision into the visible
@@ -1607,62 +1507,13 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
   });
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
-  listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
-    const p = e.payload || {};
-    if (p.plan_snapshot) state.planSnapshot.plan = p.plan_snapshot;
-    if (p.todos_snapshot) state.planSnapshot.todos = p.todos_snapshot;
-    notify();
-  }); });
+  // （payload 处理体统一在 shared/bridge-shared-helpers.js，web 车道同段逐字一致）
+  listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () { handleChatPlanSnapshotEvent(e); }); });
 
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
-  listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
-    const p = e.payload || {};
-    const planId = String(p.plan_id || p.planId || "").trim();
-    const readyMode = p.mode_state || p.modeState;
-    // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖；
-    // sid 取事件 payload，onSessionEvent 内与 state.activeSessionId 一致）。
-    if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
-    if (planId && state.chatItems.some(function (item) {
-      return item && item.type === "plan_card" && String(item.planId || "") === planId;
-    })) return;
-    // 新方案出现 → 旧的 active 方案卡冻结
-    state.chatItems.forEach(function (it) {
-      if (it.type === "plan_card" && it.cardState === "active") {
-        it.cardState = "frozen"; it.statusLabel = bt("planSuperseded");
-      }
-    });
-    const snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
-    addChatItem({
-      type: "plan_card", plan: snaps.plan, todos: snaps.todos,
-      planMarkdown: composePlanMarkdown(snaps), planId: planId || null,
-      cardState: planId ? "active" : "frozen", resolved: !planId,
-      planResolutionConfirmed: false,
-      statusLabel: planId ? "" : bt("planHistorical"), time: timeStr(),
-    });
-    notify();
-  }); });
+  listen("chat:plan_ready", function (e) { onSessionEvent(e, function () { handleChatPlanReadyEvent(e); }); });
 
-  listen("chat:plan_resolved", function (e) {
-    const p = e && e.payload || {};
-    const sid = p.session_id || state.activeSessionId;
-    const planId = String(p.plan_id || p.planId || "").trim();
-    if (!sid || !planId) return;
-    runSyncOnSession(sid, function () {
-      state.chatItems.forEach(function (item) {
-        if (item && item.type === "plan_card" && String(item.planId || "") === planId) {
-          item.cardState = "frozen";
-          item.resolved = true;
-          item.planResolutionConfirmed = true;
-          item.statusLabel = bt("planDiscarded");
-        }
-      });
-      const resolvedMode = p.mode_state || p.modeState;
-      // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖），
-      // 与 web 版对齐：方案在别处（另一窗口/远端）被 discard 时 chip 须刷新。
-      if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
-    });
-    notify();
-  });
+  listen("chat:plan_resolved", function (e) { handleChatPlanResolvedEvent(e); });
 
     return {
       authoritativeTimelineMissesKnownCompletion,

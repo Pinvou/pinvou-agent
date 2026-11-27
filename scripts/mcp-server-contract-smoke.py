@@ -2,6 +2,7 @@
 """内置 MCP 契约矩阵：真实启动 stdio server，检查协议、工具调用与本地产物。"""
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import math
@@ -1564,5 +1565,16 @@ def main():
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """--help/-h 短路入口：argparse 在 main() 之前解析参数，任何 server
+    启动逻辑都不会在打印帮助时执行。无参数运行仍是完整的契约矩阵。"""
+    return argparse.ArgumentParser(
+        prog="mcp-server-contract-smoke",
+        description="内置 MCP 契约矩阵：真实启动 stdio server，检查协议、工具调用与本地产物。",
+        epilog="注意：无参数运行会真实启动全部内置 MCP server 执行契约检查；仅 --help/-h 会在任何服务启动之前短路退出。",
+    )
+
+
 if __name__ == "__main__":
+    _build_arg_parser().parse_args()
     main()

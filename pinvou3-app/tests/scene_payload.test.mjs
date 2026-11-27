@@ -130,8 +130,15 @@ test('a payload of another scene pasted into a scene: the recorded scene names t
   // Document scene on record: the suffix wrapper is outermost, the user
   // pasted a whole workbench payload as their text.
   assert.deepEqual(splitScenePayload(both, documentScene), { scene: documentScene, text: workbench });
-  assert.deepEqual(splitScenePayload(both), { scene: documentScene, text: workbench },
-    'with nothing on record the suffix wrapper wins');
+  // No record: both exact tiers hit, and the readings disagree. The workbench
+  // (prefix) reading wins: for the common composition — a scene payload pasted
+  // into the workbench composer — it restores the typed text byte-exactly,
+  // while the suffix reading would leak the whole workbench prompt as "user
+  // text". For the mirrored composition (a workbench payload pasted into a
+  // scene composer) this keeps the prompt out of the bubble at the cost of
+  // leaving the smaller scene wrapper in it.
+  assert.deepEqual(splitScenePayload(both), { scene: workbenchScene, text: `理财${suffixOf(documentRoute)}` },
+    'with nothing on record the workbench reading wins the double hit');
 });
 
 test('stale boilerplate is anchored on the stable header line, and only for the scene on record', () => {
@@ -150,9 +157,12 @@ test('stale boilerplate is anchored on the stable header line, and only for the 
   assert.equal(splitScenePayload(staleSuffix), null, 'the header anchor is a guess: no record, no strip');
   assert.equal(splitScenePayload(staleSuffix, 'work:ppt'), null, 'another scene on record does not vouch for this header');
   assert.equal(splitScenePayload(staleSuffix, workbenchScene), null);
-  // User text after the anchor belongs to the old wrapper, never kept.
-  const withRule = `${staleSuffix}\n\n---\n用户自己补的\n\n---\nPinvou 公文写作场景路由：\n别切这里`;
-  assert.equal(splitScenePayload(withRule, documentScene).text, '写一份通知');
+  // A hand-typed lookalike after (or before) the real wrapper: the LAST
+  // anchor occurrence fails the bullet guard, so the strip is refused and the
+  // message stays whole — under-stripping beats swallowing typed content.
+  const withRule = `${staleSuffix}\n\n---\n用户自己补的\n\n---\n${documentRoute.context.split('\n')[0]}\n别切这里`;
+  assert.equal(splitScenePayload(withRule, documentScene), null,
+    'a lookalike anchor without a route-body bullet keeps the message whole');
 
   const head = `${DEFAULT_PERSONAL_WORKBENCH_PROMPT.split('。')[0]}。`;
   const staleWorkbench = `${head}旧版本的提示词正文。\n\n用户需求：\n运动`;
@@ -199,11 +209,15 @@ test('a workbench payload behind a canonical mention block still inverts (the bl
 
 test('byte-level persistence wrinkles: trailing newline and a foreign hint on an exact payload', () => {
   const docMeta = createDocumentWritingMessageMeta('写一份通知');
-  // A trailing newline (persistence/engine artifact) misses the byte-exact
-  // suffix tier; without a record the text stays whole, with the scene on
-  // record the header anchor still recovers it.
-  assert.equal(splitScenePayload(`${docMeta.pinvouPayloadText}\n`), null);
+  // A trailing newline (persistence/engine artifact) no longer hides the
+  // byte-exact suffix tier: the trimmed copy strips too, record or not —
+  // only wrapper-external whitespace is given up, never user content.
+  assert.deepEqual(splitScenePayload(`${docMeta.pinvouPayloadText}\n`), { scene: documentScene, text: '写一份通知' });
   assert.deepEqual(splitScenePayload(`${docMeta.pinvouPayloadText}\n`, documentScene), { scene: documentScene, text: '写一份通知' });
+  assert.deepEqual(splitScenePayload(`${docMeta.pinvouPayloadText}\r\n`), { scene: documentScene, text: '写一份通知' });
+  // A bare wrapper plus artifact newline is still an empty body: the message
+  // never vanishes.
+  assert.equal(splitScenePayload(`${suffixOf(documentRoute)}\n`), null);
   // Workbench (prefix-shaped) keeps trailing bytes as part of the body.
   const wbMeta = createPersonalWorkbenchMessageMeta('运动');
   assert.deepEqual(splitScenePayload(`${wbMeta.pinvouPayloadText}\n`), { scene: workbenchScene, text: '运动\n' });
@@ -212,18 +226,34 @@ test('byte-level persistence wrinkles: trailing newline and a foreign hint on an
   assert.deepEqual(splitScenePayload(docMeta.pinvouPayloadText, 'design:ppt'), { scene: documentScene, text: '写一份通知' });
 });
 
-test('stale-tier truncation of hand-typed text under a same-scene hint is the accepted heuristic', () => {
-  // The header anchor is a guess (~20 distinguishing chars). When the sidecar
-  // names this scene (e.g. after engine-inserted runtime messages shifted the
-  // recorded position onto a neighbouring hand-typed message), everything
-  // after the anchor is dropped from the bubble — documented in
-  // scene-payload.js and accepted per the display-only policy (persisted text
-  // and model context are untouched). Pinned so a change to the tradeoff is a
-  // conscious one.
-  const handTyped = `第一段讨论\n\n---\n${documentRoute.context.split('\n')[0]}\n我手写的后续内容`;
-  assert.deepEqual(splitScenePayload(handTyped, documentScene), { scene: documentScene, text: '第一段讨论' });
+test('stale-tier hardening: hand-typed lookalikes stay whole, quoted anchors keep their text', () => {
+  // The header anchor + a same-scene record used to swallow everything after
+  // the first anchor occurrence. Two guards close the swallow paths while
+  // real stale payloads still strip:
+  // - the anchor is taken at its LAST occurrence (the real wrapper sits at
+  //   the tail of a persisted payload; a title quoted inside the user's text
+  //   sits before it);
+  // - the anchor must be followed by the route body's "- " bullet line.
+  const documentHeader = documentRoute.context.split('\n')[0];
+  // Drift onto a hand-typed message: the only anchor occurrence is the
+  // user's own prose, and its continuation is not a bullet — no strip even
+  // with this scene on record (this was accepted truncation before).
+  const handTyped = `第一段讨论\n\n---\n${documentHeader}\n我手写的后续内容`;
+  assert.equal(splitScenePayload(handTyped, documentScene), null);
   assert.equal(splitScenePayload(handTyped), null, 'no record, no strip');
   assert.equal(splitScenePayload(handTyped, 'design:poster'), null, 'another scene on record does not vouch');
+  // Residual: a continuation that starts exactly like a route-body bullet
+  // still strips under the record. Accepted: the bullet line is the strongest
+  // shape signal short of byte equality, and under-stripping stays the
+  // fallback for everything weaker.
+  const bulletLookalike = `第一段讨论\n\n---\n${documentHeader}\n- 我手写的 bullet 行`;
+  assert.deepEqual(splitScenePayload(bulletLookalike, documentScene), { scene: documentScene, text: '第一段讨论' });
+  // Quoted anchor inside the user's own text + a real (stale) wrapper at the
+  // tail: the last occurrence wins and everything the user typed survives —
+  // first-occurrence matching used to drop the quoted wrapper and this tail.
+  const quoted = `引用同款标题：\n\n---\n${documentHeader}\n- 我粘贴的路由正文\n后续问题`;
+  const staleWrapper = `\n\n---\n${documentHeader}\n- 旧版本的路由正文。\n\n生成完成前执行旧版自检：\n1. 旧条目。`;
+  assert.deepEqual(splitScenePayload(quoted + staleWrapper, documentScene), { scene: documentScene, text: quoted });
 });
 
 test('the module publishes the parser for the classic-script bridges', () => {

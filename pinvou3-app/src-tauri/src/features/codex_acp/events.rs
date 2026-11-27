@@ -2476,9 +2476,13 @@ mod tests {
 
     impl Drop for TempSessionsRoot {
         fn drop(&mut self) {
-            // SAFETY: this struct holds platform::paths::tests::ENV_LOCK; env writes are serialized in-process.
             match &self.previous {
+                // SAFETY: drop() runs while self._guard still holds
+                // platform::paths::tests::ENV_LOCK (fields drop only after
+                // drop() returns); env writes are serialized in-process.
                 Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                // SAFETY: same ENV_LOCK guarantee as the arm above
+                // (self._guard is still held inside drop()).
                 None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
             let _ = fs::remove_dir_all(&self.root);
