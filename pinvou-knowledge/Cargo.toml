@@ -1,6 +1,6 @@
 [package]
 name = "pinvou-knowledge"
-version = "1.0.2"
+version = "1.0.3"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
