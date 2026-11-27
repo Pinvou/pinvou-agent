@@ -471,13 +471,17 @@ fn memory_profile_set_refuses_a_stored_wipe_shaped_label_and_allows_the_repair()
         "Pin",
     ])
     .to_string();
+    // The captured error Display is not interpolated into these payloads:
+    // a CliError can carry oauth login material on the plugins dispatch arm,
+    // and formatting it into a panic payload trips the cleartext-logging
+    // scanner (the repo-wide assert-message hygiene rule).
     assert!(
         error.starts_with("memory_profile_label_rejected"),
-        "the stored shape must refuse with the stable code: {error}"
+        "the stored shape must refuse with the stable code"
     );
     assert!(
         error.contains("stored call_name"),
-        "the refusal must name the stored topic it protects: {error}"
+        "the refusal must name the stored topic it protects"
     );
 
     // Nothing was written: the stored file is untouched.
