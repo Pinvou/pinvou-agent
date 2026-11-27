@@ -52,7 +52,7 @@
 
     // Virtual-display status projection (fail-closed). The status payload
     // carries camelCase virtualDisplayState ("active" | "ready" |
-    // "unavailable" | "disabled") plus an English diagnostic string in
+    // "unavailable" | "disabled") plus a diagnostic string in
     // virtualDisplayDetail, and the persisted preference flag
     // preferVirtualDisplay (frozen contract, always serialized). Mapping
     // rules:
@@ -72,6 +72,22 @@
     // accepts them: hand-rolled or test payloads, never the shipped backend
     // shape.
     const VIRTUAL_DISPLAY_STATES = ["active", "ready", "unavailable", "disabled"];
+    // The settings page renders virtualDisplayDetail verbatim next to the
+    // trilingual "no isolated display available" lead-in, so localize it
+    // here at the single projection point (R13) through the shared
+    // known-message table — the same matcher localizeKnownError applies to
+    // command rejections. The detail rides the status payload as DATA, not
+    // as a command rejection, which is why the localizeKnownError wrap can
+    // never see it. Unknown machinery diagnostics return null and keep the
+    // raw string (fail-neutral passthrough; the shared module may also be
+    // absent under partial loads).
+    function localizeVirtualDisplayDetail(detail) {
+      if (!detail) return detail;
+      const messages = window.PinvouBridgeMessages;
+      if (!messages || typeof messages.computerUseKnownErrorText !== "function") return detail;
+      const localized = messages.computerUseKnownErrorText(detail, state.settings && state.settings.language);
+      return localized == null ? detail : localized;
+    }
     function virtualDisplayPatch(raw) {
       if (!raw || typeof raw !== "object") return null;
       const rawState = typeof raw.virtualDisplayState === "string"
@@ -82,9 +98,11 @@
       const patch = rawState && VIRTUAL_DISPLAY_STATES.includes(rawState)
         ? {
             virtualDisplayState: rawState,
-            virtualDisplayDetail: typeof raw.virtualDisplayDetail === "string"
-              ? raw.virtualDisplayDetail
-              : (typeof raw.virtual_display_detail === "string" ? raw.virtual_display_detail : ""),
+            virtualDisplayDetail: localizeVirtualDisplayDetail(
+              typeof raw.virtualDisplayDetail === "string"
+                ? raw.virtualDisplayDetail
+                : (typeof raw.virtual_display_detail === "string" ? raw.virtual_display_detail : ""),
+            ),
           }
         : { virtualDisplayState: "unknown", virtualDisplayDetail: "" };
       const pref = "preferVirtualDisplay" in raw
