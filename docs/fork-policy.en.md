@@ -1,6 +1,7 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-11-24. Public maintenance cc2adf8ef adds the batch #127/#137/#139/#141/#143–#146/#149/#151/#155/#158/#160/#164–#171 on top of the earlier batches (#114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152, #156 plus #157); parent gitlink follows the public maintenance head.
+> Updated: 2026-11-05. T6 review gitlink `19132162830b38aba7d900ef806427171d9203ef` integrates public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e` with rate-limit review fixes (96 commits above upstream v0.9.12; tree `12a8be1ad97b7724618760ee3393c637633fb929`; drift 548 files, +123354/-50026). Protected maintenance and immutable tags remain unchanged; public-head equality remains a merge gate.
+> Public maintenance has since advanced to `cc2adf8ef` (2026-11-24, 21-commit batch); this PR's T6 candidate predates that advance (it is based on maintenance `11cba403d`); after CodeWhale#141 merges to the public maintenance branch, re-pin the merged head per the established gate.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.

@@ -1,5 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
+> 2026-11-05 review candidate: T6 review gitlink `19132162830b38aba7d900ef806427171d9203ef`
+> integrates public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e` with the
+> rate-limit review fixes. Candidate: 96 commits above upstream v0.9.12; tree
+> `12a8be1ad97b7724618760ee3393c637633fb929`; drift 548 files, +123354/-50026 (net +73328).
+> Protected maintenance and immutable tags are unchanged. Published-head equality
+> remains a separate merge gate; the parent review gitlink is not maintenance.
+> See [the T6 register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05).
+> 公开维护头其后已推进至 `cc2adf8ef`（2026-11-24 批 21 个提交）；本 PR 的 T6 候选先于该推进
+> （候选基于维护 `11cba403d`）；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
+
 > 最后更新：2026-11-24。公开维护头 cc2adf8ef 在此前各批（#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156 与 #157）之上新增本批 #127/#137/#139/#141/#143–#146/#149/#151/#155/#158/#160/#164–#171；父仓 gitlink 与公开维护头对齐。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)

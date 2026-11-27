@@ -3510,4 +3510,80 @@ mod tests {
             );
         }
     }
+
+    // Covers the ordinary settings persistence core, not Tauri IPC dispatch itself.
+    #[test]
+    fn invalid_disk_policy_survives_ordinary_settings_save_and_reload() {
+        crate::platform::test_support::with_temp_home("settings-policy-fallback-save", || {
+            let seed = UserPrefs::update_transaction(|prefs| {
+                prefs.migrate_models();
+                prefs.theme = Theme::LiquidDark;
+                prefs.color_scheme = ColorScheme::Dark;
+                prefs.language = Language::Ja;
+                prefs.chat.streaming_animation = false;
+                prefs.advanced.saved_models[0].name = "Policy preservation sentinel".into();
+                Ok(())
+            })
+            .expect("seed using production transaction");
+            let path = crate::platform::paths::settings_path();
+            let mut doc: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            doc["model_rate_limit_retry"] = serde_json::json!({
+                "max_attempts":7,"recovery_budget_secs":0,"initial_delay_secs":2,"max_delay_secs":9});
+            std::fs::write(&path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+            let loaded = UserPrefs::load();
+            assert_eq!(loaded.theme, Theme::LiquidDark);
+            assert_eq!(loaded.language, Language::Ja);
+            assert!(!loaded.chat.streaming_animation);
+            assert_eq!(loaded.advanced.saved_models, seed.advanced.saved_models);
+            assert_eq!(
+                loaded.advanced.active_model_id,
+                seed.advanced.active_model_id
+            );
+            persist_general_settings(GeneralSettingsPatch {
+                sidebar: Some(SidebarPrefs {
+                    date_grouping: false,
+                }),
+                ..Default::default()
+            })
+            .expect("ordinary unrelated settings save");
+            let reloaded = UserPrefs::load();
+            assert_eq!(reloaded.theme, Theme::LiquidDark);
+            assert_eq!(reloaded.language, Language::Ja);
+            assert!(!reloaded.chat.streaming_animation);
+            assert!(!reloaded.sidebar.date_grouping);
+            assert_eq!(reloaded.advanced.saved_models, seed.advanced.saved_models);
+            assert_eq!(
+                reloaded.advanced.active_model_id,
+                seed.advanced.active_model_id
+            );
+            let disk: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                disk["model_rate_limit_retry"],
+                serde_json::json!({"max_attempts":20,
+                "recovery_budget_secs":600,"initial_delay_secs":5,"max_delay_secs":60})
+            );
+            assert_eq!(
+                serde_json::to_value(&reloaded.model_rate_limit_retry).unwrap(),
+                disk["model_rate_limit_retry"]
+            );
+        });
+    }
+
+    #[test]
+    fn rpc_policy_field_remains_rejected() {
+        // These protocols do not accept policy edits; this is input decoding only, not IPC E2E.
+        let input = serde_json::json!({"model_rate_limit_retry":{"max_attempts":0}});
+        assert!(serde_json::from_value::<GeneralSettingsPatch>(input.clone()).is_err());
+        assert!(serde_json::from_value::<WebSettingsPatch>(input).is_err());
+        assert!(
+            serde_json::from_value::<GeneralSettingsPatch>(serde_json::json!({"language":"ja"}))
+                .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<WebSettingsPatch>(serde_json::json!({"memory_enabled":false}))
+                .is_ok()
+        );
+    }
 }

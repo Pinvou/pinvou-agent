@@ -1208,3 +1208,14 @@ Object.assign(dictZh.uiAcpProviders, {
   fetchModels:'获取模型列表', fetchingModels:'正在获取模型列表…',
   fetchUnavailable:'当前版本暂不支持获取模型列表',
 });
+
+Object.assign(dictZh.uiChat, {
+  modelRecoveryWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。可点击停止取消等待。',
+  modelRecoveryChildWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。正在等待恢复。',
+  modelRecoveryInterrupted: '限流恢复已暂停，进度已保存（{attempt}/{max} 次）。恢复时间：{time}；恢复后可继续。',
+  modelRecoveryUnknownTime: '未知',
+});
+
+Object.assign(dictZh.uiChat, { modelRecoveryAgent: '子任务 {agent}：' });
+
+Object.assign(dictZh.uiChat, { modelRecoveryCancelled: '限流等待已取消。', modelRecoveryStopped: '限流等待已结束，请查看本轮结果。' });
