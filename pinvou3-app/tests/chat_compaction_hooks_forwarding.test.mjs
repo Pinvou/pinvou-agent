@@ -28,14 +28,16 @@ const received = [];
 // The shared module freezes its export object; replace the whole reference
 // (the factory resolves window.PinvouBridgeShared.create at call time).
 sandbox.window.PinvouBridgeShared = {
-  create(name, deps) {
-  assert.equal(name, 'tauriChatEvents', 'the lane must address the tauriChatEvents shared instance');
-  return {
-    handleChatCompactionEvent(e, hooks) {
-      received.push(hooks);
-      if (hooks && typeof hooks.doneNotice === 'function') hooks.doneNotice();
-    },
-  };
+  create(name) {
+    assert.equal(name, 'tauriChatEvents', 'the lane must address the tauriChatEvents shared instance');
+    return {
+      handleChatCompactionEvent(e, hooks) {
+        received.push(hooks);
+        if (hooks && typeof hooks.doneNotice === 'function') hooks.doneNotice();
+        else notices.push({ text: '[done] [auto] ' + ((e.payload && e.payload.message) || '') });
+      },
+    };
+  },
 };
 
 const listeners = {};
@@ -78,8 +80,8 @@ const context = {
   turnUsageDirty: {},
   timeStr() { return ''; },
   getBuffer() { return []; },
-  invalidateSessionBuffer(id, opts) { return refuseInvalidation ? false : true; },
-  switchToSessionInternal(id, force, cause, opts) { reloaded += 1; return true; },
+  invalidateSessionBuffer() { return refuseInvalidation ? false : true; },
+  switchToSessionInternal() { reloaded += 1; return true; },
   itemIdSeq: 0,
   pendingStreamNotifications: [],
   pendingAssistantText: '',
@@ -117,6 +119,9 @@ const doneEvent = {
 //    the shared handler (the dropped-argument wrapper sent undefined) and the
 //    foreground force-durable-reload must run inside doneNotice.
 listener(doneEvent);
+await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
 assert.equal(received.length, 1, 'the shared handler must receive exactly one hooks value');
 assert.notEqual(received[0], undefined, 'hooks must not be dropped by the desktop wrapper');
 assert.equal(typeof received[0].doneNotice, 'function', 'doneNotice must ride the hooks');
@@ -131,6 +136,9 @@ assert.ok(
 //    reload is skipped.
 refuseInvalidation = true;
 listener(doneEvent);
+await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
 assert.equal(received.length, 2);
 assert.equal(received[1], undefined, 'a refused invalidation must not inject hooks');
 assert.equal(reloaded, 1, 'a refused invalidation must skip the force-durable reload');
@@ -141,6 +149,9 @@ assert.ok(notices.length >= 2, 'the plain done notice still mounts on refusal');
 state.activeSessionId = 'sess-other';
 refuseInvalidation = false;
 listener(doneEvent);
+await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
 assert.equal(received.length, 3);
 assert.notEqual(received[2], undefined, 'a background shrink still invalidates and injects hooks');
 assert.equal(reloaded, 1, 'the background arm must not force-reload the foreground view');
