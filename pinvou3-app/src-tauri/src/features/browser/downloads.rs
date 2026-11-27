@@ -3119,10 +3119,16 @@ mod tests {
         let alias = temp.path().join("alias");
         // The factory hands every call its own resolver, which owns its
         // anchors so its `Fn` impl stays generic over the argument lifetime.
-        let make_resolve = |alias: PathBuf, staging: PathBuf| {
+        // The fake must return the same form a real canonicalize produces
+        // for the root it maps to: returning the raw argument would compare
+        // an unresolved /var/... prefix against the canonicalized
+        // /private/var/... root and fail on macOS, whose temp dirs sit
+        // behind a symlink Linux never sees.
+        let staging_resolved = std::fs::canonicalize(&staging).unwrap();
+        let make_resolve = |alias: PathBuf, staging_resolved: PathBuf| {
             move |path: &Path| {
                 if path == alias {
-                    Ok(staging.clone())
+                    Ok(staging_resolved.clone())
                 } else {
                     std::fs::canonicalize(path)
                 }
@@ -3131,7 +3137,7 @@ mod tests {
         assert!(destination_inside_staging_with(
             &alias.join("a.bin"),
             &staging,
-            make_resolve(alias.clone(), staging.clone())
+            make_resolve(alias.clone(), staging_resolved.clone())
         ));
         // A folder that resolves outside the root stays allowed.
         let sibling = temp.path().join("other");
@@ -3139,7 +3145,7 @@ mod tests {
         assert!(!destination_inside_staging_with(
             &sibling.join("a.bin"),
             &staging,
-            make_resolve(alias.clone(), staging.clone())
+            make_resolve(alias.clone(), staging_resolved.clone())
         ));
         // An unresolvable destination cannot claim containment; the lexical
         // comparison already answered for the direct spellings.
