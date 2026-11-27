@@ -667,9 +667,11 @@ fn sweep_refs(dir: &Path, depth: u8, is_stale: &dyn Fn(&Path) -> bool) -> bool {
     // 残留锁由下一轮 git 失败重试路径再次触发清扫）。
     match std::fs::symlink_metadata(dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
+            // r53 P2 (CodeQL): the swept path embeds the session handle in
+            // the unbound layout - logged without the path (cleartext-
+            // logging class); the refusal semantics are unchanged.
             eprintln!(
-                "[checkpoints] refs sweep root is a symlink, refusing to sweep: {}",
-                dir.display()
+                "[checkpoints] refs sweep root is a symlink, refusing to sweep (path omitted)"
             );
             return false;
         }
@@ -2508,6 +2510,20 @@ pub fn clear_pending_rewind(ledger_root: &Path) {
         if error.kind() != std::io::ErrorKind::NotFound {
             eprintln!("[checkpoints] 清理 pending_rewind 失败（仅清理未做）: {error:#}");
         }
+    }
+}
+
+/// r53-M1a 跟进（评审 P2）：拒绝臂的真实取消——返回 false = 暂记未能移除
+/// （锁不可用/移除失败），调用方必须把「回退仍处于暂记态、下一条消息会
+/// 完成它」如实告知用户，而不是留下静默重放隐患。
+pub fn try_clear_pending_rewind(ledger_root: &Path) -> bool {
+    match lock_pending_rewind_file(ledger_root) {
+        Ok(_lock) => match fs::remove_file(pending_rewind_path(ledger_root)) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        },
+        Err(_) => false,
     }
 }
 

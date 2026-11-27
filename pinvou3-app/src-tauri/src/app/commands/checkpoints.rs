@@ -1266,7 +1266,16 @@ pub async fn rewind_to_turn(
         )
         .await
         {
-            checkpoints::clear_pending_rewind(&ledger);
+            // r53 P2 跟进（评审）：取消必须真实——锁不可用导致暂记未能移除
+            // 时，把「回退仍在暂记态、下一条消息会完成它」如实写进拒绝文案，
+            // 不留静默重放隐患。
+            if !checkpoints::try_clear_pending_rewind(&ledger) {
+                return Err(format!(
+                    "{refusal}
+
+另：回退暂记未能清除（暂记锁不可用）——该回退仍处于暂记状态，下一条普通消息发送时会自动完成它；请知悉后再继续。"
+                ));
+            }
             return Err(refusal);
         }
         let apply_ledger = ledger.clone();
@@ -1680,8 +1689,11 @@ pub async fn undo_last_rewind(
         let condition_broken = detail.contains("不可反悔");
         match (&undo_info.checkpoint_id, condition_broken) {
             (Some(checkpoint_id), true) => {
+                // r53 P2 (CodeQL): the session handle is not written to the
+                // diagnostic log (cleartext-logging class); the surrounding
+                // user-facing message carries the actionable content.
                 eprintln!(
-                    "[checkpoints] undo_last_rewind conversation restore failed (condition broken) for {session_id} after code restore to {checkpoint_id}: {detail}"
+                    "[checkpoints] undo_last_rewind conversation restore failed (condition broken) after code restore to {checkpoint_id}: {detail}"
                 );
                 format!(
                     "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败且不可重试（{detail}）；被截对话仍保留在回退备份中，需人工处理"
@@ -1689,7 +1701,7 @@ pub async fn undo_last_rewind(
             }
             (Some(checkpoint_id), false) => {
                 eprintln!(
-                    "[checkpoints] undo_last_rewind conversation restore failed for {session_id} after code restore to {checkpoint_id}: {detail}"
+                    "[checkpoints] undo_last_rewind conversation restore failed after code restore to {checkpoint_id}: {detail}"
                 );
                 format!(
                     "代码已恢复到回滚点 {checkpoint_id}，但对话恢复失败（可重试；记录未消费）: {detail}"
@@ -1708,7 +1720,7 @@ pub async fn undo_last_rewind(
         let sentinel_turn = restored.kept_turns.saturating_add(restored.restored_turns);
         if let Err(error) = checkpoints::register_conversation_only_turn(&ledger, sentinel_turn) {
             eprintln!(
-                "[checkpoints] undo conversation-only sentinel registration failed for {session_id}: {error:#}"
+                "[checkpoints] undo conversation-only sentinel registration failed: {error:#}"
             );
         }
     }
