@@ -7,10 +7,11 @@ _walk_tool_schema) runs inside the CI fast-gate's
 mcp-server-contract-smoke.py, shape-checking every bundled server's
 tools/list result against exactly the keyword set those documents list,
 mirroring the T11 engine pipeline (schema_sanitize.rs — the
-document-precise Moonshot face lands on the wire via CodeWhale #143, with
-the provider faces in #144/#145/#146/#147; until the close-out re-pin this
-guard pins the target contract, and the parent's pinned tree still runs
-the pre-T11 sanitizer):
+document-precise Moonshot face landed on the wire via CodeWhale #143 and
+the provider faces in #144/#145/#146; the 2026-11-24 close-out re-pin
+carries that batch onto this repository's gitlink, so the pinned tree
+ships this pipeline; the DeepSeek face, CodeWhale#147, remains open
+upstream and is outside this mirror's scope):
 
 - the whitelist is the MFJS specification's supported set, exactly — its
   字段定义 (field-definition) sections enumerate description, default, anyOf, properties,
@@ -37,19 +38,20 @@ the pre-T11 sanitizer):
   模拟实现元组", "暂不支持如 exclusiveMinimum，exclusiveMaximum，
   minContains, maxContains 等复杂校验定义") and the validator silently
   drops the tool (UnsupportedKeyword / MissingType / InvalidSchemaNode).
-  oneOf/allOf are red here as a deliberate strictness, not an
-  engine-behavior claim: the engine has partial equivalents the mirror
-  refuses to rely on (a single-branch nested union collapses, a nested
-  oneOf converts to anyOf, root unions flatten wholesale), so only a
-  multi-branch nested allOf genuinely fails closed engine-side. A
-  string/number `const` is disclosed the same way — the engine ships it
-  through the const→enum landing (type inference included; a bool/null or
-  object/array const fails closed with UnsupportedConstLiteral, the
-  scalar set being string/number only) while the mirror reds
-  every const because it does not replicate the landing. #683's
-  evaluate_script was lost to the empty-`items` class (MissingType), which
-  the T11 engine now repairs (remove_empty_mfjs_items_schemas) — a repair
-  class the mirror keeps flagging, never replicates;
+  oneOf/allOf stay red here as a deliberate strictness over the shipped
+  face: the engine converts a nested oneOf to anyOf and collapses a
+  single-branch nested union, failing closed only on a multi-branch
+  nested allOf (UnsupportedNestedAllOf), so the blanket red is stricter
+  than the validator exactly on those conversions. A string/number
+  `const` is disclosed the same way — the shipped engine translates it
+  through the const→enum landing (type inference included; a bool/null
+  or object/array const fails closed with UnsupportedConstLiteral, the
+  scalar set being string/number/integer) while the mirror reds every
+  const: `const` is outside the MFJS documented set, and the guard
+  ships the document, not the engine's pragmatic extension. #683's
+  evaluate_script was lost to the empty-`items` class (MissingType),
+  which the shipped engine repairs (remove_empty_mfjs_items_schemas) —
+  a repair class the mirror keeps flagging, never replicates;
 - an enum whose values are not homogeneous float/int/str scalars is
   stripped ("枚举值我们只支持基础类型中的 float, int 和 str……并且不支持
   混合类型 (List 中的每个枚举值的类型必须相同，如不可以 str + int)");
@@ -155,14 +157,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
-# The pre-T11 engine face the interim window is blessed against; see
-# test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-15 onto the
-# session-reader follow head 687358f7e (#157): #157 only extends the
-# registry read-only helper list and its test data — the pinned sanitizer
-# face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
-# previously blessed 8e8d52fdb, verified via the layer-2 source assertions
-# on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "687358f7efde6abd3592737b8ec48adc74ba5a84"
+# The pinned engine face this mirror ships against; see
+# test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed
+# 2026-11-24 onto the T11 close-out head cc2adf8ef: the Moonshot face
+# (#143) and the provider faces (#144/#145/#146) land on the gitlink, so
+# the layer-2 source assertions flip from the pre-T11 tripwire to the
+# shipped-face pins (anyOf cap 500, advisory strip, empty-items repair),
+# verified against the populated tree before flipping the pin. The
+# DeepSeek face (CodeWhale#147) is still open upstream and outside this
+# mirror's scope.
+_PINNED_CODEWHALE_GITLINK = "cc2adf8ef927fff072e9493734a0a32f3a044996"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
@@ -1152,22 +1156,19 @@ class SchemaContractWalkerTest(unittest.TestCase):
                             "s": {"type": "string"}},
              "additionalProperties": False}))
 
-    def test_pinned_codewhale_gitlink_is_pre_t11(self):
-        # Tripwire layer 1 — CI-reproducible. The interim window only holds
-        # against the pinned pre-T11 engine, but the CI checkout uses
-        # submodules: false, so a source-reading assertion would silently
-        # skip exactly where the window must stay loud. The parent tree's
-        # CodeWhale gitlink is readable without any submodule checkout, so
-        # pin it: any advance of the pin (a deps-follow or the T11
-        # close-out re-pin) turns this red until the mirror constants and
-        # the interim notes are consciously reconciled with the new pinned
-        # face.
-        # When the re-pin lands, THIS TEST GOES RED BY DESIGN — re-bless
-        # the pinned face here (and the source assertions in
-        # test_pinned_engine_source_face_is_pre_t11 on a populated tree),
-        # flip the interim notes in the guard header, the contract doc,
-        # and the pptx schema comment, and only then treat the target
-        # contract as the shipped one.
+    def test_pinned_codewhale_gitlink_matches_registered_head(self):
+        # Tripwire — CI-reproducible. The mirror ships against the pinned
+        # review head, but the CI checkout uses submodules: false, so a
+        # source-reading assertion would silently skip exactly where the
+        # face must stay loud. The parent tree's CodeWhale gitlink is
+        # readable without any submodule checkout, so pin it: any advance
+        # of the pin turns this red until the mirror constants and these
+        # notes are consciously reconciled with the new pinned face (the
+        # 2026-11-24 T11 close-out re-pin is the working example: it
+        # flipped the interim notes in the guard header, the contract
+        # doc, and the pptx schema comment, and re-blessed the source
+        # assertions in test_pinned_engine_source_face_matches_mirror on
+        # a populated tree).
         try:
             pinned = subprocess.run(
                 ["git", "-C", str(ROOT), "rev-parse", "HEAD:CodeWhale"],
@@ -1178,31 +1179,99 @@ class SchemaContractWalkerTest(unittest.TestCase):
                       f"needs the parent tree): {exc}")
         self.assertEqual(
             pinned, _PINNED_CODEWHALE_GITLINK,
-            "the CodeWhale pin advanced — the close-out re-pin may have "
-            "landed: reconcile the mirror constants with the new pinned "
-            "face, flip the interim notes, and re-bless this gitlink pin")
+            "the CodeWhale pin advanced — reconcile the mirror constants "
+            "with the new pinned face, flip these notes, and re-bless "
+            "this gitlink pin")
+
+    def test_contract_smoke_help_flag_exits_fast(self):
+        # The smoke script must parse arguments before main() so -h/--help
+        # is a side-effect-free exit 0 and an unknown flag exits 2; the
+        # pre-fix shape booted every bundled MCP server before argparse
+        # reported usage. The ordering faces, not the wall clock, carry
+        # this pin: a regression that re-hides parse_args behind main()
+        # runs the whole contract matrix first, so --help stdout begins
+        # with the matrix's ✅ check lines (usage printed last) and an
+        # unknown flag prints them before argparse's stderr error — both
+        # red regardless of machine speed (the 30s timeout alone did NOT
+        # fire on a machine that boots the matrix in ~26s; measured in
+        # the round-8 review). The tight timeout is only a backstop; the
+        # fixed --help path costs one interpreter start.
+        for argv, expected_exit in ((["--help"], 0), (["--no-such-flag"], 2)):
+            try:
+                probe = subprocess.run(
+                    [sys.executable, str(SMOKE), *argv],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self.fail(f"contract smoke did not exit fast on {argv}: {exc}")
+            self.assertEqual(
+                probe.returncode, expected_exit,
+                f"{argv} must exit {expected_exit}, got {probe.returncode} "
+                f"(stderr head: {probe.stderr[:200]})")
+            if argv == ["--help"]:
+                self.assertTrue(
+                    probe.stdout.lstrip().startswith("usage:"),
+                    "--help stdout must begin with the argparse usage; got "
+                    f"head {probe.stdout[:120]!r} — matrix output ahead of "
+                    "the usage means parse_args no longer short-circuits")
+            else:
+                self.assertEqual(
+                    probe.stdout, "",
+                    "an unknown flag must exit via argparse before any "
+                    f"matrix output; stdout head: {probe.stdout[:120]!r}")
 
     @unittest.skipIf(
         not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),
         "pinned CodeWhale tree not populated (cannot read schema_sanitize.rs)")
-    def test_pinned_engine_source_face_is_pre_t11(self):
+    def test_pinned_engine_source_face_matches_mirror(self):
         # Tripwire layer 2 — the deeper source-content face, readable only
         # on a populated submodule tree. Local runs get it; CI (submodules:
         # false) skips this layer and relies on the gitlink pin above,
-        # which fires on the same event: any advance of the pin.
+        # which fires on the same event: any advance of the pin. The
+        # assertions pin the shipped T11 face the mirror mirrors (the
+        # 2026-11-24 re-bless flipped them from the pre-T11 tripwire).
         source = (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs"
                   ).read_text(encoding="utf-8")
         self.assertIn(
-            "MFJS_MAX_ANY_OF_ITEMS: usize = 10", source,
-            "the pinned engine's anyOf cap changed — the close-out re-pin may "
-            "have landed: reconcile the mirror constants with the new pinned "
-            "face, flip the interim notes, and update this tripwire")
-        self.assertNotIn(
-            "strip_mfjs_advisory_keywords", source,
-            "the pinned engine now carries the T11 advisory strip — the "
-            "close-out re-pin may have landed: reconcile the mirror constants "
-            "with the new pinned face, flip the interim notes, and update "
-            "this tripwire")
+            "MFJS_MAX_ANY_OF_ITEMS: usize = 500", source,
+            "the pinned engine's anyOf cap changed — reconcile the mirror "
+            "constants with the new pinned face and update this tripwire")
+        self.assertIn(
+            "fn strip_mfjs_advisory_keywords(", source,
+            "the pinned engine lost the T11 advisory strip — reconcile the "
+            "mirror constants with the new pinned face and update this "
+            "tripwire")
+        self.assertIn(
+            "fn remove_empty_mfjs_items_schemas(", source,
+            "the pinned engine lost the empty-items repair — reconcile the "
+            "mirror constants with the new pinned face and update this "
+            "tripwire")
+        # Wiring needles: the repairs must stay called in the sanitizer
+        # walk, not merely defined — a bare fn name survives unwiring.
+        self.assertIn(
+            "strip_mfjs_advisory_keywords(parameters);", source,
+            "the pinned engine no longer wires the advisory strip into the "
+            "sanitizer walk — reconcile the mirror with the new pinned "
+            "face and update this tripwire")
+        self.assertIn(
+            "remove_empty_mfjs_items_schemas(parameters);", source,
+            "the pinned engine no longer wires the empty-items repair into "
+            "the sanitizer walk — reconcile the mirror with the new pinned "
+            "face and update this tripwire")
+        # Scalar const→enum face: the detection helper and the fail-closed
+        # variant for non-scalar consts (bool/null/object/array). The fn
+        # needles end in "(" so a suffix-preserving rename
+        # (…_renamed) cannot ride the substring tolerance.
+        self.assertIn(
+            "fn is_mfjs_scalar_const(", source,
+            "the pinned engine lost the scalar const→enum detection — "
+            "reconcile the mirror constants with the new pinned face and "
+            "update this tripwire")
+        self.assertIn(
+            "UnsupportedConstLiteral", source,
+            "the pinned engine lost the fail-closed const variant — "
+            "reconcile the mirror constants with the new pinned face and "
+            "update this tripwire")
 
     @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
     def test_real_pptx_schema_is_green(self):
@@ -1225,9 +1294,7 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsInstance(branches, list)
         self.assertEqual(len(branches), 10,
                          "one branch per layout; the count is the layout set, "
-                         "not a target-budget boundary (500) — but the pinned "
-                         "pre-T11 engine caps anyOf at 10, so this sits exactly "
-                         "at the shipped limit")
+                         "not the budget boundary (500, the shipped T11 cap)")
         layouts = []
         for index, branch in enumerate(branches):
             self.assertEqual(branch.get("type"), "object",

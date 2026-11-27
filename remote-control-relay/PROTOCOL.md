@@ -225,9 +225,9 @@ aborts startup with a fixed `[relay-error]` line.
 
 The Relay reports rejects with a `type: "error"` message carrying a `code`.
 Codes enforced by the reject helper also close the socket with WebSocket close
-code 1008. Five informational codes leave the connection open:
+code 1008. Six informational codes leave the connection open:
 `bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
-and `desktop_offline`. Graceful closes wait for the peer's close handshake so
+`frame_too_large`, and `desktop_offline`. Graceful closes wait for the peer's close handshake so
 queued messages are delivered, and frames that arrive after the close are
 ignored; a peer that withholds the handshake is terminated unconditionally
 after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
@@ -235,8 +235,9 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | Code | Trigger |
 | --- | --- |
 | `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests any value more than 128 levels deep. |
-| `bad_message` | The parsed frame is not a JSON object. |
+| `bad_message` | The parsed frame is not a JSON object, or a web→desktop frame could not be re-encoded for forwarding (the defensive re-encode catch; the frame is refused and both sockets stay up). |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
+| `frame_too_large` | An authenticated web frame whose forwarded encoding — the exact JSON the Relay would hand the desktop, envelope included — exceeds the desktop's inbound frame bound (4 MiB − 64 KiB). The connection stays open; only the frame is refused. Desktop→web frames are not measured against this bound — the browser has no matching cap. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
 | `legacy_token_alias_unsupported` | The message carries a legacy top-level `token` or `pairing_token` field. |
 | `authentication_required` | A non-handshake message arrived before authentication completed. |
@@ -251,10 +252,10 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
 | `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
 | `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
-| `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. |
+| `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. The error echoes at most 64 characters of the offending `type`, so the reply stays inside the recipient's own inbound bound. |
 | `desktop_offline` | A Web-to-desktop message arrived while the desktop socket is not connected. |
 | `ingress_rate_limited` | The per-connection ingress message or byte rate was exceeded. |
-| `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. |
+| `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. A client-supplied revoke `reason` is clamped at intake to a 256-character string (anything else — including the server's own `desktop_offline_ttl_expired` TTL-expiry literal, which Web clients classify as benign expiry rather than a revoke — becomes the default `revoked`), so the revoked frames can never exceed the desktop's own inbound bound. |
 | `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
 | `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
 | `revoked_endpoint_capacity_reached` | The tombstone capacity is exhausted (nothing was written); the requester is closed and the endpoint remains usable. |
@@ -265,9 +266,25 @@ when the revoke requester is acknowledged with a normal close ("endpoint
 revoked"), `4001` when a replaced desktop or Web client is closed ("desktop
 endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
 expiry tears down the affected client ("endpoint revoked" or "endpoint
-expired"). A client whose socket the Relay terminates abruptly (frame high-
-water mark, unserializable frame, hostile upgrade, heartbeat liveness kill)
-observes the implicit `1006` abnormal-closure code on its side.
+expired"). A client whose socket the Relay terminates abruptly after the WebSocket
+handshake (frame high-water mark, unserializable frame, heartbeat liveness
+kill, or a receiver protocol violation on a poisoned frame stream) observes
+the implicit `1006` abnormal-closure code on its side. A
+hostile upgrade is rejected before any WebSocket exists: the peer sees a
+failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
+
+A Web frame whose forwarded encoding — the exact JSON the Relay re-serializes
+for the desktop, `endpoint_id`/`lease_id` envelope included — exceeds the
+desktop's documented `4 MiB − 64 KiB` frame bound is rejected with
+`frame_too_large` before forwarding. The check runs on the connected-desktop
+path: while the desktop is offline the frame is answered `desktop_offline`
+first and is never measured or forwarded. (Originally such a frame was
+accepted at ingress and then killed the desktop socket at the boundary,
+forcing a self-healing reconnect flap; the gate now measures the
+re-serialized encoding rather than the ingress byte size, because JSON
+re-serialization can expand numeric literals — the 4-byte `1e20` re-encodes
+as the 21-digit exact decimal — so an earlier raw-bytes-plus-headroom
+approximation let crafted frames through.)
 
 ## HTTP and operational behavior
 
@@ -329,10 +346,17 @@ observes the implicit `1006` abnormal-closure code on its side.
   problems (`relay_state_load_failed ...`, the over-size line, or the
   non-regular-file line), and bind failures (`listen_failed code=<errno>`).
   No startup report echoes a filesystem path, the offending value, or the
-  bind address. Three runtime events share the same fixed-line discipline and
+  bind address. Five runtime events share the same fixed-line discipline and
   leave the process up: `websocket_protocol_violation code=<ws error code>`
   (a contained per-socket protocol violation), `revocation_persist_failed
-  code=<errno>`, and `revocation_unexpected_failure`.
+  code=<errno>`, `revocation_unexpected_failure`,
+  `forward_reencode_refused` (a web forward that could not be re-encoded
+  at all — the defensive catch; the frame is refused with `bad_message`
+  and the desktop is untouched), and the poisoned-frame receiver line
+  `[relay] receiver error on <role> socket: code=<code>` (terminates only
+  that socket, loudly). An over-bound forward whose encoding
+  measured successfully is refused with `frame_too_large` and produces
+  no log line.
 - After the handlers are installed at the very end of startup, `SIGINT` and
   `SIGTERM` terminate all WebSocket clients without a close handshake (peers
   observe an abnormal closure) and exit the process with code 0; in-flight
@@ -341,7 +365,7 @@ observes the implicit `1006` abnormal-closure code on its side.
 - The Relay rejects any frame whose complete serialized WebSocket message
   exceeds `MAX_PAYLOAD_BYTES` (protocol v2 requires at least 4 MiB), counting
   the whole envelope rather than just the event payload. The desktop keeps its
-  own frames at or below `4 MiB - 64 KiB` so they fit inside that bound.
+  own frames at or below `4 MiB − 64 KiB` so they fit inside that bound.
   Scan and parse costs are linear in frame size, so raising
   `MAX_PAYLOAD_BYTES` above the 4 MiB default trades per-frame event-loop
   latency: a maximal frame briefly blocks the Relay. Values above 16 MiB

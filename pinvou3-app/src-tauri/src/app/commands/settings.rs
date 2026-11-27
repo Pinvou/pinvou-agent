@@ -3322,6 +3322,7 @@ mod tests {
         match old_home {
             // SAFETY: holding ENV_LOCK; restore-side removal serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: holding ENV_LOCK; restore-side removal serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }

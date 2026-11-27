@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const interactionBridgeSource = fs.readFileSync(path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'interaction.js'), 'utf8');
+// bridge-messages.js 提供真实的 classic 分类器（window.PinvouBridgeMessages）：
+// editLastTurn 的乐观切片经 userMessageDisplayText → isInternalUserMessage 读它，
+// 压缩检查点边界钉（下方）需要真实判定而非桩。
+const bridgeMessagesSource = fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-messages.js'), 'utf8');
 
 // ── modeState 竞态回归：陈旧读取不得覆盖权威改写（审计意见）────────
 // 装载 interaction 桥的 runtime 快照，用可控 invoke 精确编排异步返回顺序。
@@ -16,7 +20,16 @@ const interactionBridgeSource = fs.readFileSync(path.join(here, '..', 'src', 'pl
 // 顺序——epoch 校验必须在场（审计 P1）。
 function loadInteractionRuntime() {
   const root = {};
-  vm.runInNewContext(fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
+  vm.runInNewContext(bridgeMessagesSource + '\n' + fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8') + '\n' + interactionBridgeSource, { window: root, globalThis: root });
+  // 真实共享 userMessageDisplayText（PinvouBridgeShared 工厂闭包内定义）：
+  // editLastTurn 的乐观切片经它 → isInternalUserMessage 读真实 classic 分类器。
+  const sharedUserMessageDisplayText = root.PinvouBridgeShared.create('tauriMain', {
+    state: {},
+    addChatItem() {},
+    bt(key) { return key; },
+    BT_TABLE: { zh: {}, en: {}, ja: {} },
+    DELIVERABLE_EXTS: [],
+  }).userMessageDisplayText;
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
   const state = {
     activeSessionId: 'chat-a',
@@ -55,6 +68,7 @@ function loadInteractionRuntime() {
   };
   runtime.api = factory({
     state,
+    userMessageDisplayText: sharedUserMessageDisplayText,
     notify() { runtime.notifyCount += 1; },
     bt(key) { return key; },
     addSystemItem(text) { runtime.errorItems.push(String(text)); },
@@ -219,6 +233,50 @@ test('editLastTurn 失败恢复定向触发会话：切走后 busy/错误提示�
     '失败后 busy 必须复位（否则触发会话被永久卡成忙碌）');
   assert.equal(rt.errorItems.length, 1,
     '失败提示恰好一条（"⚠️ Error: boom"，落进定向恢复的会话）');
+});
+
+test('editLastTurn 压缩检查点不是可编辑边界：乐观切片落在检查点之前的真实用户消息', async () => {
+  // 压缩检查点是引擎写的历史运行时消息（带出处戳，见 internal-message.mjs /
+  // bridge-messages.js 的检查点族）：重放层把它还原成系统提示、投影层不切出
+  // turn。这里的乐观切片经 userMessageDisplayText → isInternalUserMessage 走
+  // 同一分类器，也不得把它当成「最近一条可显示用户消息」，否则替换文本的
+  // 目标错位（瞬时空档/重复，直到后端权威 edit_last_turn 收敛）。
+  const stamped = [
+    { type: 'text', text: 'Another language model started to solve this problem and produced a summary of its thinking process.\n\n## Task\nx' },
+    { type: 'text', text: '<!-- codewhale.compaction-checkpoint.v1 -->' },
+  ];
+  const rt = loadInteractionRuntime();
+  rt.state.messages = [
+    { role: 'user', content: [{ type: 'text', text: '第一问' }] },
+    { role: 'user', content: stamped },
+    { role: 'assistant', content: [{ type: 'text', text: '压缩后继续' }] },
+    { role: 'user', content: [{ type: 'text', text: '第二问' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '答二' }] },
+  ];
+  const editP = rt.api.editLastTurn('替换文本');
+  // 乐观切片必须落在「第二问」：检查点与其间的助手消息一并移除，替换文本
+  // 接在检查点之前的真实用户消息序列之后。（两侧过 plain：切片产物诞生在
+  // vm context 原型域里，跨域 deepEqual 须先规范化。）
+  const plain = value => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(rt.state.messages), plain([
+    { role: 'user', content: [{ type: 'text', text: '第一问' }] },
+    { role: 'user', content: stamped },
+    { role: 'assistant', content: [{ type: 'text', text: '压缩后继续' }] },
+    { role: 'user', content: [{ type: 'text', text: '替换文本' }] },
+  ]), '检查点不得成为切片点：真实用户消息才是编辑边界');
+  await editP;
+  // 检查点是最后一条 user 角色消息时（压缩提交后、下一轮提问前）同样不得被
+  // 当成编辑目标：切片须越过它落在「第一问」，不得留下重复的「第一问」。
+  const rt2 = loadInteractionRuntime();
+  rt2.state.messages = [
+    { role: 'user', content: [{ type: 'text', text: '第一问' }] },
+    { role: 'user', content: stamped },
+  ];
+  const editP2 = rt2.api.editLastTurn('替换文本');
+  assert.deepEqual(plain(rt2.state.messages), plain([
+    { role: 'user', content: [{ type: 'text', text: '替换文本' }] },
+  ]), '末尾检查点被越过：切片落在其前的真实用户消息');
+  await editP2;
 });
 
 test('planStuckGo 补充指令失败定向提示：sendMessageToSession 抛错不得成为 unhandled rejection', async () => {

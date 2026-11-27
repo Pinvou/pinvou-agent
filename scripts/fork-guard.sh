@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 94 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 121 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Review candidate for CodeWhale#149; branched one commit above public
-# maintenance 11cba403d. Public maintenance has since advanced (687358f7e:
-# #136/#142/#148/#150/#152 incl. rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29,
-# #156 clippy 1.100 adaptation, #157 session-reader classification); adoption
-# realigns the pin to the accepted public result (docs/fork-policy.md).
-EXPECTED_HEAD="0022e737445a962a399e4470ad8cb683a07ac899"
-EXPECTED_COMMITS=94
+# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135,
+# CodeWhale#136/#142/#148/#150/#152 (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29),
+# and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
+# and CodeWhale#157 (session-reader read-only classification),
+# and CodeWhale#127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/
+# CodeWhale#160/#164/#165/#166/#167/#168/#169/#170/#171 (incl. deps: rusqlite
+# 0.43 line and eslint 10; engine surfaces: bounded rate-limit recovery,
+# host model HTTP policies, idle engine retirement, shared route budget)
+# merged.
+EXPECTED_HEAD="cc2adf8ef927fff072e9493734a0a32f3a044996"
+EXPECTED_COMMITS=121
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -74,15 +78,6 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
-  "T4|Shutdown joins pending MCP boot without UI delivery|CodeWhale/crates/tui/src/core/engine.rs|async fn shutdown_mcp_pool(&mut self)"
-  "T4|Pending MCP boot cannot outlive shutdown|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events"
-  "T4|Completion observers do not keep an engine alive|CodeWhale/crates/tui/src/core/engine/run_completion.rs|fn forkguard_completion_wait_does_not_retain_engine_handle"
-  "T4|Idle retirement joins the sealed actor and host consumers|CodeWhale/crates/tui/src/core/engine/handle.rs|pub async fn shutdown_when_idle(&self, host_is_idle: impl FnOnce() -> bool)"
-  "T4|Idle retirement preserves autonomous results|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation"
-  "T4|Cancelled retirement cannot stop a later actor|CodeWhale/crates/tui/src/core/engine/idle_shutdown.rs|fn forkguard_idle_shutdown_cancelled_proposal_does_not_stop_the_actor"
-  "T4|Host terminal completion gates the sealed actor|CodeWhale/crates/tui/src/core/engine/idle_shutdown.rs|fn forkguard_idle_shutdown_checks_host_completion_after_actor_ready"
-  "T4|Child work gates retirement without consuming results|CodeWhale/crates/tui/src/tools/subagent/mod.rs|pub(crate) fn has_live_work_for_session"
-  "T4|Shell work and pending output gate retirement|CodeWhale/crates/tui/src/tools/shell.rs|pub(crate) fn has_live_or_unreported_work_for_session"
   "T2|Test metadata summary loss requests recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_run_tests_metadata_summary_cut_requests_recovery"
   "T2|Child report artifact retains exact bytes and ids|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_report_artifact_keeps_exact_bytes"
   "T2|Deferred subagent report names explicit activation fallback|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn stamp_subagent_summary_truncates_when_over_budget"
@@ -220,10 +215,9 @@ fingerprints=(
   # guard enforcement, and its tests are not forkguard_-named, so layer 2
   # never selected them. The fingerprints pin two schema literals (the
   # required shrink and the default statement); the pinned runner below
-  # covers the tests themselves. Those literals exist only on the public
-  # maintenance line after this candidate branched (the candidate's todo
-  # schema still requires status), so the two fingerprints are withheld
-  # here and return when the pin realigns to the accepted public head.
+  # covers the tests themselves.
+  "T2|todo item status leaves required  |CodeWhale/crates/tui/src/tools/todo.rs|\"required\": [\"content\"]"
+  "T2|todo default-pending stated in schema |CodeWhale/crates/tui/src/tools/todo.rs|\"description\": \"Task status. Defaults to pending when omitted.\""
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
@@ -304,7 +298,7 @@ fingerprints=(
   "T5|artifacts 包含/排除回归            |CodeWhale/crates/tui/src/session_export.rs|forkguard_session_archive_includes_artifacts_and_respects_skip"
   "T5|短读 member fail-closed 回归      |CodeWhale/crates/tui/src/session_export.rs|forkguard_session_archive_rejects_artifact_shorter_than_recorded_size"
 
-  "T6|可缩容 launch gate 模块            |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct DynamicGate"
+  "T6|可缩容 launch gate 模块            |CodeWhale/crates/tui/src/core/capacity.rs|pub(crate) struct DynamicGate"
   "T6|限流 AIMD 治理器                   |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct RateLimitGovernor"
   "T6|fleet 治理器接线全部 spawn 路径    |CodeWhale/crates/tui/src/tools/subagent/mod.rs|runtime.governor = Some(Arc::clone(&self.governor));"
   "T6|限流时间自愈行为回归               |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains"

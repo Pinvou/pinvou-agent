@@ -197,7 +197,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
       target = matchProjectByPath(projectList, item.workspacePath, ordered);
     }
     if (target) {
-      projectRows.get(target.id).push(item);
+      projectRows.get(target.id)?.push(item);
       return;
     }
     // Tier 3: legacy folder bucketing.

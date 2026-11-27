@@ -1337,6 +1337,7 @@ mod tests {
     fn restore_redisables_in_initialized_scopes() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-redisable");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let pkg = paths::bundles_root().join("my-skill-rr");
@@ -1466,6 +1467,7 @@ mod tests {
     fn restore_skill_package_rebuilds_registration() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-skill");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let pkg = bin_package("my-skill", "my-skill");
@@ -1730,6 +1732,7 @@ mod tests {
     fn restore_refuses_skill_name_colliding_with_foreign_package() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-collide");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         bin_package("my-skill", "my-skill");
@@ -1770,6 +1773,7 @@ mod tests {
     fn restore_refuses_orphaned_bin_dir_without_phantom_consent() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-orphan");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // Round-32 minor 3 (review #455): seed an INITIALIZED plain scope so
@@ -1865,6 +1869,7 @@ mod tests {
     fn restore_refuses_collision_with_live_same_named_skill_pack() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-collision");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // Recycle pack P carrying skill S.
@@ -2062,6 +2067,7 @@ mod tests {
     fn restore_unreadable_bin_manifest_fails_toward_force() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-force-unreadable");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let pkg = paths::bundles_root().join("broken-combo");
@@ -2122,6 +2128,7 @@ mod tests {
     fn restore_mcp_supply_failure_rolls_back_to_recycle_bin() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-rollback");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 损坏 manifest 的 MCP 包：has_mcp 成立（文件在）但 load_manifest 读不出，
@@ -2355,6 +2362,7 @@ mod tests {
     fn exported_zip_reimports_via_plugin_pipeline() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("export-reimport");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 构造与统一导入管线落盘形态一致的包目录（plugin.json 声明组件 +
@@ -2508,6 +2516,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-upsert-fail");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let pkg = bin_package("my-skill", "my-skill");
@@ -2711,6 +2720,7 @@ mod tests {
     fn take_back_save_failure_compensates_and_stays_retryable() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("take-back-compensate");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let pkg = bin_package("compensated", "member");
@@ -2878,6 +2888,7 @@ mod tests {
     fn restore_consent_gate_never_reowns_collided_pack_id() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-gate-collision");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // Foreign installed pack claiming the recycled id as a companion
@@ -2947,6 +2958,7 @@ mod tests {
     fn restore_secrets_pack_into_uninitialized_scope_persists_consent() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-secrets-uninit");
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // Combination pack: mcp manifest declaring a secret + in-package skills.

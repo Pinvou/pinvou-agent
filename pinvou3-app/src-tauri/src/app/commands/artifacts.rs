@@ -338,10 +338,16 @@ pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
 /// Negotiated separately from the legacy [`list_deliverable_index`] array
 /// via the desktop capability snapshot (round-9 review: mixed-version
 /// web/desktop pairings are supported deployments, so the richer result
-/// must not be welded onto the unversioned command).
+/// must not be welded onto the unversioned command). The command is
+/// phone-reachable through the embedded web policy, and the impl formats
+/// the absolute sessions root into the total-failure message, so the exit
+/// folds the storage root before egress (round-32 review M4; the legacy v1
+/// command renders a total failure as an empty index and never egresses
+/// the string).
 #[tauri::command]
 pub async fn list_deliverable_index_v2() -> Result<DeliverableIndex, String> {
     crate::features::deliverables::list_deliverable_index_impl()
+        .map_err(|error| crate::platform::paths::redact_storage_prefix(&error))
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
@@ -1061,6 +1067,34 @@ pub async fn open_artifact_window(
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn web_visible_deliverable_index_exit_folds_the_storage_prefix() {
+    // Round-32 review (M4): the v2 index is phone-reachable through the
+    // embedded web policy, and its total-failure exit formats the absolute
+    // sessions root into the error string (deliverables.rs). The fold at the
+    // command exit keeps the home path from crossing the relay; deleting the
+    // fold turns this count red, and a commented-out fold keeps the needle
+    // findable only under `comment_filtered`, which strips it.
+    let source = include_str!("artifacts.rs");
+    let start = source
+        .find("pub async fn list_deliverable_index_v2(")
+        .expect("the v2 deliverable index command must exist");
+    let body = &source[start..];
+    let end = body
+        .find("\npub async fn ")
+        .expect("the command body must be terminated");
+    let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+    assert_eq!(
+        counted
+            .matches("crate::platform::paths::redact_storage_prefix(")
+            .count(),
+        1,
+        "the phone-reachable deliverable index exit must fold the storage \
+         root before egress (exactly one fold arm pinned)"
+    );
 }
 
 #[cfg(test)]

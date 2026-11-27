@@ -1,6 +1,7 @@
-//! Tests for the memory feature. 抽离自 `mod.rs` 的 `#[cfg(test)] mod tests`，
-//! 逐字保留原测试体，仅通过 `use` 把拆分到各子模块的内部 helper 重新引入作用域。
-// architecture-guard: allow-target-cfg -- 记忆持久化测试需用 Windows 独占句柄覆盖 ReplaceFileW 恢复路径（自 mod.rs 拆分迁入，原豁免随文件迁移）
+//! Tests for the memory feature. Extracted from `mod.rs`'s `#[cfg(test)] mod tests`;
+//! the test bodies are kept verbatim, with only the internal helpers split into
+//! submodules re-introduced into scope via `use`.
+// architecture-guard: allow-target-cfg -- memory persistence tests need a Windows-exclusive handle to cover the ReplaceFileW restore path (migrated here from the mod.rs split; the original exemption moved with the file)
 
 use std::fs;
 use std::io;
@@ -29,10 +30,10 @@ use super::llm_review::{
     memory_review_request_body, parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::{render_from_parts, render_memory_block};
-// 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
+// Import all constants (MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / the Llm* entities).
 use super::types::*;
 
-// 重新暴露 super::* 上的 pub 面（MemoryProfile / ProfileIdentity / ... ）
+// Re-expose the pub surface of super::* (MemoryProfile / ProfileIdentity / ...)
 use super::*;
 
 use super::util::{looks_sensitive, looks_task_like};
@@ -502,12 +503,14 @@ fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
     drop(home);
 }
 
-// 撤权面回归钉:cleanup 警告会随 get/update 成功载荷到达手机,路径必须
-// 已折叠存储根前缀——回退成裸 display() 会把 $HOME/.pinvou3 绝对路径带过
-// relay,断言即红。提交车道用注入闭包在全平台强制清理失败(Windows 独占
-// 的 share_mode 锁与 Unix 的只读目录都不可移植,原 pin 因此从未运行过);
-// 对账车道(真实 fs::remove_file,无注入点)用目录桩让 remove_file 在
-// 全平台失败。
+// Revocation-surface regression pin: cleanup warnings reach the phone with
+// get/update success payloads, so paths must already carry the folded storage-root
+// prefix — reverting to a bare display() would carry the $HOME/.pinvou3 absolute
+// path across the relay and turn this assertion red. The commit lane forces cleanup
+// failure on every platform with an injected closure (the Windows-only share_mode
+// lock and Unix read-only directories are both unportable, so the original pin never
+// ran); the reconcile lane (real fs::remove_file, no injection point) uses a
+// directory stub to make remove_file fail on every platform.
 fn assert_warning_is_folded(warning: &str, home: &IsolatedPinvouHome, context: &str) {
     assert!(
         !warning.contains(home.root.to_string_lossy().as_ref()),
@@ -589,8 +592,9 @@ fn reconcile_cleanup_warnings_fold_host_paths_before_the_relay() {
     let value = preference_fixture("pref-new0001", "workflow_preference", "new preference");
     let journal_path = topic_migration_journal_path(&new_path).unwrap();
 
-    // 先用注入闭包种下「stale 清理失败 → journal 留存」的状态,再把
-    // stale 换成目录桩,让对账车道的真实 fs::remove_file 全平台失败。
+    // First seed the "stale cleanup failure → journal kept" state with the injected
+    // closure, then swap the stale entry for a directory stub so the reconcile lane's
+    // real fs::remove_file fails on every platform.
     commit_topic_migration_unlocked_with(
         &journal_path,
         &new_path,
@@ -622,7 +626,7 @@ fn reconcile_cleanup_warnings_fold_host_paths_before_the_relay() {
     assert_eq!(read.value.len(), 1);
     assert_eq!(read.value[0].id, "pref-new0001");
 
-    // 目录桩移除后自愈:重试清掉 journal,警告消失。
+    // Self-heals once the stub is removed: the retry clears the journal and the warning disappears.
     fs::remove_dir(&stale_path).unwrap();
     let read = list_preferences_with_cleanup().unwrap();
     assert!(read.cleanup_warning.is_none());
@@ -637,10 +641,12 @@ fn reconcile_cleanup_warnings_fold_host_paths_before_the_relay() {
     drop(home);
 }
 
-/// Round-5 复审:journal 移除失败这一脱敏点此前没有内容级钉住(stale 两
-/// 个点由上方两钉覆盖;把该分支回退为 `journal_path.display()` 时全部用
-/// 例仍然全绿——PR 正文「four of five」里点名的缺口)。注入闭包让
-/// journal 移除跨平台确定性失败,把 `cleanup_warning` 的脱敏钉到内容级。
+/// Round-5 review: the journal-removal-failure redaction point previously had no
+/// content-level pin (the two stale points are covered by the two pins above; when
+/// that branch was reverted to `journal_path.display()` every case stayed green —
+/// the gap named as "four of five" in the PR body). An injected closure makes the
+/// journal removal fail deterministically on every platform, pinning the
+/// `cleanup_warning` redaction at the content level.
 #[test]
 fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
     let home = IsolatedPinvouHome::new("cleanup-journal-redaction");
@@ -653,9 +659,10 @@ fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
         "journal preference",
     );
     let journal_path = topic_migration_journal_path(&new_path).unwrap();
-    // commit 阶段让 stale 移除失败以留存 journal(commit 自身会在清理全部
-    // 成功时移除 journal),随后清掉 stale 文件,让对账时 stale 车道成功、
-    // 只有 journal 移除在注入闭包处确定性失败。
+    // The commit phase fails the stale removal so the journal survives (commit itself
+    // removes the journal when all cleanups succeed); the stale file is then cleared so
+    // that at reconcile time the stale lane succeeds and only the journal removal fails
+    // deterministically at the injected closure.
     let stale_path = dir.join("pref-stale0003.json");
     fs::write(&stale_path, b"{}\n").unwrap();
     commit_topic_migration_unlocked_with(
@@ -698,18 +705,22 @@ fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
     drop(home);
 }
 
-/// Round-8 复审恢复:被删除的两个 cfg(windows) 用例（share_mode 占用）是唯一
-/// 驱动公共包装层 `update_preference` / `update_work_context` 在持久 stale
-/// 清理失败下返回 cleanup_warning 并保留 stale 文件的覆盖。Unix 的只读目录
-/// 无法充当同一失败原语——只读目录会先挡住迁移自身的 journal/新文件写入
-/// （round-7 已认定其不可移植），故这里改用「正文 id ≠ 文件名 + 同名目录桩」：
-/// 桩经无条件 old_path 进入 stale_paths（无需解析），commit 的清理被真实
-/// `fs::remove_file` 以 EISDIR/ACCESS_DENIED 确定性拒绝，而写入车道不受影响；
-/// 存活的 journal 用 round-7 同款注入闭包播种，让加载车道先把目录桩隐藏。
-/// 该核心段跨平台(Round-10 复审 minor:整个用例此前 cfg(unix),Windows CI
-/// 对这条包装层警告车道零覆盖);`dir_read_only_or_skip` 只驱动只读重试段
-/// （纯读 + 软失败移除,root 环境按 helper 语义响亮跳过该段）,仅该段保持
-/// unix 门槛。
+/// Round-8 review restoration: the two deleted cfg(windows) cases (share_mode
+/// holding) were the only coverage driving the public wrappers `update_preference` /
+/// `update_work_context` to return cleanup_warning and keep the stale file under a
+/// persistent stale-cleanup failure. A Unix read-only directory cannot serve as the
+/// same failure primitive — it would first block the migration's own journal/new-file
+/// writes (round-7 already ruled it unportable) — so this uses "body id ≠ file name +
+/// same-name directory stub" instead: the stub enters stale_paths via the
+/// unconditional old_path (no parsing), commit's cleanup is deterministically refused
+/// by real `fs::remove_file` with EISDIR/ACCESS_DENIED, and the write lane is
+/// unaffected; the surviving journal is seeded with the same round-7 injected closure
+/// so the load lane hides the directory stub first.
+/// This core section is cross-platform (Round-10 review minor: the whole case was
+/// cfg(unix) before, leaving Windows CI with zero coverage of this wrapper warning
+/// lane); `dir_read_only_or_skip` only drives the read-only retry section (pure reads
+/// plus soft-failure removal; under root the helper skips that section loudly), and
+/// only that section keeps the unix gate.
 #[test]
 fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
     let home = IsolatedPinvouHome::new("update-stale-cleanup");
@@ -718,7 +729,7 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
     fs::create_dir_all(&prefs_dir).unwrap();
     fs::create_dir_all(&context_dir).unwrap();
 
-    // —— preferences 半：正文 id 的载体文件 + 同名目录桩 + 播种存活的 journal ——
+    // —— preferences half: the body id's carrier file + a same-name directory stub + a seeded surviving journal ——
     let carrier_path = prefs_dir.join("pref-holder0000.json");
     write_json_atomic(
         &carrier_path,
@@ -728,8 +739,9 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
     let stale_path = prefs_dir.join("pref-old0001.json");
     fs::create_dir(&stale_path).unwrap();
     let seed_path = prefs_dir.join("pref-seed0002.json");
-    // 与载体不同一个规范化桶（"seed_topic" 会被折叠进默认桶 answer_style，
-    // 使载体在 resolve_topic_authorities 里被当作重复项删除）。
+    // A different canonical bucket from the carrier ("seed_topic" would fold into the
+    // default answer_style bucket, making the carrier be deleted as a duplicate in
+    // resolve_topic_authorities).
     let seed = preference_fixture("pref-seed0002", "document_preference", "seed preference");
     let seed_journal = topic_migration_journal_path(&seed_path).unwrap();
     commit_topic_migration_unlocked_with(
@@ -781,7 +793,7 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
         "a failed stale cleanup must keep the migration journal"
     );
 
-    // 重试车道：stale 仍在盘上，后续加载持续告警且旧 id 保持隐藏。
+    // Retry lane: the stale entry stays on disk, later loads keep warning, and the old id stays hidden.
     for _ in 0..2 {
         let read = list_preferences_with_cleanup().unwrap();
         let warning = read
@@ -799,10 +811,11 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
         );
     }
 
-    // 只读目录重试段：0555 让真实 remove_file 以 EACCES 继续失败；helper 在
-    // root 下恢复 0755 并返回 false，该段随之跳过（上方断言与权限无关）。
-    // 仅此段需要 unix 位语义；核心失败原语(目录桩)是跨平台的
-    // (Round-10 复审 minor)。
+    // Read-only retry section: 0555 makes the real remove_file keep failing with
+    // EACCES; under root the helper restores 0755 and returns false, skipping this
+    // section (the assertions above are permission-independent). Only this section
+    // needs unix bit semantics; the core failure primitive (the directory stub) is
+    // cross-platform (Round-10 review minor).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -820,7 +833,7 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
         let _ = std::fs::set_permissions(&prefs_dir, std::fs::Permissions::from_mode(0o755));
     }
 
-    // 自愈：桩移除后，重试车道清掉 journal，警告消失。
+    // Self-healing: after the stub is removed, the retry lane clears the journal and the warning disappears.
     fs::remove_dir(&stale_path).unwrap();
     let read = list_preferences_with_cleanup().unwrap();
     assert!(read.cleanup_warning.is_none());
@@ -835,7 +848,7 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
             .starts_with(".topic-migration-")
     }));
 
-    // —— work_context 半：同一原语驱动第二个公共包装层 ——
+    // —— work_context half: the same primitive drives the second public wrapper ——
     let ctx_carrier_path = context_dir.join("ctx-holder0003.json");
     write_json_atomic(
         &ctx_carrier_path,
@@ -918,11 +931,13 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
     drop(home);
 }
 
-/// Round-11 复审 minor:磁盘载入的记录 id(`clean_scalar` 不限字符集)
-/// 拼进迁移清理路径前必须是单分量普通文件名——种植的 `"id": "../victim"`
-/// 让无保护的 join 把清理臂的 `remove_file` 指到偏好目录之外(删除同级
-/// 私态文件)。守卫跳过这类旧记录的清理:迁移照常落盘,孤儿文件留待
-/// 手工清理,目录外的受害者文件必须存活。
+/// Round-11 review minor: a disk-loaded record id (`clean_scalar` imposes no charset)
+/// must be a single-component plain file name before being joined into the migration
+/// cleanup path — a planted `"id": "../victim"` lets an unprotected join aim the
+/// cleanup arm's `remove_file` outside the preferences directory (deleting a sibling
+/// private-state file). The guard skips cleanup for such legacy records: the
+/// migration persists as usual, the orphan file is left for manual cleanup, and the
+/// victim file outside the directory must survive.
 #[test]
 fn preference_migration_skips_non_plain_filename_ids() {
     let _home = IsolatedPinvouHome::new("pref-id-traversal");
@@ -939,9 +954,11 @@ fn preference_migration_skips_non_plain_filename_ids() {
     )
     .unwrap();
 
-    // `clean_id("../victim") == "victim"`,公共入口按调用方 id 命中种植
-    // 记录,迁移臂随即用**记录内**的原始 id 拼旧路径——正是守卫要拦的
-    // 形状;删掉守卫本钉红(remove_file 真实删掉目录外的 victim.json)。
+    // `clean_id("../victim") == "victim"`: the public entry matches the planted record
+    // by the caller's id, and the migration arm then joins the old path from the id
+    // **inside the record** — exactly the shape the guard must block; deleting the
+    // guard turns this pin red (remove_file really deletes victim.json outside the
+    // directory).
     let updated = update_preference(
         "victim",
         MemoryTextPatch {
@@ -960,12 +977,13 @@ fn preference_migration_skips_non_plain_filename_ids() {
     );
 }
 
-/// Round-14 复审 minor:work_context 磁盘载入 id 的活防线在 parse 侧的
-/// `normalize_work_context`(`item.id = clean_id(&item.id)`,种植的
-/// `"../victim"` 载入即消毒为 "victim"),此后所有下游 id→路径 join
-/// 拿到的都是单分量名;迁移清理 join 处的 `is_plain_filename` 守卫是
-/// 纵深冗余(单独回退不可观测——突变实证)。本钉住活防线本身:删除
-/// 消毒行,载入出的 id 保持 "../victim" 即红。
+/// Round-14 review minor: the live defense for work_context's disk-loaded ids sits on
+/// the parse side in `normalize_work_context` (`item.id = clean_id(&item.id)`; a
+/// planted `"../victim"` is sanitized to "victim" at load), so every downstream
+/// id→path join afterwards sees a single-component name; the `is_plain_filename`
+/// guard at the migration cleanup join is defense-in-depth redundancy (rolling it
+/// back alone is unobservable — mutant executed). This pins the live defense itself:
+/// delete the sanitizing line and the loaded id staying "../victim" turns red.
 #[test]
 fn work_context_records_sanitize_disk_loaded_ids() {
     let _home = IsolatedPinvouHome::new("wc-id-sanitize");
@@ -1003,20 +1021,25 @@ fn work_context_records_sanitize_disk_loaded_ids() {
     );
 }
 
-/// Round-14 复审 M4:迁移 journal 是存储目录内可被外部种植的文件,复核
-/// 读此前是裸 `fs::read_to_string`(每次偏好/工作上下文载入都会整读)。
-/// 读已收口到共享有界原语(16 MiB 上限):超界种植文件必须走坏档隔离,
-/// 而不是无界读入;隔离后同目录留有 `.corrupt-` 证据,载入车道不阻塞。
+/// Round-14 review M4: the migration journal is a file inside the store directory
+/// that can be planted externally, and the reconcile read was previously a bare
+/// `fs::read_to_string` (fully read on every preference/work-context load). Reads
+/// have been funneled into the shared bounded primitive (16 MiB cap): an oversized
+/// planted file must go through bad-file quarantine instead of an unbounded read;
+/// after quarantine a `.corrupt-` evidence copy stays in the same directory and the
+/// load lane is not blocked.
 #[test]
 fn migration_journal_reads_are_capped() {
     let _home = IsolatedPinvouHome::new("journal-cap");
     let context_dir = work_context_dir();
     fs::create_dir_all(&context_dir).unwrap();
     let journal = context_dir.join(".topic-migration-huge.journal");
-    // 区分度关键:种植的是**合法 JSON 但超界**的 journal(单个 17 MiB 的
-    // stale_files 成员)——裸 `fs::read_to_string` 会整读并正常解析,复核
-    // 臂随后因权威缺失静默 `remove_file`(无隔离证据);有界原语在打开
-    // 门即拒(>16 MiB),走坏档隔离。断言隔离证据存在即区分两条读路径。
+    // The discriminating key: the planted journal is **valid JSON but oversized** (a
+    // single 17 MiB stale_files member) — a bare `fs::read_to_string` would read it
+    // whole and parse normally, after which the reconcile arm silently `remove_file`s
+    // it for the missing authority (no quarantine evidence); the bounded primitive
+    // refuses at open time (>16 MiB) and goes to bad-file quarantine. Asserting the
+    // quarantine evidence exists distinguishes the two read paths.
     let oversized_name = "x".repeat(17 * 1024 * 1024);
     let journal_body = format!(
         "{{\"authority_file\":\"authority-a.json\",\"authority_hash\":\"deadbeef\",\
@@ -1024,7 +1047,7 @@ fn migration_journal_reads_are_capped() {
     );
     fs::write(&journal, journal_body).unwrap();
 
-    // 载入触发 journal 复核;超界 journal 按坏档隔离,不阻塞载入。
+    // Loading triggers the journal reconcile; the oversized journal is quarantined as a bad file without blocking the load.
     let loaded = load_work_context().unwrap();
     assert!(
         loaded.is_empty(),
@@ -1049,12 +1072,15 @@ fn migration_journal_reads_are_capped() {
     );
 }
 
-/// Round-8 复审：`resolve_topic_authorities` 的重复权威脱敏点（io.rs 的
-/// `cleanup_failures.push(... display_redacted(&duplicate) ...)`）此前只有
-/// helper 级钉，把该行回退成裸 `duplicate.display()` 时无用例变红。本钉在
-/// `dir_read_only_or_skip` 的真实 0555 拒绝下（root 环境响亮跳过）用真实
-/// `fs::remove_file` 驱动重复主题清理，内容级断言失败串带 `~/.pinvou3`
-/// 折叠前缀、不含绝对临时根、保留失败文件名；权限恢复后自愈。
+/// Round-8 review: the duplicate-authority redaction point of
+/// `resolve_topic_authorities` (io.rs's
+/// `cleanup_failures.push(... display_redacted(&duplicate) ...)`) previously had only
+/// a helper-level pin — no case turned red when that line was reverted to a bare
+/// `duplicate.display()`. This pin drives duplicate-topic cleanup with a real
+/// `fs::remove_file` under `dir_read_only_or_skip`'s real 0555 refusal (skipped
+/// loudly under root), asserting at the content level that the failure string carries
+/// the `~/.pinvou3` folded prefix, does not contain the absolute temp root, and keeps
+/// the failing file name; it self-heals once permissions are restored.
 #[cfg(unix)]
 #[test]
 fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
@@ -1063,9 +1089,10 @@ fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
     let home = IsolatedPinvouHome::new("duplicate-authority-redaction");
     let dir = paths::user_memory_preferences_dir();
     fs::create_dir_all(&dir).unwrap();
-    // 权威文件：文件名与 id 一致（canonical 排序确定性居后成为权威，与
-    // mtime 无关）；重复项：非 canonical 文件名、同主题，加载即被
-    // resolve_topic_authorities 移除，移除失败只留软警告。
+    // Authority file: the file name matches the id (canonical sorting deterministically
+    // puts it last as the authority, independent of mtime); duplicate: a non-canonical
+    // file name with the same topic, removed by resolve_topic_authorities at load,
+    // leaving only a soft warning when the removal fails.
     let authority_id = stable_id_with_prefix("pref", "answer_style");
     let authority_path = dir.join(format!("{authority_id}.json"));
     write_json_atomic(
@@ -1080,9 +1107,9 @@ fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
     )
     .unwrap();
 
-    // root 不受 0555 约束:helper 已恢复 0755 并响亮跳过,依赖 EACCES 的
-    // 断言按仓库对这类 fixture 的既定形式整段略过而不是把 root CI 染红
-    // (Round-10 复审 minor)。
+    // root is not bound by 0555: the helper restored 0755 and skips loudly, so the
+    // EACCES-dependent assertions skip the whole section per the repo's established
+    // form for such fixtures instead of painting root CI red (Round-10 review minor).
     if !crate::platform::test_support::dir_read_only_or_skip(
         &dir,
         "duplicate_authority_cleanup_failure_folds_host_paths",
@@ -1105,7 +1132,7 @@ fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
         "the duplicate must stay on disk for the retry lane"
     );
 
-    // 权限恢复后自愈：重复项被清掉，警告消失。
+    // Self-healing after permissions are restored: the duplicate is cleared and the warning disappears.
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
     let read = list_preferences_with_cleanup().unwrap();
     assert!(read.cleanup_warning.is_none());
@@ -1115,12 +1142,15 @@ fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
     drop(home);
 }
 
-/// Round-7 复审:enabled 车道 `runtime_snapshot` 的 `runtime_path` 字段此前
-/// 只有 disabled 车道的钉（io::tests::runtime_snapshot_payloads_carry_redacted_paths），
-/// 把 render.rs:236 回退成裸 `path.display()` 时没有任何用例变红。本钉走真实
-/// enabled 车道（zh-Hans + memory_enabled，与 organize 用例同款开关），内容级
-/// 断言 `runtime_path` 只带 `~/.pinvou3` 折叠前缀、绝对存储根不出现——该字段
-/// 随成功载荷出站（get_memory_overview / 写命令均在 Web 访问策略内）。
+/// Round-7 review: the enabled lane's `runtime_snapshot` `runtime_path` field
+/// previously had only a disabled-lane pin
+/// (io::tests::runtime_snapshot_payloads_carry_redacted_paths); reverting
+/// render.rs:236 to a bare `path.display()` turned no case red. This pin drives the
+/// real enabled lane (zh-Hans + memory_enabled, the same toggles as the organize
+/// case) and asserts at the content level that `runtime_path` carries only the
+/// `~/.pinvou3` folded prefix with no absolute storage root — the field leaves with
+/// success payloads (get_memory_overview / the write commands are all within the web
+/// access policy).
 #[test]
 fn runtime_snapshot_enabled_path_folds_host_paths_in_runtime_path() {
     let home = IsolatedPinvouHome::new("runtime-redaction-enabled");
@@ -1146,11 +1176,13 @@ fn runtime_snapshot_enabled_path_folds_host_paths_in_runtime_path() {
     drop(home);
 }
 
-/// Round-7 复审:快照文档结构化 JSON 的 `source_dir` 与 `files.*` 路径字段是
-/// 随「同步记忆」落盘的诊断件（render.rs 的 json! 块），未来经同步/回显通道
-/// 出站；此前没有内容级钉，回退成裸 `display()` 时全部用例仍绿。本钉解析真实
-/// `write_memory_snapshot_document` 产物中的结构化块，逐字段断言折叠前缀、
-/// 并断言整份文档不含绝对存储根拼写。
+/// Round-7 review: the snapshot document's structured-JSON `source_dir` and `files.*`
+/// path fields are diagnostics persisted with "sync memory" (render.rs's json! block)
+/// that may later egress via sync/echo channels; they had no content-level pin, and
+/// reverting to a bare `display()` kept every case green. This pin parses the
+/// structured block of real `write_memory_snapshot_document` output, asserting the
+/// folded prefix field by field, plus that the whole document never contains the
+/// absolute storage-root spelling.
 #[test]
 fn snapshot_document_structured_paths_fold_host_prefixes() {
     let home = IsolatedPinvouHome::new("snapshot-doc-redaction");
@@ -1347,9 +1379,9 @@ impl IsolatedPinvouHome {
         let guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // var_os 而非 var:非 UTF-8 的既有值按字节原样恢复,不在 Drop 时被
-        // 静默丢成 remove(Round-10 复审 minor;与 test_support 的 EnvRestore
-        // 同口径)。
+        // var_os rather than var: a pre-existing non-UTF-8 value is restored
+        // byte-for-byte instead of being silently dropped to a remove on Drop (Round-10
+        // review minor; same caliber as test_support's EnvRestore).
         let prev = std::env::var_os("PINVOU3_HOME");
         let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let root = std::env::temp_dir().join(format!(
@@ -1656,8 +1688,9 @@ fn llm_review_parser_accepts_json_object() {
     assert_eq!(suggestion.content, "回答默认先给结论");
 }
 
-// 空响应(拒绝/内容过滤/缺 choices)是模型或传输侧异常:review 侧与 organize
-// 侧同口径必须报错,而不是产出假的 no_change 成功。
+// An empty response (refusal/content filter/missing choices) is a model- or
+// transport-side anomaly: the review side must error with the same caliber as the
+// organize side, not produce a fake no_change success.
 #[test]
 fn llm_review_parser_rejects_empty_response() {
     let error = parse_llm_memory_review("").unwrap_err();
@@ -2330,13 +2363,15 @@ fn render_recent_work_skips_archived_and_expired() {
     assert_eq!(items.len(), 1);
 }
 
-// Wave 3 把 memory 的推理方言判定收敛到共享 core::reasoning_dialect 后，注入
-// 行为（body 字段名与取值、URL 嗅探优先于 model 名回退的次序）只有共享纯函数
-// 的 URL 分类测试覆盖，memory 路径本身无行为级测试。以下三个测试锁定该契约。
+// After Wave 3 consolidated memory's reasoning-dialect decision into the shared
+// core::reasoning_dialect, the injection behavior (body field names and values; the
+// ordering where URL sniffing takes precedence over the model-name fallback) is
+// covered only by the shared pure function's URL classification tests — the memory
+// path itself had no behavioral tests. The three tests below lock that contract.
 
 #[test]
 fn memory_review_reasoning_controls_inject_for_newly_covered_vendors() {
-    // OpenaiCompatible + 各厂商直连 URL：Wave 3 新增覆盖（原实现返回 None 不注参）。
+    // OpenaiCompatible + per-vendor direct URLs: new coverage added in Wave 3 (the original implementation returned None and injected nothing).
     let cases = [
         (
             "https://ark.cn-volces.com/api/v3",
@@ -2367,7 +2402,7 @@ fn memory_review_reasoning_controls_inject_for_newly_covered_vendors() {
             "{model} @ {base_url} 必须注入 thinking disable"
         );
     }
-    // Minimax 簇额外带 reasoning_split（与 review 侧同构）。
+    // The Minimax family additionally carries reasoning_split (isomorphic to the review side).
     let mut minimax = json!({});
     apply_memory_review_reasoning_controls(
         &mut minimax,
@@ -2381,8 +2416,9 @@ fn memory_review_reasoning_controls_inject_for_newly_covered_vendors() {
 
 #[test]
 fn memory_review_reasoning_controls_prefer_url_over_model_fallback() {
-    // URL 能识别厂商时按 URL 注参，model 名回退不再参与：
-    // deepseek URL + qwen 模型名（main 上的旧 memory 会错注 enable_thinking）。
+    // When the URL identifies the vendor, injection keys on the URL and the model-name
+    // fallback no longer participates: deepseek URL + qwen model name (old memory on
+    // main would wrongly inject enable_thinking).
     let mut body = json!({});
     apply_memory_review_reasoning_controls(
         &mut body,
@@ -2394,7 +2430,7 @@ fn memory_review_reasoning_controls_prefer_url_over_model_fallback() {
     assert_eq!(body["thinking"], json!({ "type": "disabled" }));
     assert!(body.get("enable_thinking").is_none());
 
-    // URL 识别不到厂商时回退 model 名：自定义代理网关 + qwen/deepseek 模型名。
+    // When the URL cannot identify a vendor, fall back to the model name: custom proxy gateway + qwen/deepseek model names.
     let mut qwen_fallback = json!({});
     apply_memory_review_reasoning_controls(
         &mut qwen_fallback,
@@ -2418,8 +2454,9 @@ fn memory_review_reasoning_controls_prefer_url_over_model_fallback() {
 
 #[test]
 fn memory_review_reasoning_controls_keep_kimi_gate_on_url_path() {
-    // Kimi 门控统一后：URL 命中 moonshot 簇时，k2.5/k2.6 注参、k2.7 与
-    // thinking 变体不注参（k2.7 是 always-thinking 模型，停注是修复而非回归）。
+    // After the Kimi gate was unified: when the URL hits the moonshot family,
+    // k2.5/k2.6 get the injection while k2.7 and thinking variants do not (k2.7 is an
+    // always-thinking model; stopping the injection is a fix, not a regression).
     let mut k26 = json!({});
     apply_memory_review_reasoning_controls(
         &mut k26,
@@ -2446,7 +2483,7 @@ fn memory_review_reasoning_controls_keep_kimi_gate_on_url_path() {
     }
 }
 
-// ---- Explicit remember (“记住”) signal reliability and memory organize tests ----
+// ---- Explicit remember-signal reliability and memory organize tests ----
 
 use std::collections::BTreeMap;
 
@@ -3287,6 +3324,110 @@ async fn organize_memory_without_content_skips_llm_and_reports_no_change() {
     // A no_change report still lands in history so the "last organize time"
     // stays visible.
     assert_eq!(load_organize_history().len(), 1);
+}
+
+// Round-16 follow-up review (M3): creation-side folding only covers entries stored
+// after this PR; earlier entries in the history file still carry raw storage-root
+// absolute paths in their warnings, and this query egresses
+// (get_memory_organize_history is on the web allowlist). The read path uniformly
+// adds the fold: legacy entries egress as the ~/.pinvou3 form; redact is idempotent
+// so already-folded/path-free entries pass through unchanged; the next persist round
+// (load→insert→truncate→write) incidentally lands the file healed.
+#[test]
+fn organize_history_readback_folds_legacy_raw_storage_prefixes() {
+    let home = IsolatedPinvouHome::new("organize-history-legacy-fold");
+    let raw_path = super::io::organize_history_path();
+    std::fs::create_dir_all(raw_path.parent().unwrap()).unwrap();
+    let legacy_report = serde_json::json!({
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:01Z",
+        "model": "legacy",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            format!("persist organize history: failed writing {}", raw_path.display()),
+            "clean warning without any path".to_string(),
+        ],
+    });
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone()],
+    )
+    .unwrap();
+
+    let history = load_organize_history();
+    assert_eq!(history.len(), 1);
+    let warnings = &history[0].warnings;
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings[0].starts_with("persist organize history: failed writing ~/.pinvou3/"),
+        "the legacy raw storage-root path must fold on readback, got {:?}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].contains(&home.root.display().to_string()),
+        "the folded warning must not retain the raw home prefix"
+    );
+    assert_eq!(warnings[1], "clean warning without any path");
+
+    // Read-side folding is idempotent: a second read matches the first exactly (no double-folding distortion).
+    let again = load_organize_history();
+    assert_eq!(again[0].warnings, history[0].warnings);
+
+    // Round-20 review (S11): the fixture gains an **already-folded** entry (stored
+    // straight to the file) — the read side must pass it through unchanged, without
+    // re-folding or rewriting (this shape was previously covered only by transform-level
+    // unit tests; this folder's fixture was missing it).
+    let folded_report = serde_json::json!({
+        "started_at": "2026-01-02T00:00:00Z",
+        "finished_at": "2026-01-02T00:00:01Z",
+        "model": "legacy-folded",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        ],
+    });
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone(), folded_report.clone()],
+    )
+    .unwrap();
+    let with_folded = load_organize_history();
+    assert_eq!(
+        with_folded[1].warnings[0],
+        "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        "an already-folded stored warning must pass through unchanged"
+    );
+
+    // The next persist round (load→insert→truncate→write) incidentally lands the
+    // on-disk file in healed form (the behavior the comment claimed had no assertion):
+    // after persist, read the file bytes directly — the legacy entry's raw absolute
+    // path must be gone.
+    // persist's input carries no raw warnings (the command layer folds in
+    // finish_organize_report before entering persist; this test asserts only that the
+    // legacy entry lands healed via "fold on reload").
+    let mut healed_input = folded_report.clone();
+    healed_input["started_at"] = serde_json::json!("2026-01-03T00:00:00Z");
+    let healed = serde_json::from_value::<MemoryOrganizeReport>(healed_input).unwrap();
+    super::organize::persist_organize_report(&healed).unwrap();
+    let on_disk = std::fs::read_to_string(super::io::organize_history_path()).unwrap();
+    assert!(
+        !on_disk.contains(&home.root.display().to_string()),
+        "the next persist must heal legacy raw entries on disk"
+    );
+    assert!(
+        on_disk.contains("persist organize history: failed writing ~/.pinvou3/"),
+        "the healed file must carry the folded form"
+    );
 }
 
 #[tokio::test]
@@ -4392,4 +4533,278 @@ fn memory_block_marker_gate_is_case_insensitive() {
     assert!(contains_memory_block_marker("PinVou_User_Memory"));
     assert!(contains_memory_block_marker("<pinvou_user_memory>"));
     assert!(!contains_memory_block_marker("ordinary preference text"));
+}
+
+/// Round-15 review minor: `finish_organize_report` pushes persist failures into
+/// `report.warnings` — that payload egresses with the organize_memory command and
+/// history queries (web allowlisted), folding the storage root with the same caliber
+/// as other memory warnings. Reverting to a bare `format!(…)` push turns this pin
+/// red (the desktop log keeps the raw detail, in parallel with the fold).
+/// Round-16 review (M6a): assertions look only at non-comment lines — the mutation
+/// "delete the fold, mention `redact_storage_prefix` only in a comment, push raw
+/// text" once stayed green (mutant executed), same filtering caliber as the raw-read
+/// scan pin.
+#[test]
+fn organize_report_persist_warning_folds_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let start = source
+        .find("fn finish_organize_report(")
+        .expect("finish_organize_report must exist");
+    let body = &source[start..];
+    // f47c45d6 once typoed the last marker as `"\n#[cfg(test]"` (missing a closing
+    // paren) — that marker therefore never matched, failing silently; organize.rs has
+    // no test module today so it happened to be harmless, but the original form is
+    // restored so the window does not lose its bound once organize.rs gains tests.
+    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test)]"]
+        .iter()
+        .filter_map(|marker| body.find(marker))
+        .min()
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    let code = crate::platform::test_support::comment_filtered(body);
+    assert!(
+        code.contains("eprintln!(\"[memory] {raw}\")"),
+        "the desktop log keeps the raw detail; only the outbound copy is folded",
+    );
+    // Round-27 review m6: bare contains was blind to the combined mutation "push raw
+    // directly + an inert folding call nearby" (each assertion stayed green on its
+    // own). Pin that the fold must consume the raw binding itself
+    // (`redact_storage_prefix(&raw)`) and that the order is raw log → fold → folded
+    // value enters the payload; the byte-exact shape assertions follow the same
+    // caliber as memory.rs's same-family pin.
+    let log_at = code
+        .find("eprintln!(\"[memory] {raw}\")")
+        .expect("the raw desktop log must stay");
+    let fold_at = code.find("redact_storage_prefix(&raw)").expect(
+        "the fold must consume the raw binding itself; a raw-push \
+             mutant plus an inert folding call must not satisfy this pin",
+    );
+    let push_at = code
+        .find("report.warnings.push(detail)")
+        .expect("the warning must still reach the report (folded), not be dropped");
+    assert!(
+        log_at < fold_at && fold_at < push_at,
+        "order must be raw desktop log -> fold -> folded value enters the \
+         phone-visible warnings payload"
+    );
+    assert!(
+        !code.contains("report.warnings.push(raw)"),
+        "the raw detail must not enter the phone-visible payload"
+    );
+}
+
+/// Round-28 review MINOR-5: behavioral test for persist failure — the source pin
+/// above proves the fold call and order exist, but a string pin cannot prove the
+/// data flow (the inert-fold mutant stayed green); no test previously drove a real
+/// persist failure either. This test creates a real failure (a regular file where the
+/// history file's parent directory should be → create_dir_all ENOTDIR) and, together
+/// with the `{path}: {e}` path context persist_organize_report added, asserts the
+/// outbound warning is in folded form and free of the raw absolute path. Mutation
+/// directions: deleting the fold (push the raw text) or deleting the path context
+/// (bare io Display) each turn the first assertion red.
+#[test]
+fn organize_report_persist_failure_record_folds_the_real_path() {
+    let home = IsolatedPinvouHome::new("organize-persist-failure-fold");
+    let history_path = super::io::organize_history_path();
+    // Put a regular file where the parent directory should be: create_dir_all fails
+    // for real with ENOTDIR, no io primitive mocked.
+    let memory_dir = history_path.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(memory_dir.parent().unwrap()).unwrap();
+    std::fs::write(&memory_dir, b"not a directory").unwrap();
+
+    let mut report = super::organize::MemoryOrganizeReport {
+        started_at: "2026-01-01T00:00:00Z".into(),
+        finished_at: "2026-01-01T00:00:01Z".into(),
+        model: "test".into(),
+        scanned: Default::default(),
+        deleted: Default::default(),
+        updated: Default::default(),
+        merged: Default::default(),
+        skipped_sensitive: 0,
+        no_change: true,
+        warnings: Vec::new(),
+    };
+    super::organize::finish_organize_report(&mut report);
+
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "the persist failure must become one warning"
+    );
+    let warning = &report.warnings[0];
+    assert!(
+        warning.starts_with("persist organize history: ~/.pinvou3/"),
+        "the outbound warning must carry the folded storage root, got {warning:?}"
+    );
+    assert!(
+        !warning.contains(&home.root.display().to_string()),
+        "the raw absolute path must not cross the fold, got {warning:?}"
+    );
+    // Idempotent re-fold (read-back healing passes already-folded entries through the fold again): the form is stable.
+    let refolded = crate::platform::paths::redact_storage_prefix(warning);
+    assert_eq!(
+        refolded, *warning,
+        "the folded warning must be re-fold stable"
+    );
+}
+
+/// Round-16 review (M5): apply_organize_actions' six error-warning arms egress with
+/// the `report.warnings` payload and history queries (web allowlisted), while the
+/// bounded-read primitive's io error Display carries absolute storage paths
+/// (path.display()). Folding has landed in each arm with the same caliber as the
+/// persist warning; this pin asserts per-arm windows where only non-comment lines
+/// count (same filtering as the previous pin) — deleting any arm's fold turns red.
+#[test]
+fn organize_apply_warnings_fold_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let production = source
+        .split("#[cfg(test)]")
+        .next()
+        .expect("organize.rs must keep its tests behind #[cfg(test)]");
+    let start = production
+        .find("fn apply_organize_actions(")
+        .expect("apply_organize_actions must exist");
+    let body = &production[start..];
+    // Round-21 review: complete the following-item markers — enum OrganizeDeleteOutcome
+    // and friends sit between apply_organize_actions and the census count window; the
+    // original marker table recognized only fn, so the window could overshoot the
+    // function body into a following item (harmless today, but a `redact_storage_
+    // prefix(&` appearing inside such an item would distort the count). Round-22 review
+    // records the spelling gap as a known residual: `pub enum `/`pub struct `/`pub(crate)
+    // fn `/`const `/`static `/`type ` are not in the table — the item right after this
+    // function happens to be a bare `enum`, so the pin is exact today; truncation
+    // asserts per-prefix and panics (a loud failure rather than a silent miscount);
+    // adding a following item must extend the table in the same change.
+    let end = [
+        "\nfn ",
+        "\npub fn ",
+        "\nenum ",
+        "\nstruct ",
+        "\nimpl ",
+        "\nasync fn ",
+    ]
+    .iter()
+    .filter_map(|marker| body.find(marker))
+    .min()
+    .unwrap_or(body.len());
+    let body = &body[..end];
+    let code = crate::platform::test_support::comment_filtered(body);
+    const ERROR_ARM_PREFIXES: [&str; 6] = [
+        "organize: reload stores before applying actions: {}",
+        "organize: delete {} {id}: {}",
+        "organize: update {} {id}: {}",
+        "organize: merge {} {keep}: {}",
+        "organize: merge {} cleanup delete {id}: {}",
+        "organize: compact {kind}: {}",
+    ];
+    for prefix in ERROR_ARM_PREFIXES {
+        let at = code
+            .find(prefix)
+            .unwrap_or_else(|| panic!("{prefix} warning arm must exist in apply_organize_actions"));
+        // Round-18 review: the window slices previously did not floor to char
+        // boundaries — when at-120 / at+len+300 crashed into a multi-byte line the
+        // slice panicked (a compile crash rather than a red assertion, with a
+        // misleading failure language), the same fallback as memory.rs's fold-scan pin.
+        let floor = |source: &str, mut index: usize| {
+            while index > 0 && !source.is_char_boundary(index) {
+                index -= 1;
+            }
+            index
+        };
+        let window = &code[floor(&code, at.saturating_sub(120))
+            ..floor(&code, (at + prefix.len() + 300).min(code.len()))];
+        assert!(
+            window.contains("redact_storage_prefix"),
+            "the `{prefix}` warning interpolates an io error whose Display carries \
+             the absolute storage path; it rides phone-visible payloads and must \
+             fold via redact_storage_prefix"
+        );
+    }
+    // Round-18 review: the six-arm list is an enumeration-style pin — a new bare error
+    // arm is invisible. A fold-count census makes any fold-count change conspicuous: a
+    // new folded arm turns red at 7≠6, forcing the prefix list to be updated in the
+    // same change; a new bare error arm remains outside this pin's reach (organize's
+    // arms are match arms with no map_err-like uniform token to scan exhaustively —
+    // a different exhaustiveness caliber than the command-layer pins, handled as a
+    // disclosed residual).
+    let fold_count = code.matches("redact_storage_prefix(&").count();
+    assert_eq!(
+        fold_count, 6,
+        "apply_organize_actions must carry exactly the six error-arm folds; a new \
+         error-bearing arm must join ERROR_ARM_PREFIXES with its own fold"
+    );
+}
+
+/// Round-15 review (S14 F1): the bounded-read primitive's behavioral pins covered
+/// only the journal and authority-read lanes; when the other lanes (io's
+/// authority/body-match/commit read-backs, organize's history read) were reverted to
+/// bare `fs::read_to_string`/`fs::read`, every existing pin stayed green. This source
+/// contract scans the production halves of three files for bare-read call lines
+/// (literal mentions on comment lines do not count).
+#[test]
+fn memory_store_lanes_keep_raw_reads_routed_through_the_bounded_primitive() {
+    // Round-16 follow-up review (M4): the scan previously covered only 3 of the 7
+    // production files (mod.rs/llm_review.rs/render.rs/types.rs were not listed) and
+    // its token set missed the verbatim-read family read_to_end/BufReader/File::open.
+    // This module now covers all production files + the full token family; a bypass
+    // shortcut (moving the read helper outside the module and calling it from scanned
+    // files) remains outside this pin's reach, policed by reference-side review.
+    let scan = |source: &str| {
+        // Round-27 review m14: the filtering primitive was lifted into platform::test_support for sharing.
+        crate::platform::test_support::comment_filtered(
+            source
+                .split("#[cfg(test)]")
+                .next()
+                .expect("tests must stay behind cfg(test)"),
+        )
+        .lines()
+        .any(|line| {
+            line.contains("read_to_string")
+                || line.contains("read_to_end")
+                || line.contains("fs::read(")
+                || line.contains("BufReader")
+                || line.contains("File::open")
+        })
+    };
+    // Round-25 review MINOR: the token family is blind to the `OpenOptions` bare-read
+    // spelling (`OpenOptions::new().open(path)` contains no token; the 4 OpenOptions in
+    // the current tree are all write-side). Chained calls spanning lines make a
+    // "line-level write exemption" unreliable, so this uses an exact census: the number
+    // of OpenOptions occurrences in each file's production half is pinned; any addition
+    // (read or write spelling) turns this pin red and forces verifying that the site is
+    // genuinely write-side (or migrating to the bounded primitive) before syncing the
+    // census count.
+    let open_options_census = |source: &str| {
+        crate::platform::test_support::comment_filtered(
+            source
+                .split("#[cfg(test)]")
+                .next()
+                .expect("tests must stay behind cfg(test)"),
+        )
+        .lines()
+        .map(|line| line.matches("OpenOptions").count())
+        .sum::<usize>()
+    };
+    for (name, source, open_options) in [
+        ("io.rs", include_str!("io.rs"), 1),
+        ("organize.rs", include_str!("organize.rs"), 0),
+        ("util.rs", include_str!("util.rs"), 2),
+        ("mod.rs", include_str!("mod.rs"), 0),
+        ("llm_review.rs", include_str!("llm_review.rs"), 1),
+        ("render.rs", include_str!("render.rs"), 0),
+        ("types.rs", include_str!("types.rs"), 0),
+    ] {
+        assert!(
+            !scan(source),
+            "{name} must not read store files with raw unbounded reads; route \
+             through platform::filesystem::read_private_data_file"
+        );
+        assert_eq!(
+            open_options_census(source),
+            open_options,
+            "{name} gained a new OpenOptions site: verify it is write-side \
+             (or route the read through the bounded primitive) and update \
+             this census"
+        );
+    }
 }

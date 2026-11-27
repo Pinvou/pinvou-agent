@@ -7,8 +7,7 @@
  * Startup-entry module: the summaries render synchronously in the
  * timeline's tool header. The result-card parser and the prompt excerpt
  * live in scheduled-task-card-logic.js, loaded only inside the lazy
- * scheduled-task card chunk (the startup-budget policy in
- * vite.config.mjs).
+ * scheduled-task card chunk to keep the startup entry lean.
  *
  * Kept framework-free (mirroring spawn-aggregation.mjs / session-message-block.js)
  * so tests/ can exercise it directly.

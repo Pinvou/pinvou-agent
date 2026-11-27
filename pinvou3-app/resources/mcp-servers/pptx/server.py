@@ -738,19 +738,13 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # ≤30, enum values ≤1000, enum literals ≤75000 bytes; encoded bytes 120000
 # and the enum-length check threshold 250 unchanged; source comparison, not
 # a documented clause). Loosening them means changing the CodeWhale
-# constants and syncing the parent-repo mirror scripts. Note: the aligned
-# budgets only take effect once the T11 engine batch (CodeWhale #143–#147)
-# lands on the parent gitlink through the close-out re-pin PR; the currently
-# pinned engine is still the pre-T11 face whose anyOf branch cap is in fact
-# 10 — this schema's 10 branches sit exactly at that cap, so adding a layout
-# before the re-pin hits the 10-branch cap first (the pinned engine's
-# sanitizer then omits the make_pptx tool from that request with a warning
-# while the remaining tools still ship, and the build fails outright only
-# when an explicit tool_choice forces the omitted tool); only after the
-# re-pin is it "just add a branch". The union
-# itself is already legal on the current engine: nested multi-branch anyOf
-# is kept and accepted as-is (flattening happens only at the root
-# combination level), with no need to wait for the re-pin.
+# constants and syncing the parent-repo mirror scripts. The T11 engine
+# batch (CodeWhale #143–#146) landed on the parent gitlink through the
+# 2026-11-24 close-out re-pin, so the aligned budgets are the shipped
+# caps: the union's ceiling is the layout count and an 11th layout is an
+# ordinary branch addition ("just add a branch"). The union itself is
+# legal on the shipped engine: nested multi-branch anyOf is kept and
+# accepted as-is (flattening happens only at the root combination level).
 def _slides_item_branch(layout, layout_label, required, blurb, fields):
     """Build one per-layout branch of slides.items: explicit type:object
     plus that layout's own required.

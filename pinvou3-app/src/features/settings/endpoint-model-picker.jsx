@@ -102,7 +102,7 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
     else if (listing.status === 'unsupported') statusText = settingsCopy.unsupportedHint;
     else if (listing.status === 'error') {
       // 复审 minor-8:错误嗓音全部复用连接测试的 connectionMessages 三语文案
-      // (零新增键,入口 chunk 有启动预算红线):
+      // (零新增键,复用既有文案保持入口 chunk 精简):
       // - 3xx 跳转 → redirect(「服务地址发生跳转」,与连接测试同源);
       // - tls / network(核心层的传输类别,http_status 为 null)各自取对应
       //   提示——network 复用 unknown 的「连接失败,请稍后重试」,不再一律

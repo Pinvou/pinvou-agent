@@ -4,10 +4,7 @@ import test from 'node:test';
 
 import { VIEW_LOADERS } from '../src/app/view-loaders.js';
 import createViteConfig, {
-  MAIN_ENTRY_BUDGET_BYTES,
-  WEB_MAIN_ENTRY_BUDGET_BYTES,
   assertLazyChunks,
-  assertMainEntryBudget,
   lazyChunkContracts,
   lazyToolChunkContracts,
 } from '../vite.config.mjs';
@@ -23,38 +20,12 @@ function buildPlugins(mode) {
 }
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, the shared
-  // PR #833 + PR #834 487_000 desktop raise, PR #834's review-fix-wave
-  // 488_000 desktop raise, PR #835's 129_000 web raise, PR #835's
-  // review-fix-wave 489_000 desktop raise, PR #835's second fix wave
-  // 490_000 desktop raise, PR #835's rebase re-measure 492_000 desktop
-  // raise, and PR #894's rebase re-measure 493_000 desktop raise are
-  // measured per policy (PR #826 measured inside the ceiling current at
-  // each of its rebase bases, no raise of its own); the config comment
-  // preserves both platforms' measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 493_000);
-  assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
+  // Startup size is managed by refactoring (lazy contracts, periodic
+  // measurement-and-refactor passes), not by a byte ceiling; the build keeps
+  // only the structural lazy-chunk gate on both platforms.
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));
     assert.ok(pluginNames.has('pinvou-enforce-lazy-chunks'), `${mode} must enforce lazy chunks`);
-    assert.ok(pluginNames.has('pinvou-enforce-main-entry-budget'), `${mode} must enforce the entry budget`);
-  }
-});
-
-test('each build mode enforces its own main entry ceiling', () => {
-  // The web entry is a quarter of the desktop entry after the web groups, so
-  // a shared ceiling would never fire for web; the plugin must bind the
-  // ceiling to the mode it was created for.
-  for (const [mode, budget] of [['production', MAIN_ENTRY_BUDGET_BYTES], ['web', WEB_MAIN_ENTRY_BUDGET_BYTES]]) {
-    const plugin = buildPlugins(mode).find(candidate => candidate.name === 'pinvou-enforce-main-entry-budget');
-    const atBudget = chunk({ name: 'main', isEntry: true, code: 'x'.repeat(budget) });
-    assert.doesNotThrow(() => plugin.writeBundle({}, { main: atBudget }), `${mode} must accept an entry at its ceiling`);
-    const overBudget = chunk({ name: 'main', isEntry: true, code: `${atBudget.code}x` });
-    assert.throws(
-      () => plugin.writeBundle({}, { main: overBudget }),
-      new RegExp(`Main entry chunk ${budget + 1} B exceeds the ${budget} B startup budget`, 'u'),
-      `${mode} must reject an entry one byte over its ceiling`,
-    );
   }
 });
 
@@ -73,9 +44,9 @@ test('every view loader has an explicit lazy chunk contract', () => {
 });
 
 test('web codeSplitting groups stay deliberate; desktop keeps automatic splitting', () => {
-  // The entry-budget gate only measures the entry FILE, not the startup
-  // closure (entry + statically imported chunks + index.html modulepreload),
-  // so these pins carry the structural protection the byte gate cannot.
+  // These pins carry the structural startup-graph protection: the entry file
+  // alone does not decide first-paint cost (the startup closure is entry +
+  // statically imported chunks + index.html modulepreload).
   const webOutput = createViteConfig({ command: 'build', mode: 'web' }).build.rolldownOptions.output;
   assert.deepEqual(
     webOutput.codeSplitting.groups.map(group => group.name),
@@ -179,16 +150,4 @@ test('lazy chunk gate distinguishes missing, duplicated, and entry modules', () 
       lazy: chunk({ name: 'sample', modules: { [moduleId]: {} } }),
     }, contracts);
   });
-});
-
-test('main entry gate measures bytes and enforces the exact budget', () => {
-  const atBudget = chunk({ name: 'main', isEntry: true, code: 'x'.repeat(MAIN_ENTRY_BUDGET_BYTES) });
-  assert.equal(assertMainEntryBudget({ main: atBudget }), MAIN_ENTRY_BUDGET_BYTES);
-
-  const overBudget = chunk({ name: 'main', isEntry: true, code: `${atBudget.code}界` });
-  assert.throws(
-    () => assertMainEntryBudget({ main: overBudget }),
-    new RegExp(`Main entry chunk ${MAIN_ENTRY_BUDGET_BYTES + 3} B exceeds`, 'u'),
-  );
-  assert.throws(() => assertMainEntryBudget({}), /did not emit the main entry chunk/u);
 });

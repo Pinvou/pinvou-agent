@@ -36,7 +36,7 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
   assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing') && body.includes('result.artifacts_failed'), 'success toast must compose imported/skipped/failed counts plus the partial (missing-artifacts) count');
   assert.ok(body.includes('failure.reason'), 'per-record failure reasons must at least reach the console (count-only left users with "1 failed" and no cause)');
   assert.ok(body.includes('t.uiSettings.importSessionsFailed') && body.includes('${detail}'), 'failure must surface the localized failed toast with the backend detail');
-  assert.ok(!main.includes('import_session_archive'), 'main entry must not carry the import surface (entry-budget ledger policy)');
+  assert.ok(!main.includes('import_session_archive'), 'main entry must not carry the import surface (it rides the lazy SettingsView)');
 }
 
 // 2. Settings 导入行：桌面独享门控、合同 testid、in-flight 禁用态。

@@ -98,16 +98,18 @@ assert.equal(gateNotice.risk, 'high');
 assert.match(gateNotice.text, /Permission gate: bash — denied/);
 assert.match(gateNotice.text, /outside delegated scope/);
 
-// The web bridge is a monolithic transport counterpart. Lock the same two
-// consumer branches into its registered event section so future regeneration
-// cannot silently retain only the Tauri projection.
-const webSource = read('src', 'platform', 'web', 'bridge.js');
-const webSection = webSource.slice(
-  webSource.indexOf('listen("chat:compaction"'),
-  webSource.indexOf('listen("chat:user_input_required"'),
-);
-assert.ok(webSection.includes('phase === "cancel"'));
-assert.ok(webSection.includes('bt("compactCancel")'));
+// The web bridge keeps only its registration shell: the compaction payload
+// body (with the cancel branch) lives once in bridge-shared-helpers.js and is
+// executed by BOTH lanes, so the consumer branches are pinned on the shared
+// source, and the two shell pins guarantee neither lane silently drops the
+// registration.
+const sharedCompactionSource = read('src', 'shared', 'bridge-shared-helpers.js');
+assert.ok(sharedCompactionSource.includes('phase === "cancel"'));
+assert.ok(sharedCompactionSource.includes('bt("compactCancel")'));
+assert.ok(read('src', 'platform', 'web', 'bridge.js').includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });'),
+  'the web lane must keep its chat:compaction registration forwarding to the shared payload body');
+assert.ok(read('src', 'platform', 'tauri', 'bridge', 'chat-events.js').includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });'),
+  'the tauri lane must keep its chat:compaction registration forwarding to the shared payload body');
 // chat:tool_gate_decision 是 Web lane 的 never-emitted 事件（不在 access-policy
 // allowed_events / RUST_FORWARDED_EVENTS），其监听器已随 dead-code sweep 移除；
 // 桌面 timeline 的 tool-gate 审计投影仍由 Tauri lane 承担。

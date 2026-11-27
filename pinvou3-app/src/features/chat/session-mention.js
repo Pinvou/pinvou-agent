@@ -216,7 +216,8 @@ export function sessionMentionTriggerAt(text, enabled = true) {
 export function filterSessionMentionCandidates(sessions, options = {}) {
   const query = String(options.query || '').trim().toLowerCase();
   const exclude = new Set(options.excludeIds || []);
-  const limit = Number.isSafeInteger(options.limit) && options.limit > 0 ? options.limit : 50;
+  const requestedLimit = options.limit;
+  const limit = typeof requestedLimit === 'number' && Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50;
   const out = [];
   for (const session of Array.isArray(sessions) ? sessions : []) {
     if (!session || typeof session.id !== 'string' || !session.id) continue;

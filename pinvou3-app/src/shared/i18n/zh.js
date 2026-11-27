@@ -187,7 +187,7 @@ export const dictZh = {
         langTag: 'zh',
         acpAgent: 'ACP Agent',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', multiAgentDesktopOnly: '此蜂群对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话',   sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '项目', sidebarTaskFilterCodeSessions: '代码会话', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', chatSection: '对话', chatStreamingAnimation: '流式回复淡入', chatStreamingAnimationDesc: 'AI 回复流式输出时，新内容淡入显示', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarCollapseAll: '折叠', sidebarExpandAll: '展开', sidebarTaskStyle: '样式', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', tearoffTitle: '撕离窗口',  mobileMore: '更多',
-        archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
+        archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '对话与产物会保留，可在对话管理页面找回。', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
         exportSessionArchive: '导出会话日志', exportSessionDone: path => `会话日志已导出：${path}`, exportSessionFailed: '会话日志导出失败', unknownError: '未知错误',
         sessionBatchFailed: n => `${n} 个任务操作失败，请重试`,
@@ -318,7 +318,7 @@ export const dictZh = {
 
 
         uiRemote: {
-          title:'手机远程控制', desc:'「开启访问」建立远程链接；本机目录访问是独立且可单独撤销的授权。请仅将链接分享给可信的人。', browser:'浏览器连接', stop:'停止', close:'关闭', qrAlt:'远程控制二维码', qrHint:'手机扫码，或在电脑浏览器中复制下方链接', link:'远程控制链接', linkHint:'二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。', generating:'正在生成远程控制链接…', notStarted:'远程控制尚未开启。', copy:'复制链接', refresh:'刷新二维码', enable:'开启访问', allowWorkspace:'允许本机目录', workspaceAllowed:'此链接已获准访问本机目录', revokeWorkspace:'撤销目录授权', registerHints:{ rotate_credentials:'Web 访问拒绝了本桌面的凭据，请在桌面端轮换 Web 访问以生成新链接。', rotate_recover_config:'已保存的 Web 访问配置无法使用，请在桌面端轮换 Web 访问以恢复。', update_desktop:'中继要求更新的协议版本，请将桌面端（以及自建中继，如使用）升级到最新版本以恢复 Web 访问。' }, refreshTitle:'刷新二维码？', refreshDesc:'刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。已授予的本机目录访问会随新链接保留。', refreshing:'正在刷新…', updated:'远程控制状态已更新。',           status:{ idle:['未开启','开启后会生成一个长期有效的远程控制链接。'], starting:['正在开启','正在创建远程控制连接。'], connecting_relay:['正在连接','正在连接云端中继，请稍候。'], waiting_web_client:['等待浏览器','在电脑或手机浏览器中粘贴下方链接即可。'], web_client_connected:['浏览器已连接','远程控制已连接这台桌面端。'], web_client_disconnected:['浏览器已断开','链接仍然有效，浏览器可随时重新连接。'], revoked:['链接已撤销','请重新开启远程控制。'], stopped:['已停止','再次打开此面板即可重新开启。'], error:['连接异常','远程控制暂时不可用，请重试。'] },
+          title:'手机远程控制', desc:'「开启访问」建立远程链接；本机目录访问是独立且可单独撤销的授权。请仅将链接分享给可信的人。', browser:'浏览器连接', stop:'停止', close:'关闭', qrAlt:'远程控制二维码', qrHint:'手机扫码，或在电脑浏览器中复制下方链接', link:'远程控制链接', linkHint:'二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。', generating:'正在生成远程控制链接…', notStarted:'远程控制尚未开启。', copy:'复制链接', refresh:'刷新二维码', enable:'开启访问', allowWorkspace:'允许本机目录', workspaceAllowed:'此链接已获准访问本机目录', revokeWorkspace:'撤销目录授权', registerHints:{ rotate_credentials:'Web 访问拒绝了本桌面的凭据，请在桌面端轮换 Web 访问以生成新链接。', rotate_recover_config:'已保存的 Web 访问配置无法使用，请在桌面端轮换 Web 访问以恢复。', update_desktop:'中继要求更新的协议版本，请将桌面端（以及自建中继，如使用）升级到最新版本以恢复 Web 访问。' }, revocationHints:{ deferred_full_queue:'本地已停止，但旧凭据的远端撤销意图没有落点（撤销队列已满）：旧链接在对方侧仍可加入，直到中继过期或手动清理。再次轮换只会记录当前这组凭据的撤销，无法补记已丢弃的旧凭据——请手动清理旧授权（或等待中继过期）。' }, refreshTitle:'刷新二维码？', refreshDesc:'刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。已授予的本机目录访问会随新链接保留。', refreshing:'正在刷新…', updated:'远程控制状态已更新。',           status:{ idle:['未开启','开启后会生成一个长期有效的远程控制链接。'], starting:['正在开启','正在创建远程控制连接。'], connecting_relay:['正在连接','正在连接云端中继，请稍候。'], waiting_web_client:['等待浏览器','在电脑或手机浏览器中粘贴下方链接即可。'], web_client_connected:['浏览器已连接','远程控制已连接这台桌面端。'], web_client_disconnected:['浏览器已断开','链接仍然有效，浏览器可随时重新连接。'], revoked:['链接已撤销','请重新开启远程控制。'], stopped:['已停止','再次打开此面板即可重新开启。'], error:['连接异常','远程控制暂时不可用，请重试。'] },
         },
         uiMonitor: { bridgeNotReady:'桥接未就绪', readFailed:'读取失败', reading:'正在读取', unverified:'未验证', authFailed:'鉴权失败', bridgeError:'监控桥接未就绪：请确认打开的是 Tauri 应用窗口', activity:'运行活动' },
 
@@ -866,6 +866,7 @@ cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
 currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
 thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
 loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
+listingFailed: '读取桌面端文件列表失败，请重试。',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。

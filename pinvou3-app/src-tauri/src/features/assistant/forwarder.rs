@@ -1888,6 +1888,25 @@ pub(crate) fn spawn_event_forwarder(
                         session_id
                     );
                 }
+                Event::ModelRecovery { receipt } => {
+                    // Bounded model rate-limit recovery (CodeWhale#141): the
+                    // engine retries the throttled request itself and reports
+                    // each autonomous recovery step. The turn stays alive and
+                    // the terminal events keep flowing, so this only surfaces
+                    // as an operational log line here, mirroring the engine's
+                    // parity face field-for-field (its Status message drops
+                    // the identity fields too); a dedicated UI surface that
+                    // also carries agent_id/turn_id would be a follow-up
+                    // product decision.
+                    log::info!(
+                        "[pinvou3][chat] model recovery sid={}: {} attempt {}/{} next_retry_at_ms={:?}",
+                        session_id,
+                        receipt.state,
+                        receipt.attempt,
+                        receipt.max_attempts,
+                        receipt.next_retry_at_ms
+                    );
+                }
                 Event::Status { message } => {
                     log::debug!(
                         "[pinvou3][chat] engine status sid={}: {}",

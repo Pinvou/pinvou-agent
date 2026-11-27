@@ -152,7 +152,9 @@ struct WireCapEngine {
 }
 
 /// `expected_declared_output` pins the route declaration the engine actually
-/// receives (the `PINVOU_DOCUMENTED_OUTPUT` table-row value). `customize_model`
+/// receives (the `PINVOU_DOCUMENTED_OUTPUT` table-row value, or `None` when
+/// the base catalog owns the ceiling itself and the host yields — the K3.1
+/// dash spellings since CodeWhale#137). `customize_model`
 /// tweaks the SavedModel before assembly (vendor / stored effort tier).
 async fn boot_wire_cap_engine(
     label: &str,
@@ -160,7 +162,7 @@ async fn boot_wire_cap_engine(
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: u64,
+    expected_declared_output: Option<u64>,
     customize_model: impl FnOnce(&mut crate::platform::prefs::SavedModel),
 ) -> WireCapEngine {
     let mut bridge =
@@ -198,7 +200,7 @@ async fn boot_wire_cap_engine(
         engine_config
             .active_route_limits
             .and_then(|limits| limits.output_tokens),
-        Some(expected_declared_output),
+        expected_declared_output,
         "{label}: the engine config must carry the documented output declaration"
     );
     let mut engine_config = engine_config;
@@ -258,7 +260,7 @@ async fn run_turn_against_mock(
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: u64,
+    expected_declared_output: Option<u64>,
 ) {
     let engine = boot_wire_cap_engine(
         label,
@@ -283,7 +285,7 @@ async fn run_turn_against_mock(
     drive_wire_cap_turn_to_completion(label, &engine, op).await;
     engine.engine_run.abort();
     eprintln!(
-        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output}",
+        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output:?}",
         engine.provider_kind
     );
 }
@@ -380,7 +382,15 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         ),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
-        run_turn_against_mock(label, preset, model, &base_url, &project, declared_output).await;
+        run_turn_against_mock(
+            label,
+            preset,
+            model,
+            &base_url,
+            &project,
+            Some(declared_output),
+        )
+        .await;
         let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
         server_task.abort();
         assert!(
@@ -426,7 +436,7 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
         "deepseek-flash",
         &base_url,
         &project,
-        384_000,
+        Some(384_000),
         |_| {},
     )
     .await;
@@ -496,13 +506,21 @@ async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
     let env = lock_wire_cap_env();
     let project = env.root.join("user-project");
 
-    for (label, model) in [
-        ("k31-platform", "kimi-k3.1-pro"),
-        ("k31-kimi-code", "k3.1-pro-highspeed"),
+    // Route-level output declaration per spelling, post-2026-11-24 sync
+    // (CodeWhale#137): the dash spellings are base-resolved now, so the
+    // host yields and the engine config carries no declared output (the
+    // engine's own catalog row is the documented ceiling); the `[1m]`
+    // composite still rides the host's bracket row — the route carries
+    // 1,048,576 minus the 1,024 context reservation
+    // (`route_limits_for_model` clamps output to context − 1_024 when the
+    // documented output equals the context window).
+    for (label, model, expected_declared_output) in [
+        ("k31-platform", "kimi-k3.1-pro", None),
+        ("k31-kimi-code", "k3.1-pro-highspeed", None),
         // The documented `[1m]` declaration form (ACP Kimi Code models1m
         // datalist entry) rides the same omission contract — pin the wire
         // body, not just the effort resolution (2026-11-04 review round 4).
-        ("k31-kimi-code-1m", "k3.1-pro[1m]"),
+        ("k31-kimi-code-1m", "k3.1-pro[1m]", Some(1_047_552)),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
         let engine = boot_wire_cap_engine(
@@ -511,14 +529,7 @@ async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
             model,
             &base_url,
             &project,
-            // Pin the documented output declaration at the route level too
-            // (2026-11-05 review): the anchors are unit-pinned in
-            // core::model_context, but nothing asserted they survive into
-            // the engine config for the K3.1 spellings. The route carries
-            // 1,048,576 minus the 1,024 context reservation
-            // (`route_limits_for_model` clamps output to context − 1_024
-            // when the documented output equals the context window).
-            1_047_552,
+            expected_declared_output,
             |saved| {
                 // Catalog rows stamp the vendor; the bridge routes by it
                 // (vendor "kimi" → moonshot) and recognizes the K3.1 family

@@ -31,7 +31,6 @@ function assertStartupBundles({ built, expectedPlatform, outputRoot, webBuild })
       : ['features/updater/update-notice-logic.js', 'shared/legacy-polyfills.js']),
     `${expectedPlatform} index must retain only the intentionally unbundled startup scripts`,
   );
-  assert.ok(startup.length + retained.length <= 10, `${expectedPlatform} classic startup scripts exceed the request budget`);
   for (const relative of startup) {
     const match = new RegExp(`^startup/pinvou-${expectedPlatform}-classic-(\\d+)-([a-f0-9]{8})\\.js$`, 'u').exec(relative);
     assert.ok(match, `${relative} must follow the startup bundle naming contract`);

@@ -72,6 +72,7 @@ export function CodeViewerModal({
   copy,
 }) {
   const dialogRef = useRef(null);
+  /** @type {import('react').MutableRefObject<(() => void) | null>} */
   const resizeCleanupRef = useRef(null);
   const [size, setSize] = useState(savedViewerSize);
   const [fontSize, adjustViewerFontSize] = useViewerFontSize();
@@ -106,14 +107,14 @@ export function CodeViewerModal({
   }, [onClose]);
 
   useEffect(() => () => {
-    if (resizeCleanupRef.current) resizeCleanupRef.current();
+    if (resizeCleanupRef.current) resizeCleanupRef.current?.();
   }, []);
 
   function startViewerResize(direction, event) {
     event.preventDefault();
     const dialog = dialogRef.current;
     if (!dialog) return;
-    if (resizeCleanupRef.current) resizeCleanupRef.current();
+    if (resizeCleanupRef.current) resizeCleanupRef.current?.();
 
     const startX = event.clientX;
     const startY = event.clientY;
@@ -233,9 +234,7 @@ export function CodeViewerModal({
         />
 
         {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
-        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
-          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeWidth}
           aria-orientation="vertical"
@@ -245,9 +244,7 @@ export function CodeViewerModal({
           title={copy.resizeWidth}
         />
         {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
-        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
-          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeHeight}
           aria-orientation="horizontal"
@@ -257,9 +254,7 @@ export function CodeViewerModal({
           title={copy.resizeHeight}
         />
         {/* biome-ignore lint/a11y/useSemanticElements: drag splitter needs div semantics (role=separator is a smoke-test contract) */}
-        {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; see above for the div semantics */}
         <div
-          // biome-ignore lint/a11y/useAriaPropsForRole: drag splitter is not a focusable control, valuenow semantics do not apply; role is a smoke-test contract
           role="separator"
           aria-label={copy.resizeCorner}
           data-testid="code-viewer-resize-xy"

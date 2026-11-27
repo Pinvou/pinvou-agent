@@ -9,8 +9,11 @@
   "use strict";
 
 let pinvouSharedtauriMainCache = null;
+// steered sidecar 钩子与 tauriSessions create（bridge/sessions.js）同形同体：
+// 共享 saveWorkingSetTo/loadWorkingSetFrom 经这两个可选钩子挂接（web 不传即跳过），
+// tauriMain 的 commitReconciledWorkingSet reconcile 落盘走的就是共享 saveWorkingSetTo。
 function pinvouSharedtauriMain() {
-  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, addChatItem, extractArtifactPaths, scheduledRunSessionOwners, sessionStates, isDeliverable, personaPlaceholderTitles });
+  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, addChatItem, extractArtifactPaths, scheduledRunSessionOwners, sessionStates, isDeliverable, personaPlaceholderTitles, rerenderFromMessages, resetPendingAssistant, mergeHydratedChatItems, restoreSteeredWorkingSet: function (buf) { state.steeredMessages = buf.steeredMessages || []; }, saveSteeredWorkingSet: function (buf) { buf.steeredMessages = state.steeredMessages; }, itemIdSeq: { get value() { return itemIdSeq; }, set value(v) { itemIdSeq = v; } }, toolMeta: { get value() { return toolMeta; }, set value(v) { toolMeta = v; } }, currentStreamId: { get value() { return currentStreamId; }, set value(v) { currentStreamId = v; } }, currentStreamText: { get value() { return currentStreamText; }, set value(v) { currentStreamText = v; } }, pendingAssistantText: { get value() { return pendingAssistantText; }, set value(v) { pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return pendingAssistantBlocks; }, set value(v) { pendingAssistantBlocks = v; } } });
   return pinvouSharedtauriMainCache;
 }
 
@@ -1148,7 +1151,6 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   const getSessionWorkspaceBinding = sessionsFeature.getSessionWorkspaceBinding;
   const ensureSession = sessionsFeature.ensureSession;
   const hydratedMessageKey = sessionsFeature.hydratedMessageKey;
-  const mergeHydratedArtifacts = sessionsFeature.mergeHydratedArtifacts;
   const mergeHydratedChatItems = sessionsFeature.mergeHydratedChatItems;
   const switchToSession = sessionsFeature.switchToSession;
   const openScheduledRunChat = sessionsFeature.openScheduledRunChat;
@@ -1249,7 +1251,8 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
   // presentation-side artifact index and derives the optional auto-title.
   async function persistMessagesFor(sid) { return pinvouSharedtauriMain().persistMessagesFor(sid); }
 
-function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHydrationKey(item); }
+// 权威 reconcile 成功后的工作集落盘 + buffer 终态复位在 shared base（web 车道同段逐字一致）
+function commitReconciledWorkingSet(sid, buf, saved) { return pinvouSharedtauriMain().commitReconciledWorkingSet(sid, buf, saved); }
 
   async function reconcileRemoteTurn(sid) {
     if (!sid) return true;
@@ -1358,75 +1361,10 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
           // （scheduled run 因 requiresAuthorityReconcile=false 不置 terminalSeen，
           // 但 flushQueued 仍会走 reconcile，会误伤）。
           if (buf.busy) return false;
-          runSyncOnSession(sid, function () {
-            const rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
-            const resolvedPlanTickets = Object.create(null);
-            const activePlanCards = Object.create(null);
-            rawLiveChatItems.forEach(function (item) {
-              if (!item || item.type !== "plan_card") return;
-              const key = planCardHydrationKey(item);
-              if (!key) return;
-              if (!item.resolved && item.cardState === "active" && item.planId) {
-                if (!activePlanCards[key]) activePlanCards[key] = [];
-                activePlanCards[key].push(item);
-                return;
-              }
-              if (!item.planId) return;
-              if (!resolvedPlanTickets[key]) resolvedPlanTickets[key] = [];
-              resolvedPlanTickets[key].push(String(item.planId));
-            });
-            const liveChatItems = rawLiveChatItems.filter(function (item) { return pinvouSharedtauriMain().liveChatItemKeptForHydration(item); });
-            state.messages = saved.messages;
-            state.artifacts = filterSessionArtifacts(
-              mergeHydratedArtifacts(saved.artifacts, state.artifacts),
-              sid,
-            );
-            resetPendingAssistant();
-            state.chatItems = [];
-            rerenderFromMessages();
-            for (let planIndex = state.chatItems.length - 1; planIndex >= 0; planIndex--) {
-              const hydratedPlan = state.chatItems[planIndex];
-              if (!hydratedPlan || hydratedPlan.type !== "plan_card") continue;
-              const hydratedKey = planCardHydrationKey(hydratedPlan);
-              const activeQueue = hydratedKey && activePlanCards[hydratedKey];
-              if (activeQueue && activeQueue.length) {
-                const liveActivePlan = activeQueue.pop();
-                hydratedPlan.planId = String(liveActivePlan.planId);
-                hydratedPlan.cardState = "active";
-                hydratedPlan.resolved = false;
-                hydratedPlan.statusLabel = liveActivePlan.statusLabel || "";
-                hydratedPlan.planResolutionConfirmed = !!liveActivePlan.planResolutionConfirmed;
-                continue;
-              }
-              const ticketQueue = hydratedKey && resolvedPlanTickets[hydratedKey];
-              if (!hydratedPlan.planId && ticketQueue && ticketQueue.length) hydratedPlan.planId = ticketQueue.pop();
-            }
-            const unmatchedActivePlans = [];
-            Object.keys(activePlanCards).forEach(function (key) {
-              (activePlanCards[key] || []).forEach(function (item) { unmatchedActivePlans.push(item); });
-            });
-            mergeHydratedChatItems(unmatchedActivePlans, 0);
-            mergeHydratedChatItems(liveChatItems, 0);
-            currentStreamId = 0;
-            currentStreamText = "";
-            pendingAssistantText = "";
-            pendingAssistantBlocks = [];
-            state.busy = false;
-            stopThinking();
-          });
-          buf.loadedFromDisk = true;
-          buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || buf.sessionRevision || "");
-          buf.localTurnOwned = false;
-          buf.remoteTurnActive = false;
-          buf.remoteTerminalSeen = false;
-          buf.remoteBaselineMessageCount = null;
-          buf.remoteBaselineTrusted = false;
-          buf.remoteExpectedAssistantKey = "";
-          buf.remoteCommittedRevision = "";
-          buf.deferredRemoteUserEvent = null;
-          buf.busy = false;
-          if (sid === state.activeSessionId) saveWorkingSetTo(buf);
-          notify();
+          // 工作集落盘 + buffer 终态复位统一在 shared/bridge-shared-helpers.js 的
+          // commitReconciledWorkingSet（web 车道同段逐字一致）；
+          // reconcile_succeeded 诊断（桌面/web 字段集不同）留在各 lane。
+          commitReconciledWorkingSet(sid, buf, saved);
           recordAuthoritySyncDiagnostic("reconcile_succeeded", Object.assign({
             trace_id: traceId,
             attempt: attempt + 1,

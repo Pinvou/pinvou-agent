@@ -1240,6 +1240,25 @@ test('transcript 适配：内部运行时信封不得渲染为任务指令气泡
   assert.ok(!JSON.stringify(turns[0]).includes('shell_completion'), '仅-provenance 形态同样不上屏');
 });
 
+test('transcript 适配：CodeWhale 压缩检查点不得拼进任务正文', () => {
+  // 被压缩过的子智能体 transcript 里，摘要以 role=user 提交进历史（带出处戳的
+  // 载体）；与内部运行时信封走同一判定（internal-message.mjs），不是任务指令。
+  const { turns } = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实任务指令' }] },
+      { role: 'user', content: [
+        { type: 'text', text: 'Another language model started to solve this problem and produced a summary of its thinking process.\n\n## Task\ncompaction summary body' },
+        { type: 'text', text: '<!-- codewhale.compaction-checkpoint.v1 -->' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '继续执行' }] },
+    ],
+    agent: { agentId: 'a4', role: 'builder', done: true, failed: false, error: null },
+  });
+  assert.equal(turns.length, 1, '检查点不得切出假轮次');
+  assert.equal(turns[0].userText, '真实任务指令', '摘要不得拼进任务正文');
+  assert.ok(!JSON.stringify(turns[0]).includes('compaction summary body'), '摘要正文不得上屏');
+});
+
 // Same model-service classifier as main chat: load the classic script
 // so the projection's globalThis probe finds it.
 vm.runInThisContext(

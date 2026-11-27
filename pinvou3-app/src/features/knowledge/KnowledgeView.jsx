@@ -512,6 +512,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const pump = () => {
           while (q.active < 2 && q.jobs.length > 0) {
             const item = q.jobs.shift();
+            if (!item) break;
             q.active += 1;
             Promise.resolve()
               .then(item.job)

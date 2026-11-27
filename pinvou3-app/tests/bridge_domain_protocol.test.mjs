@@ -272,17 +272,13 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
-  // Stream bubbles now carry htmlSource for native selection provenance.
-  // This additive local state field is inside the hashed delta listener;
-  // invoke payloads and event names are unchanged.
-  // Recomputed for the usage-meter occupancy fix: the chat:usage listener
-  // body gains the per-request context_input_tokens consumption ahead of the
-  // cumulative-input dirty guard (chat:usage fires once per turn at
-  // TurnComplete and any tool_start latches the guard until the next send —
-  // without the per-request field the meter froze at "—/…·0%" on every
-  // tool-using conversation). Same event surface — no new invoke or listen
-  // entries.
-  chat: '3ae60b4537777a45fe6f5ae954a3e8b75822c00bb61b073c7348a4ec584d08a0',
+  // Recomputed for the debtsweep L4 dedup rebased on the streaming htmlSource
+  // addition: the payload bodies moved verbatim into bridge-shared-helpers.js
+  // while the delta listener gained the htmlSource provenance cell; both
+  // recomputations are combined below. Re-verified on the usage-meter
+  // occupancy fix rebased on top: the per-request context_input_tokens
+  // consumption rides in the shared payload body, so no lane signature moved.
+  chat: 'ff28e11c9e8a17c95a5425ab18b992517e13411a0553f4577f49dd0e2d2b4705',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -293,7 +289,11 @@ const expectedProtocolHashes = {
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the lane-merge residual wave: toggleSuperPerm
   // (set_super_permission, get_super_permission_status) joined the shared base.
-  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
+  // Recomputed for the debtsweep L4 dedup: discardPlan and exitPlanToYolo
+  // moved verbatim into bridge-shared-helpers.js, taking their
+  // discard_plan / get_mode_state / exit_plan_to_yolo invoke texts with them
+  // (now hashed under the shared base). Same command surface.
+  interaction: '89d53712e66ea8577052281a37915a092a58b1763765d4ebccd55ee800920440',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -434,8 +434,13 @@ for (const [domain, files] of Object.entries(protocolSources)) {
     ];
   });
   const hash = crypto.createHash('sha256').update(signatures.join('\n')).digest('hex');
-  if (!expectedProtocolHashes[domain]) console.log(`${domain}: ${hash}`);
-  else assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
+  // Round-15 review M4: a missing entry used to be fail-open (one console
+  // line and the suite stayed green) — a new or renamed domain would slip
+  // through unpinned. A missing entry is now explicitly red: the table may
+  // only pass after a conscious recompute adds the entry.
+  assert.ok(expectedProtocolHashes[domain],
+    `${domain} must have a pinned protocol hash; recompute it consciously and add the entry (current: ${hash})`);
+  assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
 }
 
 // The shared payload base carries the invoke/listen bodies that the batch dedup
@@ -472,23 +477,36 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // record time (sid) instead of reading state.activeSessionId at fire time, so
 // the queued write cannot drift into a session the user switched to while the
 // chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
-// Recomputed for the kb_model_cancel port on top of the keyless-probe-posture
-// wave: the shared-base knowledge helper gained invoke("kb_model_cancel")
-// (cancelKbModel; facade-only — same policy-denied-on-web shape as
-// checkDependencies), and the two test_model_connection /
-// test_image_input_capability invokes carry the form's noAuth posture arg.
-// Recomputed again for the endpoint model auto-discovery wave on top of the
-// kb_model_cancel port: the probeEndpointModels shared facade joined the
-// shared base (invoke-only, settings cluster).
-const expectedSharedBaseHash = 'ecc2aadcfdf6ed68114d524bdebc8161973f2005aeccc6428183bb6ddfb6ee5d';
+// Recomputed for the kb_model_cancel port, the keyless-probe-posture wave,
+// and the debtsweep dedup combined: cancelKbModel joined the shared base as a
+// facade-only invoke (same policy-denied-on-web shape as checkDependencies),
+// #851's noAuth posture arg rides on the test_model_connection /
+// test_image_input_capability invokes, and the dedup moved the chat event
+// payload bodies plus the discard_plan / get_mode_state / exit_plan_to_yolo
+// invoke texts into the shared base (the interaction domain shrank by the
+// same three signatures). Re-verified on the endpoint model auto-discovery
+// wave rebased on top: the probeEndpointModels shared facade joined the
+// settings cluster of the shared base (invoke-only; the usage-meter
+// occupancy fix's per-request consumption carries no signatures).
+const expectedSharedBaseHash = '0f07e50533c4249489dafc58df1dadb5f1c82a589a07b5bb3b746c81f4727851';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
   ...extractCalls(sharedBaseSource, 'listen').map(call => `shared/bridge-shared-helpers.js:listen:${call}`),
 ];
 const sharedBaseHash = crypto.createHash('sha256').update(sharedBaseSignatures.join('\n')).digest('hex');
-if (!expectedSharedBaseHash) console.log(`sharedBase: ${sharedBaseHash} (${sharedBaseSignatures.length} signatures)`);
-else assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
+// Round-21 review: same fail-closed posture as the domain table above — the
+// console.log-and-pass skeleton here would silently unpin the shared base if
+// expectedSharedBaseHash were temporarily cleared; expectedSharedBaseHash is a
+// non-empty literal, so that shape no longer exists once the assertion below
+// is in place. To take a new hash, run once with expectedSharedBaseHash set to
+// the empty string — assert.ok then reports the new value as
+// "current: <hash>" (setting it to the old value only makes assert.equal fail
+// without printing; round-25 review corrected the flawed recipe in the
+// original comment; round-29 review MINOR: the assert.ok message now actually
+// embeds the current hash, so the recipe is executable as written).
+assert.ok(expectedSharedBaseHash, `the shared base hash must stay pinned (run once with the literal set to '' to reveal the new value; current: ${sharedBaseHash})`);
+assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
 
 const featureRegistry = new Proxy({}, {
   get() {

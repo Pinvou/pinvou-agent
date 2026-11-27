@@ -21,6 +21,11 @@ struct WebWorkspaceGrant {
 /// A grant removed from the live store while Session creation is in flight.
 /// Dropping it consumes the one-shot capability; a failed creation may put it
 /// back only for the same endpoint and without extending its original TTL.
+/// `generation` stamps the store's revocation generation at reserve time: a
+/// revoke that ran while creation was in flight advances the generation, and
+/// the stale reservation must not be restored across it (P3 review: after a
+/// revocation followed by re-authorization the flag is true again, but a
+/// pre-revocation in-flight reservation must not revive through restore).
 #[derive(Debug)]
 pub(crate) struct WebWorkspaceGrantReservation {
     handle: String,
@@ -28,6 +33,7 @@ pub(crate) struct WebWorkspaceGrantReservation {
     path: PathBuf,
     identity: WebWorkspaceIdentity,
     expires_at: Instant,
+    generation: u64,
 }
 
 impl WebWorkspaceGrantReservation {
@@ -101,6 +107,11 @@ impl WebWorkspaceIdentity {
 pub(super) struct WebWorkspaceGrantStore {
     entries: HashMap<String, WebWorkspaceGrant>,
     order: VecDeque<String>,
+    /// Bumped by every `clear()` (each revoke, even an idempotent one).
+    /// Reservations stamped by `reserve` are only restorable while the
+    /// generation is unchanged, so re-authorization after a revocation
+    /// cannot revive pre-revocation reservations.
+    revocation_generation: u64,
 }
 
 impl WebWorkspaceGrantStore {
@@ -159,6 +170,7 @@ impl WebWorkspaceGrantStore {
             path: grant.path,
             identity: grant.identity,
             expires_at: grant.expires_at,
+            generation: self.revocation_generation,
         })
     }
 
@@ -174,7 +186,14 @@ impl WebWorkspaceGrantStore {
         // reserve → revoke → 会话创建失败 → restore 会把 grant 放回已
         // 撤销授权的映射里(不变量只靠 bind-time 复查兜底)。撤销后拒绝
         // 复活,与「已发出的 grant 也随之立刻作废」的文档契约一致。
+        // P3 review (generation fence): re-authorization after a revocation
+        // flips the flag back to true, and the flag alone cannot distinguish
+        // "freshly minted after re-authorization" from a "pre-revocation
+        // in-flight reservation" — refuse by generation: any in-flight
+        // reservation stamped before a clear() (i.e. a revoke) must not
+        // revive; fresh handles are minted after re-consent.
         if !allow_host_workspace
+            || reservation.generation != self.revocation_generation
             || reservation.endpoint_id != endpoint_id
             || reservation.expires_at <= now
             || self.entries.contains_key(&reservation.handle)
@@ -210,6 +229,10 @@ impl WebWorkspaceGrantStore {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        // Every revoke advances the generation, so reservations stamped
+        // before it are refused on restore even after a later
+        // re-authorization flips the flag back to true (P3 review).
+        self.revocation_generation += 1;
     }
 }
 
@@ -317,6 +340,34 @@ mod tests {
                 false
             ),
             "a revoked host-workspace authorization must not be resurrected"
+        );
+        assert!(!store.contains(&handle));
+
+        // P3 review (generation fence): an in-flight reservation stamped
+        // before a clear() (a revoke) must not revive even after a later
+        // re-authorization flips the flag back to true — restore refuses by
+        // generation; fresh handles are minted after re-consent.
+        store.issue(
+            handle.clone(),
+            "endpoint-one".to_string(),
+            path.clone(),
+            test_identity(3),
+            now,
+        );
+        let reservation = store
+            .reserve(&handle, "endpoint-one", now + Duration::from_secs(3))
+            .unwrap();
+        assert!(!store.contains(&handle));
+        store.clear();
+        assert!(
+            !store.restore(
+                reservation,
+                "endpoint-one",
+                now + Duration::from_secs(4),
+                true
+            ),
+            "a reservation stamped before a revocation must stay dead even \
+             after a later re-authorization flips the flag back to true"
         );
         assert!(!store.contains(&handle));
 
@@ -477,6 +528,7 @@ mod tests {
             path: workspace.clone(),
             identity: WebWorkspaceIdentity::capture(&workspace).unwrap(),
             expires_at: Instant::now() + WEB_WORKSPACE_GRANT_TTL,
+            generation: 0,
         };
         assert!(reservation.verify_bound_path(&workspace).is_ok());
         std::fs::rename(&workspace, root.join("original-workspace")).unwrap();

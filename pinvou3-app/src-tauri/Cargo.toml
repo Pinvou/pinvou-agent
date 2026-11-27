@@ -60,9 +60,6 @@ cc = "1"
 # paused clock (#[tokio::test(start_paused = true)]) instead of sleeping the
 # real 2s REBIND_EVICT_GATE_TIMEOUT.
 tokio = { version = "1.49", features = ["test-util"] }
-# computer_use retention test ages a crash-orphaned atomic-write temp past
-# the sweep threshold; pinned to the version already in the lock graph (tar).
-filetime = "0.2.29"
 
 [dependencies]
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
@@ -192,7 +189,7 @@ notify = "8"
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
 # 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
-rusqlite = { version = "0.41.0", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 # 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
 walkdir = "2"
 
@@ -532,13 +529,23 @@ single_match = "deny"
 negative_feature_names = "deny"
 redundant_feature_names = "deny"
 
-# —— Cleared in this PR, kept at warn for one observation cycle before deny ——
+# —— Cleared on the clippy-compiled surface, promoted to deny ——
 # Every unsafe block requires a SAFETY comment (the edition 2024 migration
-# added many unsafe blocks). The macOS/Linux compile surface was annotated
-# first; the legacy Windows-only unsafe blocks (PDH/registry/NtDll FFI etc.)
-# are annotated since the issue #491 cleanup, so all three desktop targets
-# pass the gate.
-undocumented_unsafe_blocks = "warn"
+# added many unsafe blocks). The legacy Windows-only unsafe blocks
+# (PDH/registry/NtDll FFI etc.) are annotated since the issue #491 cleanup.
+# The tech-debt sweep annotated the 32 remaining undocumented test-only
+# blocks on the clippy-compiled surface (env-manipulation fixtures under
+# the crate-wide test ENV_LOCK discipline, plus two mkfifo FFI fixture
+# calls, plus one None-arm match block in settings.rs the first census
+# pass missed - clippy documents match arms per-arm): `cargo clippy
+# --all-targets` now reports zero undocumented_unsafe_blocks hits in the
+# CI form (with dev-tools; the without-dev-tools variant was verified
+# locally but CI always passes the feature), so the deny hard-fails on
+# test targets too, not just the CI production leg's -D warnings.
+# cfg(windows)- AND cfg(macos)-gated targets are not compiled by the
+# Linux CI clippy leg; every macos-gated unsafe block is documented, and
+# the windows-gated residue stays disclosed follow-up work.
+undocumented_unsafe_blocks = "deny"
 # unwrap/expect in a long-lived desktop process kills the session on panic
 # (baseline: unwrap 6 / expect 38; test code exempt). Production code is
 # cleared in this PR; kept at warn to prevent regressions.
