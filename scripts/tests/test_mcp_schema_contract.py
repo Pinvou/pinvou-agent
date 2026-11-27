@@ -164,9 +164,11 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # the layer-2 source assertions flip from the pre-T11 tripwire to the
 # shipped-face pins (anyOf cap 500, advisory strip, empty-items repair),
 # verified against the populated tree before flipping the pin. The
-# DeepSeek face (CodeWhale#147) is still open upstream and outside this
+# DeepSeek face (CodeWhale #147) was closed without merging and is outside this
 # mirror's scope.
-_PINNED_CODEWHALE_GITLINK = "cc2adf8ef927fff072e9493734a0a32f3a044996"
+# 2026-11-28: 44142616 retains the mirrored Moonshot MFJS rules. The
+# empty-schema fallback in CodeWhale #177 is in the Anthropic Messages adapter.
+_PINNED_CODEWHALE_GITLINK = "44142616aa4aeeb1332c1f4496ea502baf880a29"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
