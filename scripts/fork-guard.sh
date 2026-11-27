@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 87 registered commits (86 published + one review candidate), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 96 registered commits (93 maintenance commits plus two review commits and their integration merge).
+# Public maintenance has since advanced to 687358f7e (100 commits, ten maintained themes; r3 closed at
+# pinvou-v0.9.12-r3 with #136/#142/#148/#150/#152/#156/#157 merged); the pinned T6 rate-limit candidate
+# predates that advance pending CodeWhale#141 and this branch keeps the registered review pin.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Registered local T6 review candidate; published maintenance remains MAINTENANCE_BASE.
-EXPECTED_HEAD="8f3e80e9b95029303593d66ed8f36049e916fa06"
-EXPECTED_COMMITS=87
+# Registered T6 review integration; maintenance remains MAINTENANCE_BASE.
+# Public maintenance has since advanced to 687358f7e (100 commits) after
+# CodeWhale#123/#124/#129/#131/#133/#134/#135, CodeWhale#136/#142/#148/#150/#152
+# (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29), CodeWhale#156
+# (rustc/clippy 1.100 stable lint adaptation), and CodeWhale#157 (session-reader
+# read-only classification); the pinned T6 candidate predates that advance
+# pending CodeWhale#141 and does not contain those commits.
+EXPECTED_HEAD="19132162830b38aba7d900ef806427171d9203ef"
+EXPECTED_COMMITS=96
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -208,8 +217,11 @@ fingerprints=(
   # never selected them. The fingerprints pin two schema literals (the
   # required shrink and the default statement); the pinned runner below
   # covers the tests themselves.
-  "T2|todo item status leaves required  |CodeWhale/crates/tui/src/tools/todo.rs|\"required\": [\"content\"]"
-  "T2|todo default-pending stated in schema |CodeWhale/crates/tui/src/tools/todo.rs|\"description\": \"Task status. Defaults to pending when omitted.\""
+  # Deferred on this branch: the pinned T6 candidate predates #148, so the
+  # pinned literals do not exist at its gitlink yet. Restore both entries
+  # when the gitlink re-pins to a post-#141 merged head.
+  # "T2|todo item status leaves required  |CodeWhale/crates/tui/src/tools/todo.rs|\"required\": [\"content\"]"
+  # "T2|todo default-pending stated in schema |CodeWhale/crates/tui/src/tools/todo.rs|\"description\": \"Task status. Defaults to pending when omitted.\""
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
@@ -481,7 +493,10 @@ run_pinned_todo_schema_tests() {
     fi
   done
 }
-run_pinned_todo_schema_tests || fail=1
+# Deferred on this branch: the pinned T6 candidate predates #148, so these
+# tests do not exist at its gitlink yet. Restore together with the deferred
+# fingerprints when the gitlink re-pins to a post-#141 merged head.
+# run_pinned_todo_schema_tests || fail=1
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"

@@ -3,21 +3,29 @@
 
 ## T6 review candidate: bounded model rate-limit recovery (2026-11-05)
 
-This candidate extends T6. The published maintenance baseline remains
-`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`; the registered local candidate gitlink is
-`8f3e80e9b95029303593d66ed8f36049e916fa06` (tree
-`9f82668ec1c8447cc535660b0ae1a4667085315c`). No maintenance branch or
-immutable tag is advanced by this local change. Public-head alignment remains a
-separate merge gate.
+This T6 review candidate integrates public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e`
+with the rate-limit lifecycle candidate and its transport review corrections.
+The registered parent gitlink is `19132162830b38aba7d900ef806427171d9203ef`
+(tree `12a8be1ad97b7724618760ee3393c637633fb929`). Both original recovery behavior and maintenance updates
+remain in the integration. Child tool dispatch retains recovery observation
+around the actual tool call and settles its in-flight write reservation afterward;
+cancellation still reaches the existing reservation guard's cleanup.
 
-The reusable HTTP slice is prepared first against upstream `codewhale-hq/Codewhale`
+Only review branches are advanced. Protected maintenance and immutable tags remain
+unchanged. Public-maintenance-head equality remains a separate merge gate; resolving
+conflicts does not make this candidate merge-ready.
+
+Original implementation provenance (historical snapshots, not integration validation):
+
+The reusable HTTP slice was prepared first against upstream `codewhale-hq/Codewhale`
 main `cbb7380f09989228b446a0958ea4620c78060a79`, in the local
 `feat/provider-rate-limit-recovery-upstream` branch at
 `9d0ac42c569956b3cfd6feb994127b1e13063387` (tree
 `5f82300bfc68cbcea9c08126525fdd1d0d73be8d`). It covers policy, provider
 classification, server minima, disclosure and active HTTP clocks. It does not
 claim the fork's host checkpoint/UI integration or outer-operation accounting.
-Publication of that branch is not part of the current local implementation.
+Current upstream transport work is tracked in codewhale-hq/Codewhale#7220;
+these original receipts do not validate the integration tree.
 
 The fork keeps credential/account-scoped admission, suspendable HTTP leases,
 shared recovery episodes, persisted reset deadlines, stable model-operation
@@ -44,10 +52,10 @@ budget. Parent CI explicitly executes the new foundation filters with nonzero
 match checks. See [model-rate-limit-recovery.md](model-rate-limit-recovery.md)
 for defaults, configuration, provider references and manual-continuation policy.
 
-Candidate inventory: 87 commits above upstream v0.9.12 (86 at the published
-maintenance baseline), 532 changed files, +95068/-39676 (net +55392). The new
-candidate commit carries DCO sign-off. Historical inventory below remains
-at its recorded published baseline and does not describe the candidate gitlink.
+Candidate inventory: 96 commits above upstream v0.9.12 (93 at the published
+maintenance baseline), 548 changed files, +123354/-50026 (net +73328).
+The merge preserves both parents and their authorship and adds a DCO sign-off.
+Published-baseline inventory below is distinct from this review gitlink.
 
 This lifecycle slice exceeds the single-file drift soft limit in `client.rs`.
 It is retained because scope identity, admission, HTTP wire dispatch and response
@@ -130,6 +138,7 @@ candidate snapshot; it does not establish CI, merge or release eligibility.
 
 - 当前公开维护头与父仓 gitlink：`cc2adf8ef927fff072e9493734a0a32f3a044996`（2026-11-24）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。2026-11-24 批合入 #127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/#164/#165/#166/#167/#168/#169/#170/#171 共 21 个提交，其中 T11 的 Moonshot 面（#143）与 provider 面（#144/#145/#146）随父仓 close-out re-pin 一并落地，父仓 gitlink 随之跟随（见 §3 表首）。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 121 个提交，r1 `1fafee7e2` 之上 106 个；118 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
+- 本 PR 的 T6 审查候选先于该推进（候选基于维护 `11cba403d`）；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：583 files, +150708/-54594，净增 96114；384 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 

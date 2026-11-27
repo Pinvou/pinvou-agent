@@ -37,6 +37,15 @@ Pinvou settings expose `model_rate_limit_retry` in `~/.pinvou3/settings.json`:
 Policy changes apply to newly created clients; restart the application after
 editing this setting. Existing settings use the defaults. Attempts must be 1–1000, the budget
 1–86400 seconds, and delays must satisfy `1 <= initial <= max <= 86400`.
+
+When this optional settings-file policy is malformed or violates its limits,
+loading logs a warning without the supplied value and uses the four defaults
+above for the whole policy. Other valid known settings remain available and can
+be saved normally. A successful settings write, including automatic normalization,
+replaces the invalid policy with these valid defaults. Direct configuration
+decoding and desktop/web settings input validation retain their strict
+contracts; the fallback applies only when loading the settings file.
+
 Standalone CodeWhale uses the same fields under `[retry.rate_limit]`.
 `retry.enabled = false` still disables automatic transport retries.
 
