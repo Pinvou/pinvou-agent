@@ -1250,14 +1250,25 @@ pub async fn rewind_to_turn(
         .await
         .map_err(|error| format!("准备回滚检查点任务失败: {error}"))??;
         // ACP peer 复检（r7 M2；r11 M3 提取为共用函数，undo 侧同款）。
-        reject_if_acp_peer_busy_before_apply(
+        // r52-M1a（评审）：拒绝臂必须先取消暂记再返回——其上的
+        // write_pending_rewind 已落盘，裸返回让下一条普通消息的对账重放臂
+        // **静默完成被拒绝的回退**（用户被告知回退未发生；三方独立复现：
+        // 消息数被截、工作区被强制恢复、拒绝后新建文件被删）。此刻 apply
+        // 尚未启动、工作区未动，清暂记 = 完全放弃本次回退；已登记的
+        // PreRestore 不被暂记/记录引用，由 LRU 自然淘汰，无不可逆伤害。
+        // 复检仍保持紧贴 apply（r7-M2 的窗口收窄语义不变）。
+        if let Err(refusal) = reject_if_acp_peer_busy_before_apply(
             &store.inner(),
             &acp_pool,
             &session_id,
             &execution,
             "请先停止该会话再回退",
         )
-        .await?;
+        .await
+        {
+            checkpoints::clear_pending_rewind(&ledger);
+            return Err(refusal);
+        }
         let apply_ledger = ledger.clone();
         let apply_execution = execution.clone();
         let undo_id = undo.id.clone();

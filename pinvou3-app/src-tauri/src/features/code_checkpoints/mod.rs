@@ -769,6 +769,14 @@ fn git_bounded(
         // 会话的每次回退确定性失败（重试同败）。与 r40-M4 的「安全网被静默
         // 掏空」同类，钉 true 让 add/clean/checkout 在长路径上如实工作。
         command.arg("-c").arg("core.longpaths=true");
+        // r52-M5（评审）：索引写入面——core.splitIndex / feature.manyFiles
+        // 可让 `add -A` 在部分 git 构建下 exit 0 但产出空 index（评审在
+        // git 2.43 下实证）：空树快照照常登记、预览显示「无变更」，随后
+        // rewind **与 undo** 都会清空工作区——与 r40-M4/r42-M6 的「安全网
+        // 被静默掏空」同类。命令面钉 false（init 时写入不防事后篡改/继承），
+        // 环境变量与 scrub 正则同场兜底。
+        command.arg("-c").arg("core.splitIndex=false");
+        command.arg("-c").arg("feature.manyFiles=false");
         command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| run_error(&error))
@@ -978,15 +986,19 @@ fn git_diff_capped(
 /// 字面量前导的 glob（.env.*.local）裸形态只命中根部，`apps/web/.env.*.local`
 /// 逃过 purge、被 checkout-index 写回、再被 staged 校验永久击穿（M1/M2 链）。
 /// `**/` 前缀对星号前导的 glob（*.pem）只是冗余命中，无语义损失。
-/// 恒带 `:(icase)`：与 info/exclude 的字符类模式同向（大小写不敏感），三层
-/// 口径一致才不会出现「exclude 放行、purge 错杀」的 B1 链路（评审 M1）。
+/// 恒带 `:(icase,glob)`：与 info/exclude 的字符类模式同向（大小写不敏
+/// 感），且 `:(glob)` 禁止 `*` 跨 `/`——裸 `:(icase)` 的通配按非路径名
+/// 匹配，`service-account*.json` 会把 `service-accounts/prod.json` 一并
+/// 命中（r52-M4 评审实证，git 2.43：跨目录错杀后被 clean -fd 不可逆删
+/// 除且预览/undo 均不可见）。三层口径一致才不会出现「exclude 放行、
+/// purge 错杀」的 B1 链路（评审 M1）。
 fn secret_pathspecs() -> Vec<String> {
     let mut patterns: Vec<String> = SECRET_EXCLUDES
         .iter()
-        .map(|line| format!(":(icase){line}"))
+        .map(|line| format!(":(icase,glob){line}"))
         .collect();
     for line in SECRET_EXCLUDES {
-        patterns.push(format!(":(icase)**/{line}"));
+        patterns.push(format!(":(icase,glob)**/{line}"));
     }
     patterns
 }
@@ -1363,7 +1375,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // 的第二条转发通道（repositoryformatversion 0 下即生效、--local 探针
     // 不可见、config.worktree 覆盖就地改写）——探针/节推导机制对顶层
     // extensions 键即插即用（--unset-all 精确去键）。
-    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|core\.symlinks|core\.filemode|core\.trustctime|core\.checkstat|index\.version|include)";
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|core\.symlinks|core\.filemode|core\.trustctime|core\.checkstat|index\.version|core\.splitindex|feature\.manyfiles|include)";
     let dangerous_keys = match git(
         &repo,
         execution_root,
@@ -1858,8 +1870,12 @@ fn validate_no_sensitive_paths_staged(
     // 其快照永久误杀（评审 r19 M1a/M1b）；(3) diff 路径接同一校验。
     let mut pathspecs: Vec<String> = Vec::new();
     for pattern in SECRET_EXCLUDES {
-        pathspecs.push(format!(":(icase){pattern}"));
-        pathspecs.push(format!(":(icase)**/{pattern}"));
+        // r52-M4（评审）：`:(icase,glob)`——`:(glob)` 禁止 `*` 跨 `/`，否则
+        // `service-account*.json` 会命中 `service-accounts/prod.json` 等无
+        // 辜嵌套文件（git 2.43 实证），被 purge 出快照后被 clean -fd 不可
+        // 逆删除、预览与 undo 均不可见。
+        pathspecs.push(format!(":(icase,glob){pattern}"));
+        pathspecs.push(format!(":(icase,glob)**/{pattern}"));
     }
     // r22 R1：SHADOW_EXCLUDES 不再进 bail 集——标准 keepfile 惯用法
     // （`dist/*` + `!dist/.gitkeep`）把无辜 keepfile 送进 `:(icase)dist/` 的
@@ -1944,6 +1960,28 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // r52-M5（评审）：add 之后 index 为空 ⇒ 快照不完整——core.splitIndex /
+    // feature.manyFiles 级的静默掏空（现已命令面钉死 + scrub，此守卫兜住
+    // 未知的同类形状）会让空树照常登记：预览显示「无变更」，rewind 与
+    // undo 都把工作区清空。空树 + 工作区确有非忽略内容 ⇒ fail-closed 拒绝
+    // 登记（Turn 快照的 Err 走入口降级路径）。合法性边界：真正的空工作区
+    // （无未忽略文件）也走此臂，但那种会话本就没有可回退内容，拒绝等价于
+    // 既有的「空 turn 不登记」行为，不新增伤害。
+    let staged = git_ok(&repo, &execution_root, &["ls-files", "-z"])?;
+    if staged.is_empty() {
+        // 真空工作区（无任何未忽略文件）合法放行（保持既有「空 turn」行为）；
+        // 有未忽略文件而 index 为空 = 写入面被掏空，fail-closed。
+        let others = git_ok(
+            &repo,
+            &execution_root,
+            &["ls-files", "-z", "--others", "--exclude-standard"],
+        )?;
+        if !others.is_empty() {
+            bail!(
+                "快照暂存后影子 index 为空而工作区存在未忽略文件——快照不完整（索引写入面被掏空，splitIndex/manyFiles 或未知同类形状），本轮拒绝登记；请检查 git 配置后重试"
+            );
+        }
+    }
     // Round-12 复审 P2（r44 集成合并自 main 移植）：add -A 之后每轮重跑
     // secret purge——工作树 .gitignore 的否定规则（`!.env`）按 gitignore(5)
     // 优先级压过 info/exclude，会在每个快照把敏感文件重新收进影子 index；
@@ -4740,13 +4778,16 @@ pub(crate) ",
             "service-account*.json",
         ] {
             let lower = entry.to_ascii_lowercase();
+            // r52-M4：双腿形状随 `:(icase,glob)` 更新（`:(glob)` 禁止 `*` 跨 `/`）。
             assert!(
-                specs.iter().any(|s| s == &format!(":(icase){lower}")),
-                "purge 根腿缺失: {entry}"
+                specs.iter().any(|s| s == &format!(":(icase,glob){lower}")),
+                "purge root leg missing: {entry}"
             );
             assert!(
-                specs.iter().any(|s| s == &format!(":(icase)**/{lower}")),
-                "purge 嵌套腿缺失: {entry}"
+                specs
+                    .iter()
+                    .any(|s| s == &format!(":(icase,glob)**/{lower}")),
+                "purge nested leg missing: {entry}"
             );
         }
         assert_eq!(
@@ -5466,6 +5507,86 @@ pub(crate) ",
             exec.read("services/api/.aws/credentials").as_deref(),
             Some("AKIAEXAMPLE\n"),
             "嵌套凭据副本必须在 restore 后存活（r28 B2 数据丢失）"
+        );
+    }
+
+    /// r52-M4 行为 pin（pathspec 跨界）：`service-account*.json` 的
+    /// `:(icase)` 通配按非路径名匹配，把无辜嵌套文件
+    /// `service-accounts/prod.json`、`service-account/config.json` 一并
+    /// purge 出快照；restore 的 `clean -fd` 随后不可逆删除它们，且预览与
+    /// undo 均不可见。`:(icase,glob)` 修复后：嵌套文件进快照、回退后
+    /// 原样存活。
+    #[test]
+    fn service_account_glob_purge_no_longer_crosses_directories() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("svcacross-ledger");
+        let exec = TestDir::new("svcacross-exec");
+        exec.write(
+            "service-accounts/prod.json",
+            "{}
+",
+        );
+        exec.write(
+            "service-account/config.json",
+            "{}
+",
+        );
+        exec.write(
+            "ok.txt", "v1
+",
+        );
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("嵌套无辜文件不得被 glob 跨界 purge（r52 M4）");
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            tracked
+                .lines()
+                .any(|line| line == "service-accounts/prod.json"),
+            "嵌套文件必须进快照（跨界的 pathspec 会把它 purge 掉）: {tracked}"
+        );
+        assert!(
+            tracked
+                .lines()
+                .any(|line| line == "service-account/config.json"),
+            "service-account/ 目录内容必须进快照: {tracked}"
+        );
+        exec.write(
+            "ok.txt", "v2
+",
+        );
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
+        restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        assert_eq!(
+            exec.read("service-accounts/prod.json").as_deref(),
+            Some(
+                "{}
+"
+            ),
+            "回退后无辜嵌套文件必须存活"
+        );
+        assert_eq!(
+            exec.read("service-account/config.json").as_deref(),
+            Some(
+                "{}
+"
+            ),
+            "service-account/ 目录内容回退后必须存活"
         );
     }
 
