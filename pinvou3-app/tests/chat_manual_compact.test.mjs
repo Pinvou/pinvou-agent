@@ -182,7 +182,7 @@ const sharedCompactionBody = sharedSource.slice(sharedSource.indexOf('function h
 const tauriSource = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
 for (const [label, shell, laneSource] of [
   ['tauri', tauriCompactionShell, tauriSource],
-  ['web', 'pinvouSharedweb().handleChatCompactionEvent(e, undefined);', webSource],
+  ['web', 'pinvouSharedweb().handleChatCompactionEvent(e);', webSource],
 ]) {
   assert.ok(laneSource.includes(shell), `${label}: the chat:compaction registration must stay and keep forwarding to the shared payload body`);
 }

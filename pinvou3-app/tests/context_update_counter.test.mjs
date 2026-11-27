@@ -319,7 +319,7 @@ assert.ok(
 );
 const webBridgeJs = read('src', 'platform', 'web', 'bridge.js');
 assert.ok(
-  webBridgeJs.includes('pinvouSharedweb().handleChatCompactionEvent(e, undefined);'),
+  webBridgeJs.includes('pinvouSharedweb().handleChatCompactionEvent(e);'),
   'web 车道必须保留 chat:compaction 注册壳并转发共享体（r8：完整行针在共享体上同时咬住删除与 if false && 禁用——裸调用名针会被禁用突变骗绿）',
 );
 assert.ok(

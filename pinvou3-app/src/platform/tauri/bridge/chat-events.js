@@ -89,7 +89,12 @@ function pinvouSharedtauriChatEvents() {
     // usage/compaction/plan 事件 payload 处理体统一在 shared/bridge-shared-helpers.js
     // （web 车道同段逐字一致）；lane 只保留 listen/onSessionEvent 注册壳并转发。
     function handleChatUsageEvent(e) { return pinvouSharedtauriChatEvents().handleChatUsageEvent(e); }
-    function handleChatCompactionEvent(e) { return pinvouSharedtauriChatEvents().handleChatCompactionEvent(e); }
+    // r52 P2 (review): forward the hooks parameter - the listener's
+    // pre-capture results (r40-M1 capture, refuseWhenBusy verdict, the
+    // foreground force-durable-reload closure) ride hooks into the shared
+    // handler; dropping the argument here left doneNotice dead-on-wire on
+    // the desktop lane.
+    function handleChatCompactionEvent(e, hooks) { return pinvouSharedtauriChatEvents().handleChatCompactionEvent(e, hooks); }
     function handleChatPlanSnapshotEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanSnapshotEvent(e); }
     function handleChatPlanReadyEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanReadyEvent(e); }
     function handleChatPlanResolvedEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanResolvedEvent(e); }

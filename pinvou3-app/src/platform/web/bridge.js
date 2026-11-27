@@ -4447,33 +4447,14 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // （tauri 车道同段逐字一致）；此处仅保留 listen/onSessionEvent 注册壳。
   listen("chat:usage", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatUsageEvent(e); }); });
 
-  // The rewind/undo rehydration seam (work-mode ChatView) is desktop-only:
-  // the web lane has no session-buffer cache to invalidate (the compaction
-  // registration below stays shape-identical with the tauri lane - both
-  // delegate to the shared compaction handler through the same
-  // pre-capture), so bind null - the typeof guards make the resync/refusal
-  // arms no-ops and done falls to the plain-notice arm.
-  const invalidateSessionBuffer = null;
   listen("chat:compaction", function (e) {
-    // r40 M1 (PR): pre-swap capture (the same shape as the tauri lane; a
-    // no-op while the primitives are absent).
-    const compactionSid = e.payload && e.payload.session_id;
-    const prePhase = e.payload && e.payload.phase;
-    const preBefore = Number(e.payload && e.payload.messages_before);
-    const preAfter = Number(e.payload && e.payload.messages_after);
-    const compactionOuterActive =
-      !!compactionSid && compactionSid === state.activeSessionId;
-    const compactionShrank = prePhase === "done" &&
-      (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
-    const compactionResync = compactionShrank && !!compactionSid &&
-      typeof invalidateSessionBuffer === "function" &&
-      (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
-    const compactionInvalidated =
-      compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
+    // The web lane has no desktop-only invalidation/reload primitives (the
+    // rewind/undo rehydration seam in work-mode ChatView is desktop-only),
+    // so the tauri lane's pre-capture collapses to a no-op here and no hooks
+    // are injected - the shared handler keeps main semantics (the plain done
+    // notice).
     onSessionEvent(e, function () {
-      // Without hooks the shared handler keeps main semantics (the web
-      // lane, whose primitives are absent, always takes this arm).
-      pinvouSharedweb().handleChatCompactionEvent(e, undefined);
+      pinvouSharedweb().handleChatCompactionEvent(e);
     });
   });
 

@@ -106,7 +106,7 @@ assert.match(gateNotice.text, /outside delegated scope/);
 const sharedCompactionSource = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(sharedCompactionSource.includes('phase === "cancel"'));
 assert.ok(sharedCompactionSource.includes('bt("compactCancel")'));
-assert.ok(read('src', 'platform', 'web', 'bridge.js').includes('pinvouSharedweb().handleChatCompactionEvent(e, undefined);'),
+assert.ok(read('src', 'platform', 'web', 'bridge.js').includes('pinvouSharedweb().handleChatCompactionEvent(e);'),
   'the web lane must keep its chat:compaction registration forwarding to the shared payload body');
 assert.ok(read('src', 'platform', 'tauri', 'bridge', 'chat-events.js').includes('handleChatCompactionEvent(e, compactionHooks);'),
   'the tauri lane must keep its chat:compaction registration forwarding to the shared payload body');
