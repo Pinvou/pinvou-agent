@@ -2561,6 +2561,9 @@ fn install_validation_failure_rollback_leaves_no_consent_rows() {
             .unwrap()
             .block_on(install_marketplace_tool_post_install(
                 "yuandian-mcp".to_string(),
+                || -> Result<(), String> {
+                    panic!("preset rollback must not run upload preflight")
+                },
             ))
             .unwrap_err();
         assert!(
@@ -2601,6 +2604,56 @@ fn install_validation_failure_rollback_leaves_no_consent_rows() {
     });
 }
 
+#[test]
+fn install_validation_failure_does_not_recycle_a_busy_upload() {
+    crate::platform::test_support::with_temp_home("install-validation-upload-rollback", || {
+        let tool_id = "yuandian-mcp";
+        let server_name = "yuandian-upload-rollback-test";
+        write_test_marketplace_files(server_name, serde_json::json!({ "url": "not-a-url" }), true);
+        crate::features::marketplace::store::plant_installed_record(
+            tool_id,
+            crate::features::marketplace::store::BundleSource::Upload("review fixture".into()),
+        );
+        let package = crate::platform::paths::bundles_root().join(tool_id);
+        let manifest = package.join("mcp").join("manifest.json");
+        let original_manifest = std::fs::read(&manifest).unwrap();
+        let config = crate::platform::paths::mcp_config_path();
+        let original_config = std::fs::read(&config).unwrap();
+        let attempted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let attempted_by_worker = attempted.clone();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let expected_error = runtime
+            .block_on(
+                crate::features::marketplace::MarketplaceManager::new()
+                    .validate_remote_connection(tool_id),
+            )
+            .unwrap_err();
+        let err = runtime
+            .block_on(install_marketplace_tool_post_install(
+                tool_id.into(),
+                move || {
+                    attempted_by_worker.store(true, std::sync::atomic::Ordering::Relaxed);
+                    Err::<(), _>("upload is busy".into())
+                },
+            ))
+            .unwrap_err();
+
+        assert_eq!(err, expected_error, "return the original validation error");
+        assert!(attempted.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&tool_id.to_string())
+        );
+        assert_eq!(std::fs::read(&manifest).unwrap(), original_manifest);
+        assert_eq!(std::fs::read(&config).unwrap(), original_config);
+    });
+}
+
 /// Pin 2: a consent-sync persist failure fails the install with the honest
 /// no-rollback copy (round-22 MAJOR 1) while `installed.json` and mcp.json
 /// still hold the pack — no silent half-consented rollback on this arm.
@@ -2633,6 +2686,7 @@ fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
             .unwrap()
             .block_on(install_marketplace_tool_post_install(
                 "yuandian-mcp".to_string(),
+                || Ok(()),
             ))
             .unwrap_err();
         assert!(
@@ -2683,6 +2737,7 @@ fn install_post_install_returns_inventory_shape() {
             .unwrap()
             .block_on(install_marketplace_tool_post_install(
                 "yuandian-mcp".to_string(),
+                || Ok(()),
             ))
             .unwrap();
         assert!(
