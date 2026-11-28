@@ -1442,8 +1442,10 @@ try {
     const resendHits = (web.match(/editResendSyncPending:/g) || []).length;
     assert.ok(resendHits >= 3, `editResendSyncPending 文案必须三语齐备（实得 ${resendHits} 处）`);
     // codex 道：切换 reject 必须先回读收敛原生控件再给「已生效但同步失败」注记。
+    // 尾部间隙容纳注记后的渲染 tick 提升（round-16 评审：独立切换无后续 lane
+    // 事件，注记须当场重投影）；齿在顺序——回读 invoke 先于注记、素错误面兜底。
     const codexSource = read('src', 'features', 'codex', 'CodexAcpView.jsx');
-    assert.match(codexSource, /\} catch \(err\) \{[\s\S]{0,460}?try \{\s*\n\s*await invoke\('get_mode_state', \{ sessionId: sid \}\);[\s\S]{0,300}?codexCopy\.modeSyncFailedEffective \+ err\);[\s\S]{0,120}?\} catch \{ showError\(err\); \}/,
+    assert.match(codexSource, /\} catch \(err\) \{[\s\S]{0,460}?try \{\s*\n\s*await invoke\('get_mode_state', \{ sessionId: sid \}\);[\s\S]{0,300}?codexCopy\.modeSyncFailedEffective \+ err\);[\s\S]{0,340}?\} catch \{ showError\(err\); \}/,
       'codex 道切换失败必须先回读权威状态收敛控件，再给「已生效但同步失败」注记；回读也失败才落素错误面');
     assert.match(codexSource, /codexCopy\.modeAskPersistFailed \+ switchOutcome\.ask_error/,
       'codex 道必须把 ask 半边作为未保存注记');

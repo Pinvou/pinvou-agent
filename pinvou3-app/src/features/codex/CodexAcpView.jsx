@@ -597,7 +597,14 @@ function nativeApprovalInputView(input) {
 
 function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
   const done = !!item.resolved;
-  const submitting = !done && !!responding;
+  // Per-card latch (round-16 review): `responding` is lane-wide, so with two
+  // pending approvals the first decision's finally cleared the shared slot
+  // and re-enabled the second card's buttons mid-flight — a click then
+  // passed the disabled check but was silently swallowed by decideNativeApproval's
+  // card.submitting guard. Reading the per-card latch keeps each in-flight
+  // card disabled on its own (the chat lane reads item.submitting the same
+  // way) and makes the submitting status row actually reachable.
+  const submitting = !done && (!!responding || !!item.submitting);
   // Unknown outcome (host P2): the backend dropped the pending entry after
   // the engine's ack+settle windows expired; the card must stop inviting a
   // re-decision (a fresh click can only fail). resolved stays false, so a
@@ -1705,6 +1712,10 @@ export function CodexAcpView({
         : null;
       if (modeOutcome && modeOutcome.persist_error) {
         appendNativeSystemItem(getNativeLane(sessionId), codexCopy.modePersistFailed + modeOutcome.persist_error);
+        // Materialization happens before any turn, so without the bump the
+        // unsaved note only appears once a later lane event happens to fire
+        // (round-16 review).
+        setNativeLaneTick(tick => tick + 1);
       }
       if (hasMultiAgentSelection) {
         await invoke('set_multi_agent_mode', {
@@ -1890,9 +1901,11 @@ export function CodexAcpView({
         : null;
       if (switchOutcome && switchOutcome.persist_error) {
         appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error);
+        setNativeLaneTick(tick => tick + 1);
       }
       if (switchOutcome && switchOutcome.ask_error) {
         appendNativeSystemItem(getNativeLane(sid), codexCopy.modeAskPersistFailed + switchOutcome.ask_error);
+        setNativeLaneTick(tick => tick + 1);
       }
       if (isActiveTarget) await refreshNativeControls(sid);
     } catch (err) {
@@ -1906,6 +1919,11 @@ export function CodexAcpView({
         await invoke('get_mode_state', { sessionId: sid });
         if (isActiveTarget) await refreshNativeControls(sid);
         appendNativeSystemItem(getNativeLane(sid), codexCopy.modeSyncFailedEffective + err);
+        // A standalone switch triggers no follow-up lane event, so without
+        // this bump the notice sits unrendered until an unrelated event
+        // (round-16 review: the tick only moves when applyNativeChatEvent
+        // reports a change).
+        setNativeLaneTick(tick => tick + 1);
       } catch { showError(err); }
     }
   }
@@ -3598,6 +3616,10 @@ export function CodexAcpView({
       // when the user switched away mid-decision. The toast still fires when
       // the user is watching this lane.
       appendNativeSystemItem(getNativeLane(sid), `${codexCopy.nativeApprovalDecisionFailed}${err && err.message ? err.message : err}`);
+      // The failure notice must be visible immediately: in an idle session
+      // no follow-up lane event fires, so without the bump the card just
+      // stays clickable with no feedback (round-16 review).
+      setNativeLaneTick(tick => tick + 1);
       if (sid === activeIdRef.current) showError(err);
     } finally {
       if (card) card.submitting = false;
