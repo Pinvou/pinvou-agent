@@ -119,8 +119,10 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
 
 ### 3.4 不变式（什么不变）
 
-- **未武装逐字节等同**：`ask_on_guardrail=false`（默认）时全部守卫面与旗标前
-  doctrine 逐字节一致，既有 fail-closed pin 原样绿。
+- **未武装逐字节等同**：`ask_on_guardrail=false`（底座层默认未武装；pinvou
+  的每次同步显式携带 `Some(旗)`，宿主层「默认」是 §3.1 的全局偏好
+  `ask_on_guardrail_default`——两层「默认」指的不是同一个值）时全部守卫面
+  与旗标前 doctrine 逐字节一致，既有 fail-closed pin 原样绿。
 - **Never 与 Auto-Review 姿态无论武装与否一律拒绝**：deny face、repo-law、
   escalation 的武装豁免都显式排除这两个姿态（评审修复补齐），拒绝只在收据措辞
   上可能有别，从不放行。
@@ -214,11 +216,18 @@ TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连�
   epoch 保护的统一收敛点写回，在途旧读作废。审批/守卫/模式三类事件都进
   remote_control 的事件转发白名单（`RUST_FORWARDED_EVENTS`）；面向 Web 的
   RPC 命令仍受既有多智能体执行 denylist 管辖——本 PR 在 denylist 登记了
-  五条新拒绝命令：四条模式/审批变更命令（`decide_approval`/
+  十条新拒绝命令：四条模式/审批变更命令（`decide_approval`/
   `set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`），外加
   `web_access_codex_acp_prompt`——它不是模式/审批控制，而是外部 ACP
   Agent 的提示/轮次执行入口（`web_access_chat`/`submit_user_input` 的
-  ACP 同类项），因同一「多智能体执行面只读」承诺被拒；并在
+  ACP 同类项），因同一「多智能体执行面只读」承诺被拒；同族另有五条
+  ACP 孪生命令（`web_access_set_codex_acp_mode`/
+  `web_access_set_codex_acp_config_option`/
+  `web_access_respond_codex_acp_permission`/
+  `web_access_respond_codex_acp_elicitation`/
+  `web_access_cancel_codex_acp`；round-14/15/19 评审同批扩面）。round-16
+  评审勘误：本节原写「五条」漏数了这批 ACP 孪生（方向 fail-safe：代码比
+  文档更严）；并在
   `web_session_scope` 与 access-policy 登记了新表面，只读**策略**不变
   （多智能体执行面依旧拒绝写操作）。
 
@@ -412,8 +421,11 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   Stage-4 提交落地；CodeWhale#131 已以 squash `e2a0e14fd` 合入公开维护分支，
   gitlink 与 `EXPECTED_HEAD` 随 main 重钉（消费时为 `11cba403d`，其后 main 经
   #152/#156 跟进至 `8e8d52fdb`；本 PR 重基后随行该头，再经消费批 #157
-  （session-reader 只读分类）进至 `687358f7e`；历史口径见
-  `docs/fork-modifications.md` 的 2026-10-31 消费基线节与 2026-11-12 跟进节）。
+  （session-reader 只读分类）进至 `687358f7e`。round-16 评审勘误：链条其后继续
+  `687358f7e → cc2adf8ef`（2026-11-24，21 提交）`→ 44142616a`（2026-11-28，
+  +7），现值以 `docs/fork-modifications.md` §0 公开维护头行为准；历史口径见
+  `docs/fork-modifications.md` 的 2026-10-31 消费基线节、2026-11-12 跟进节与
+  2026-11-24 基线跟进节）。
 
 ## 9. 已知边界
 
@@ -445,6 +457,13 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   停止生成），不是无反馈转圈。完整 Web 审批工作流仍是后续项。
 - **审批面跨进程重启不保真**：挂起卡与授予/拒绝缓存是进程内存；重启后 turn
   重新请批（engine 侧审批 id 本就随进程消亡）。这是有意取舍，不是持久化缺陷。
+- **Web 端一次性 Yolo 确认永不记忆**（round-16 评审补登记）：Web 桥面的
+  code-permission 偏好存取是显式 stub（`getCodePermissionPrefs`/
+  `confirmCodeYolo` 返回 null），`needsYoloConfirmation` 恒真——Web 端每次
+  进入 Yolo 都重弹确认（fail-closed 方向），确认持久化只在桌面命令路径存在。
+- **`ask_on_guardrail_default` 无产品 UI**（round-16 评审补登记）：全局
+  「守卫命中时询问」默认只能经 settings.json 手改或 IPC 设置（getter/setter
+  命令与播种/镜像机制完整并有钉）；前端没有任何入口读写该偏好。
 - **多智能体引导期的默认解析先于 code 判定注册**：`_multi_agent.json` 的引导
   装载在 store 构造期用 `resolved_default_mode` 铸条目，而 code-session
   predicate 在 Tauri setup 后段才注册——从未切换过 mode 的多智能体 code 会话
@@ -473,4 +492,18 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   shed——同一行为 Windows 静默拒、POSIX 静默过（Windows 更严，无安全
   损失，但 Yolo 的拒绝面按 OS 不对称）。三处都是刻意取舍且有钉；把 (a)
   移入 Floor 或对 (b)/(c) 做语义拆族是产品决策，待拍板后随计数钉
-  （3,555/8,763）一起翻。
+  （3,555/8,763）一起翻。(d) round-16 评审补登记：persistence/injection
+  词汇按整族 shed（`reg add …\currentversion\run`、`sc create`、
+  `schtasks /create` 等零日常 FP 的持久化拼写，与 `crontab -e` 等高 FP
+  拼写同族进 Sensitive）——未武装 Yolo 静默放行注册表 Run 键等持久化
+  写；逐凭据销毁清单携带的非凭据敏感绝对路径（`rm /etc/shadow`、
+  `/etc/sudoers*`）同样按族 shed。与 (a)-(c) 同一粒度问题、同一保守
+  方向，拆族同为产品决策。
+- **定时/无人值守引擎的模式热同步残余**：显式 `set_session_mode`/
+  `set_ask_on_guardrail` 对正在跑定时任务的引擎发出的 `ChangeMode` 热同步
+  没有像 `SetDisallowedTools` 广播那样的无人值守屏蔽（round-16 评审）：
+  在途定时轮次的常驻审批姿态可在两次 profiled send 之间被放宽。缓解仍在：
+  规则集恒 Full（`for_engine_lane`），产生的任何 ApprovalRequired 仍由
+  forwarder 的无人值守臂确定性应答（绝不弹卡），下一次 scheduled send
+  重新按 profile 推导姿态。残余仅限窗口内的常驻姿态，方向永不滑向弹卡。
+

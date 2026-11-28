@@ -129,7 +129,9 @@ in foundation PR (a)):
 
 ### 3.4 Invariants (what does not change)
 
-- **Byte-identical when not armed**: with `ask_on_guardrail=false` (default), every guardrail face is
+- **Byte-identical when not armed**: with `ask_on_guardrail=false` (the foundation-layer default is unarmed; pinvou
+  carries `Some(flag)` explicitly on every sync, and the host-layer "default" is §3.1's global
+  `ask_on_guardrail_default` preference — the two layers' "default" are not the same value), every guardrail face is
   byte-identical to the pre-flag doctrine, and the existing fail-closed pins stay green as-is.
 - **Never and Auto-Review postures deny regardless of arming**: the arming exemptions of the deny face, repo-law,
   and escalation all explicitly exclude these two postures (completed by the review fixes); denials may differ
@@ -230,10 +232,14 @@ session's share and does not mistakenly revoke other sessions' grants.
   back through the epoch-protected unified convergence point, invalidating in-flight stale reads. All three event
   kinds — approval, guardrail, mode — enter the remote_control event-forwarding allowlist
   (`RUST_FORWARDED_EVENTS`); Web-facing RPC commands remain governed by the existing multi-agent-execution
-  denylist — this PR registers five new denylisted commands: four mode/approval change commands
+  denylist — this PR registers ten new denylisted commands: four mode/approval change commands
   (`decide_approval`/`set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`) plus `web_access_codex_acp_prompt` —
   which is not a mode/approval control but the ACP prompt/turn execution entry for an external ACP agent (the ACP twin of
-  `web_access_chat`/`submit_user_input`, denied for the same read-only-promise reason) — and registers new surfaces
+  `web_access_chat`/`submit_user_input`, denied for the same read-only-promise reason) — plus five ACP twin commands of
+  the same family (`web_access_set_codex_acp_mode`/`web_access_set_codex_acp_config_option`/
+  `web_access_respond_codex_acp_permission`/`web_access_respond_codex_acp_elicitation`/`web_access_cancel_codex_acp`;
+  the round-14/15/19 review waves widened the family). Round-16 review correction: this section previously said
+  "five" and omitted the ACP twins (fail-safe direction: the code is stricter than the doc claimed) — and registers new surfaces
   in `web_session_scope` and the access policy; the read-only **policy** is unchanged (the multi-agent execution
   face still rejects write operations).
 
@@ -439,8 +445,11 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
   commits; CodeWhale#131 has merged into the public maintenance branch as squash `e2a0e14fd`, and the gitlink and
   `EXPECTED_HEAD` follow main's re-pins (consumption-time `11cba403d`, then main's #152/#156 follow brought them to
   `8e8d52fdb`, which this PR's rebase rides, and the follow-on consumption batch #157 (session-reader read-only
-  classification) advanced them to `687358f7e`; the historical basis is in the 2026-10-31 consumption-baseline and
-  the 2026-11-12 follow sections of `docs/fork-modifications.md`).
+  classification) advanced them to `687358f7e`. Round-16 review correction: the chain has since continued
+  `687358f7e → cc2adf8ef` (2026-11-24, 21 commits) `→ 44142616a` (2026-11-28, +7); the current value is governed by
+  the §0 public-maintenance line of `docs/fork-modifications.md`; the historical basis is in the 2026-10-31
+  consumption-baseline, the 2026-11-12 follow, and the 2026-11-24 baseline-follow sections of
+  `docs/fork-modifications.md`).
 
 ## 9. Known boundaries
 
@@ -476,6 +485,13 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
 - **The approval surface does not survive a cross-process restart**: pending cards and the grant/denial caches are
   process memory; after a restart the turn requests approval again (engine-side approval ids die with the process
   anyway). This is a deliberate trade-off, not a persistence defect.
+- **The web one-time Yolo confirmation is never remembered** (round-16 review addition): the web bridge's code-permission
+  preference accessors are explicit stubs (`getCodePermissionPrefs`/`confirmCodeYolo` return null), so
+  `needsYoloConfirmation` is always true — the web face re-prompts on every Yolo entry (fail-closed direction);
+  confirmation persistence exists only on the desktop command path.
+- **`ask_on_guardrail_default` has no product UI** (round-16 review addition): the global ask-on-guardrail default is
+  reachable only by hand-editing settings.json or via IPC (the getter/setter commands and the seeding/mirror machinery
+  are complete and pinned); no frontend surface reads or writes the preference.
 - **Multi-agent bootstrap-time default resolution registers before the code-session predicate**: the bootstrap
   load of `_multi_agent.json` mints entries with `resolved_default_mode` during store construction, while the
   code-session predicate registers late in the Tauri setup — a multi-agent code session that never switched modes
@@ -483,4 +499,17 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
   preferences/the predicate; one explicit switch by the user corrects it; the fix needs a bootstrap-order change
   or late-bound resolution and belongs to follow-up work.
 - **The aux conversation's parent-history fetch WAS unavailable under the Plan pin (consumed-child classification gap — resolved by the consumed gitlink)**: the aux reader capability `mcp_session-reader_read_session` used to be classified non-readonly by the consumed engine's MCP adapter — the child's `is_mcp_read_helper` allowlist did not know the fork's session-reader tools — so the pinned Plan posture rejected its calls before execution/approval and the advertised parent-history fetch deterministically returned nothing. The classification lives in the consumed child: host rulesets are deny-only and cannot carve an allow exception, and the pin itself cannot move (the web face refuses Auto; Yolo-on-web is strictly worse). The durable fix was therefore the child-side classification change: the fork's first-party read-only session-reader surface now joins the child's read-helper allowlist (CodeWhale PR #157, squash `687358f7e`, consumed via `pinvou3-clean`), and the pinned Plan posture admits the scoped read again — exact-name matching leaves every other MCP tool's classification untouched, so the general gate is not weakened (the store-side `pin_aux_mode_from_parent` source note says the same).
-- **Yolo Floor quality boundaries (three known deviations from the "split by semantics" claim; all conservative)**: the Floor is the never-sensible bottom-line family (3,555 rules); the Sensitive face exists only in Full. Three boundaries, stated honestly: (a) the sudo command-word block is a Sensitive face — an unarmed Yolo silently permits unenumerated `sudo` privilege changes (Auto/Plan typed-Deny the same operations; enumerated dangerous payloads are still covered by Floor's rm family); (b) the per-credential direct-upload face (`curl -T ~/.ssh/id_rsa …`) is absent under Yolo rather than carded — only the mass-exfiltration roots (whole-directory/whole-home) stay in Floor; (c) the Windows `win_native_rules` family (2,796 rules inside Floor) carries per-credential destroy spellings (`del …\.ssh\id_rsa`) whose POSIX semantic twin (`rm * ~/.ssh/id_rsa`) is shed — the same act is silently denied on Windows and silently permitted on POSIX (Windows is stricter, no safety loss, but Yolo's deny face is OS-asymmetric). All three are deliberate, documented, and pinned; moving (a) into Floor or splitting (b)/(c) semantically is a product decision to be made together with the count pins (3,555/8,763).
+- **Yolo Floor quality boundaries (three known deviations from the "split by semantics" claim; all conservative)**: the Floor is the never-sensible bottom-line family (3,555 rules); the Sensitive face exists only in Full. Three boundaries, stated honestly: (a) the sudo command-word block is a Sensitive face — an unarmed Yolo silently permits unenumerated `sudo` privilege changes (Auto/Plan typed-Deny the same operations; enumerated dangerous payloads are still covered by Floor's rm family); (b) the per-credential direct-upload face (`curl -T ~/.ssh/id_rsa …`) is absent under Yolo rather than carded — only the mass-exfiltration roots (whole-directory/whole-home) stay in Floor; (c) the Windows `win_native_rules` family (2,796 rules inside Floor) carries per-credential destroy spellings (`del …\.ssh\id_rsa`) whose POSIX semantic twin (`rm * ~/.ssh/id_rsa`) is shed — the same act is silently denied on Windows and silently permitted on POSIX (Windows is stricter, no safety loss, but Yolo's deny face is OS-asymmetric). All three are deliberate, documented, and pinned; moving (a) into Floor or splitting (b)/(c) semantically is a product decision to be made together with the count pins (3,555/8,763). (d) Round-16
+  review addition: the persistence/injection vocabulary is shed as one family (`reg add …\currentversion\run`,
+  `sc create`, `schtasks /create` — zero everyday-FP persistence spellings share the family blob with high-FP ones like
+  `crontab -e` and ride into the Sensitive face together) — an unarmed Yolo silently permits registry Run-key and other
+  persistence writes; non-credential sensitive absolute paths carried by the credential-destroy inventory
+  (`rm /etc/shadow`, `/etc/sudoers*`) are shed the same way. Same granularity problem and conservative direction as
+  (a)-(c); the split is the same product decision.
+- **Scheduled/unattended engines lack a hot-sync shield on explicit mode switches**: an explicit `set_session_mode`/
+  `set_ask_on_guardrail` against an engine running a scheduled task sends `ChangeMode` hot-sync without the unattended
+  guard the `SetDisallowedTools` broadcast got (round-16 review): the in-flight scheduled turn's standing approval
+  posture can widen between two profiled sends. The mitigations hold: the ruleset stays Full (`for_engine_lane`), any
+  resulting ApprovalRequired is still answered deterministically by the forwarder's unattended arm (never a card), and
+  the next scheduled send re-derives the posture from the profile. The residual is the standing posture inside the
+  window only; it never slides toward prompting.
