@@ -88,10 +88,12 @@ surface.
   explicit Auto global default is silently widened for the window in which a downgraded binary runs, and
   restoring the new binary restores it, with no persistent loss.
 - Write paths uniformly pass an existence gate (id shape + session existence, `ensure_mode_target_session`:
-  the four commands `set_plan_mode_next`/`exit_plan_to_yolo`/`set_session_mode`/`set_ask_on_guardrail`),
-  preventing direct IPC calls from minting entries/writing sidecars for arbitrary ids; `accept_plan` does not pass
-  that gate and is instead constrained by the plan ticket (`claim_pending_plan`) to a genuinely pending proposal,
-  likewise minting no arbitrary entry.
+  the five commands `set_plan_mode_next`/`exit_plan_to_yolo`/`set_session_mode`/`set_ask_on_guardrail`/
+  `discard_plan`), preventing direct IPC calls from minting entries/writing sidecars for arbitrary ids;
+  `accept_plan` does not pass that gate and is instead constrained by the plan-ticket family
+  (`claim_pending_plan`/`discard_pending_plan`/`restore_pending_plan_claim` — all three bail on an absent
+  entry **before** minting, the round-32 completion of the round-16 claim-side fix) to a genuinely pending
+  proposal, likewise minting no arbitrary entry.
 
 ### 3.2 Propagation and arming
 
@@ -262,9 +264,12 @@ The execpolicy hard-deny ruleset is assembled per session mode (`features/assist
   parsing-host family, making the Yolo posture depend on which spelling the model happened to write. The
   destruction face and the bare-root (whole-directory/whole-profile) direct-upload faces stay Floor across all
   spellings (consistent with the established trade-off of the literal prefix family, test pin).
-- Floor's missing sensitive family is product intent: Yolo trades the sensitive deny face for the armed card,
-  keeping only the "never sensible" baseline (whole-disk mkfs, sudoers writes, etc.). A Yolo session therefore
-  genuinely loses the sensitive family's mechanical gate — a deliberate trade-off, not an oversight.
+- Floor's missing sensitive family is product intent: the Yolo profile does not assemble the sensitive deny
+  face, keeping only the "never sensible" baseline (whole-disk mkfs, sudoers writes, etc.). Arming does not
+  restore the sensitive family — arming only maps the faces that DO exist (deny hits of the Floor baseline
+  family, repo-law and the other hold faces — the five armed faces of §3.3) into their armed cards. A Yolo
+  session therefore genuinely loses the sensitive family's mechanical gate, armed or not — a deliberate
+  trade-off, not an oversight.
 - **The engine lane** (`SafetyRuleProfile::for_engine_lane`): an unattended engine is **always
   Full** — a stored Yolo is the interactive posture, and no one watching the cards is precisely the scenario where
   the mechanical gate must not be dismantled; an interactive engine (including the interactive continuation of a
@@ -485,10 +490,14 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
 - **The approval surface does not survive a cross-process restart**: pending cards and the grant/denial caches are
   process memory; after a restart the turn requests approval again (engine-side approval ids die with the process
   anyway). This is a deliberate trade-off, not a persistence defect.
-- **The web one-time Yolo confirmation is never remembered** (round-16 review addition): the web bridge's code-permission
-  preference accessors are explicit stubs (`getCodePermissionPrefs`/`confirmCodeYolo` return null), so
-  `needsYoloConfirmation` is always true — the web face re-prompts on every Yolo entry (fail-closed direction);
-  confirmation persistence exists only on the desktop command path.
+- **The web one-time Yolo confirmation covers explicit chip picks only** (round-16 review addition; scope
+  corrected in round-32): the per-action re-confirm applies to **explicit chip entries into Yolo** — the web
+  bridge's code-permission preference accessors are explicit stubs (`getCodePermissionPrefs`/`confirmCodeYolo`
+  return null), so `needsYoloConfirmation` is always true for an explicit switch (fail-closed direction), and
+  confirmation persistence exists only on the desktop command path. But a **persisted lane global default**
+  (`mode_defaults.work` / the code lane's `last_mode` = yolo, written via `set_mode_default`, the CLI, or a
+  hand edit) is applied at session materialization **without a confirmation dialog** — desktop and web alike:
+  the materialization path lands Yolo without re-raising the gate.
 - **`ask_on_guardrail_default` has no product UI** (round-16 review addition): the global ask-on-guardrail default is
   reachable only by hand-editing settings.json or via IPC (the getter/setter commands and the seeding/mirror machinery
   are complete and pinned); no frontend surface reads or writes the preference.
@@ -499,11 +508,11 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
   preferences/the predicate; one explicit switch by the user corrects it; the fix needs a bootstrap-order change
   or late-bound resolution and belongs to follow-up work.
 - **The aux conversation's parent-history fetch WAS unavailable under the Plan pin (consumed-child classification gap — resolved by the consumed gitlink)**: the aux reader capability `mcp_session-reader_read_session` used to be classified non-readonly by the consumed engine's MCP adapter — the child's `is_mcp_read_helper` allowlist did not know the fork's session-reader tools — so the pinned Plan posture rejected its calls before execution/approval and the advertised parent-history fetch deterministically returned nothing. The classification lives in the consumed child: host rulesets are deny-only and cannot carve an allow exception, and the pin itself cannot move (the web face refuses Auto; Yolo-on-web is strictly worse). The durable fix was therefore the child-side classification change: the fork's first-party read-only session-reader surface now joins the child's read-helper allowlist (CodeWhale PR #157, squash `687358f7e`, consumed via `pinvou3-clean`), and the pinned Plan posture admits the scoped read again — exact-name matching leaves every other MCP tool's classification untouched, so the general gate is not weakened (the store-side `pin_aux_mode_from_parent` source note says the same).
-- **Yolo Floor quality boundaries (three known deviations from the "split by semantics" claim; all conservative)**: the Floor is the never-sensible bottom-line family (3,555 rules); the Sensitive face exists only in Full. Three boundaries, stated honestly: (a) the sudo command-word block is a Sensitive face — an unarmed Yolo silently permits unenumerated `sudo` privilege changes (Auto/Plan typed-Deny the same operations; enumerated dangerous payloads are still covered by Floor's rm family); (b) the per-credential direct-upload face (`curl -T ~/.ssh/id_rsa …`) is absent under Yolo rather than carded — only the mass-exfiltration roots (whole-directory/whole-home) stay in Floor; (c) the Windows `win_native_rules` family (2,796 rules inside Floor) carries per-credential destroy spellings (`del …\.ssh\id_rsa`) whose POSIX semantic twin (`rm * ~/.ssh/id_rsa`) is shed — the same act is silently denied on Windows and silently permitted on POSIX (Windows is stricter, no safety loss, but Yolo's deny face is OS-asymmetric). All three are deliberate, documented, and pinned; moving (a) into Floor or splitting (b)/(c) semantically is a product decision to be made together with the count pins (3,555/8,763). (d) Round-16
+- **Yolo Floor quality boundaries (three known deviations from the "split by semantics" claim; all conservative)**: the Floor is the never-sensible bottom-line family (3,555 rules); the Sensitive face exists only in Full. The sensitive-family drop is orthogonal to arming — absent armed and unarmed alike (see section 5): arming only converts the faces that DO exist, and the Floor never had the sensitive faces to convert. Three boundaries, stated honestly: (a) the sudo command-word block is a Sensitive face — a Yolo silently permits unenumerated `sudo` privilege changes (armed or unarmed alike; Auto/Plan typed-Deny the same operations; enumerated dangerous payloads are still covered by Floor's rm family); (b) the per-credential direct-upload face (`curl -T ~/.ssh/id_rsa …`) is absent under Yolo rather than carded — only the mass-exfiltration roots (whole-directory/whole-home) stay in Floor; (c) the Windows `win_native_rules` family (2,796 rules inside Floor) carries per-credential destroy spellings (`del …\.ssh\id_rsa`) whose POSIX semantic twin (`rm * ~/.ssh/id_rsa`) is shed — the same act is silently denied on Windows and silently permitted on POSIX (Windows is stricter, no safety loss, but Yolo's deny face is OS-asymmetric). All three are deliberate, documented, and pinned; moving (a) into Floor or splitting (b)/(c) semantically is a product decision to be made together with the count pins (3,555/8,763). (d) Round-16
   review addition: the persistence/injection vocabulary is shed as one family (`reg add …\currentversion\run`,
   `sc create`, `schtasks /create` — zero everyday-FP persistence spellings share the family blob with high-FP ones like
-  `crontab -e` and ride into the Sensitive face together) — an unarmed Yolo silently permits registry Run-key and other
-  persistence writes; non-credential sensitive absolute paths carried by the credential-destroy inventory
+  `crontab -e` and ride into the Sensitive face together) — a Yolo silently permits registry Run-key and other
+  persistence writes (armed or unarmed alike); non-credential sensitive absolute paths carried by the credential-destroy inventory
   (`rm /etc/shadow`, `/etc/sudoers*`) are shed the same way. Same granularity problem and conservative direction as
   (a)-(c); the split is the same product decision.
 - **Scheduled/unattended engines lack a hot-sync shield on explicit mode switches**: an explicit `set_session_mode`/
@@ -513,3 +522,12 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
   resulting ApprovalRequired is still answered deterministically by the forwarder's unattended arm (never a card), and
   the next scheduled send re-derives the posture from the profile. The residual is the standing posture inside the
   window only; it never slides toward prompting.
+- **The `decide_approval` posture residual** (round-32 review addition): `decide_approval` trusts the raised card
+  and does not re-verify the session's current posture at decide time — a card raised before a switch to Plan can
+  still be allowed (the engine-side Plan read-only normalization is the backstop; the direction is at most one
+  extra silent grant). Now documented at the command.
+- **Scope of the multi-agent web promise** (round-32 review addition): the multi-agent web execution denylist
+  covers execution and posture surfaces; context-mutation commands (`equip_persona`/`update_persona`/
+  `create_persona`/`session_mount_collection`/`session_add_mounted_collection`/`save_session_persona_events`)
+  remain web-writable for a paired client on multi-agent sessions and are outside the promise's scope (like the
+  aux carve-out, a deliberately documented trade-off).

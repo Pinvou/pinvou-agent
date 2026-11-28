@@ -81,9 +81,12 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   旧默认 **Yolo 全自动（更宽方向）**：一次显式 Auto 全局默认在降级运行的
   窗口内被静默放宽，恢复新二进制即复原，无持久丢失。
 - 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`：
-  `set_plan_mode_next`/`exit_plan_to_yolo`/`set_session_mode`/`set_ask_on_guardrail`
-  四条命令），防 IPC 直调给任意 id 铸条目/写侧车；`accept_plan` 不走该门，
-  由 plan 票据（`claim_pending_plan`）约束到真实挂起方案，同样不铸任意条目。
+  `set_plan_mode_next`/`exit_plan_to_yolo`/`set_session_mode`/`set_ask_on_guardrail`/
+  `discard_plan` 五条命令），防 IPC 直调给任意 id 铸条目/写侧车；`accept_plan`
+  不走该门，由 plan 票据族（`claim_pending_plan`/`discard_pending_plan`/
+  `restore_pending_plan_claim`——三条命令对缺席条目都在铸条目**之前**先行
+  bail，round-32 收口 round-16 的 claim 侧修复）约束到真实挂起方案，同样不铸
+  任意条目。
 
 ### 3.2 传播与武装
 
@@ -249,8 +252,10 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   此前它随解析宿主家族落在 Floor，使 Yolo 姿态取决于模型恰好写出哪种拼写。
   销毁面与裸根（整目录/整 profile）直传面在一切拼写上保持 Floor（与字面前缀
   族的既定取舍一致，测试钉）。
-- Floor 缺敏感族是产品意图：Yolo 用敏感 deny 面换武装卡，只留「永远不合理」
-  的底线（mkfs 全盘、sudoers 写等）。Yolo 会话因此确实失去了敏感族的机械门，
+- Floor 缺敏感族是产品意图：Yolo 档不组装敏感 deny 面，只留「永远不合理」
+  的底线（mkfs 全盘、sudoers 写等）。武装不恢复敏感面——武装只把**存在的面**
+  （Floor 底线族的 deny 命中、repo-law 等 hold 面，即 §3.3 的五条武装面）
+  映射为武装弹卡。Yolo 会话因此确实失去了敏感族的机械门，武装与否同，
   这是有意的取舍而非疏漏。
 - **引擎车道**（`SafetyRuleProfile::for_engine_lane`）：无人值守引擎**恒为
   Full**——存储的 Yolo 是交互姿态，无人看卡恰恰是最不能拆机械门的场景；
@@ -457,10 +462,14 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   停止生成），不是无反馈转圈。完整 Web 审批工作流仍是后续项。
 - **审批面跨进程重启不保真**：挂起卡与授予/拒绝缓存是进程内存；重启后 turn
   重新请批（engine 侧审批 id 本就随进程消亡）。这是有意取舍，不是持久化缺陷。
-- **Web 端一次性 Yolo 确认永不记忆**（round-16 评审补登记）：Web 桥面的
-  code-permission 偏好存取是显式 stub（`getCodePermissionPrefs`/
-  `confirmCodeYolo` 返回 null），`needsYoloConfirmation` 恒真——Web 端每次
-  进入 Yolo 都重弹确认（fail-closed 方向），确认持久化只在桌面命令路径存在。
+- **Web 端一次性 Yolo 确认只覆盖显式芯片切换**（round-16 评审补登记；
+  round-32 勘误定界）：逐次重弹确认覆盖的是**显式芯片进入 Yolo** 的路径——
+  Web 桥面的 code-permission 偏好存取是显式 stub（`getCodePermissionPrefs`/
+  `confirmCodeYolo` 返回 null），`needsYoloConfirmation` 对显式切换恒真
+  （fail-closed 方向），确认持久化只在桌面命令路径存在。但**持久化的车道全局
+  默认**（`mode_defaults.work` / code 车道 `last_mode` = yolo，经
+  `set_mode_default`、CLI 或手改 settings.json 写入）在会话物化时直接套用、
+  **不经确认对话框**——桌面与 Web 一致，物化路径的 Yolo 落地不重弹该门。
 - **`ask_on_guardrail_default` 无产品 UI**（round-16 评审补登记）：全局
   「守卫命中时询问」默认只能经 settings.json 手改或 IPC 设置（getter/setter
   命令与播种/镜像机制完整并有钉）；前端没有任何入口读写该偏好。
@@ -483,8 +492,11 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   源注同步改述）。
 - **Yolo Floor 的质量边界（「分族按语义」主张的三处已知偏差，方向均保守）**：
   Floor = never-sensible 底线族（3,555 条），Sensitive 面只在 Full 出现。
-  三处如实标注：(a) sudo 命令词块是 Sensitive 面——未武装 Yolo 静默放行
-  未枚举的 `sudo` 特权变更（Auto/Plan 对同操作 typed-Deny；枚举了危险载荷
+  缺敏感族与武装正交，武装与否一律缺席（见第 5 节）：武装只转换存在的面，
+  Floor 从未有过敏感面可转。
+  三处如实标注：(a) sudo 命令词块是 Sensitive 面——Yolo 静默放行
+  未枚举的 `sudo` 特权变更（武装与否同；Auto/Plan 对同操作 typed-Deny；
+  枚举了危险载荷
   的仍被 Floor 的 rm 族覆盖）；(b) 逐凭据直传面（`curl -T ~/.ssh/id_rsa …`）
   在 Yolo 下缺席而非弹卡——只有批量外传根（整目录/整用户主目录）留在 Floor；
   (c) Windows `win_native_rules` 家族（Floor 内 2,796 条）含逐凭据销毁
@@ -495,7 +507,7 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   （3,555/8,763）一起翻。(d) round-16 评审补登记：persistence/injection
   词汇按整族 shed（`reg add …\currentversion\run`、`sc create`、
   `schtasks /create` 等零日常 FP 的持久化拼写，与 `crontab -e` 等高 FP
-  拼写同族进 Sensitive）——未武装 Yolo 静默放行注册表 Run 键等持久化
+  拼写同族进 Sensitive）——Yolo（武装与否同）静默放行注册表 Run 键等持久化
   写；逐凭据销毁清单携带的非凭据敏感绝对路径（`rm /etc/shadow`、
   `/etc/sudoers*`）同样按族 shed。与 (a)-(c) 同一粒度问题、同一保守
   方向，拆族同为产品决策。
@@ -506,4 +518,12 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   规则集恒 Full（`for_engine_lane`），产生的任何 ApprovalRequired 仍由
   forwarder 的无人值守臂确定性应答（绝不弹卡），下一次 scheduled send
   重新按 profile 推导姿态。残余仅限窗口内的常驻姿态，方向永不滑向弹卡。
+- **`decide_approval` 的姿态残余**（round-32 补登记）：`decide_approval` 信任
+  已升起的卡，决策时不复核会话当期姿态——切到 Plan 之前升起的卡仍可被放行
+  （引擎侧 Plan 只读归一是兜底；方向上至多多一次静默授予）。已在命令处登记。
+- **多智能体 Web 承诺的作用域**（round-32 补登记）：多智能体执行 denylist
+  覆盖的是执行与姿态面；上下文变更命令（`equip_persona`/`update_persona`/
+  `create_persona`/`session_mount_collection`/`session_add_mounted_collection`/
+  `save_session_persona_events`）对多智能体会话上的已配对客户端仍可 Web
+  写入，不在该承诺的作用域内（与 aux carve-out 同类，是有意登记的取舍）。
 
