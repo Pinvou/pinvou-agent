@@ -517,7 +517,18 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     const displayText = item.displayText == null
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
-    notify();
+    // Entry-arm throw safety (symmetric with the web lane's round-32 fix;
+    // review JensenChen28 2026-11-28 P2): notify() deliberately rethrows
+    // subscriber exceptions, and with the head already shifted a throw here
+    // would escape flushQueued with the item unreferenced — never
+    // dispatched, never re-queued, silently lost. Park it back at the FIFO
+    // head and rethrow; the next flush trigger re-runs from a full queue.
+    try {
+      notify();
+    } catch (error) {
+      q.unshift(item);
+      throw error;
+    }
     doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         const retryQueue = sid === state.activeSessionId
