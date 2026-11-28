@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet, currentDraftModeState });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet, currentDraftModeState, runSyncOnSession, applyAuthoritativeModeState });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -670,26 +670,37 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             // during the awaits above the user may have switched away, and
             // running the mode command against the current active session would
             // target the wrong one.
+            const stagedAttempt = pinvouSharedtauriSessions().beginModeSwitchAttempt(meta.id);
+            let stagedPreMode = null;
+            runSyncOnSession(meta.id, function () { stagedPreMode = state.modeState && state.modeState.mode; });
             try {
               const stagedOutcome = stagedDraftMode === "plan"
                 ? await invoke("set_plan_mode_next", { sessionId: meta.id })
                 : stagedDraftMode === "yolo"
                 ? await invoke("exit_plan_to_yolo", { sessionId: meta.id })
                 : await invoke("set_session_mode", { sessionId: meta.id, mode: "auto" });
-              // Unwrap the switch outcome (review round-r8 follow-up P2):
-              // the envelope must not feed applyAuthoritativeModeState
-              // directly, and a persist failure surfaces the unsaved note.
-              const stagedModeState = stagedOutcome && stagedOutcome.state ? stagedOutcome.state : stagedOutcome;
-              applyAuthoritativeModeState(meta.id, stagedModeState);
-              if (stagedOutcome && stagedOutcome.persist_error) {
-                runSyncOnSession(meta.id, function () {
-                  addSystemItem(bt("modePersistFailed") + stagedOutcome.persist_error);
-                });
+              // Settlement acceptance BEFORE any projection or notice: a
+              // stale success — a newer switch already settled on this
+              // freshly created session — must not write the staged mode
+              // back over it.
+              if (pinvouSharedtauriSessions().settleModeSwitchSuccess(meta.id, stagedAttempt)) {
+                // Unwrap the switch outcome (review round-r8 follow-up P2):
+                // the envelope must not feed applyAuthoritativeModeState
+                // directly, and a persist failure surfaces the unsaved note.
+                const stagedModeState = stagedOutcome && stagedOutcome.state ? stagedOutcome.state : stagedOutcome;
+                applyAuthoritativeModeState(meta.id, stagedModeState);
+                if (stagedOutcome && stagedOutcome.persist_error) {
+                  runSyncOnSession(meta.id, function () {
+                    addSystemItem(bt("modePersistFailed") + stagedOutcome.persist_error);
+                  });
+                }
               }
             } catch (stagedModeError) {
-              runSyncOnSession(meta.id, function () {
-                addSystemItem(bt("switchModeFailed") + stagedModeError);
-              });
+              // Convergence (review P2, receipt-equals-effective): the same
+              // failed-hot-sync shape as every other switch surface — re-read
+              // the authoritative state so the receipt tracks the effective
+              // mode and mark the session for the edit-resend guard.
+              await pinvouSharedtauriSessions().handleModeSwitchFailure(meta.id, stagedModeError, bt("switchModeFailed"), stagedAttempt, stagedPreMode, stagedDraftMode);
             }
           }
         } else {
@@ -705,21 +716,32 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
         // Use the meta.id captured at materialization, not activeSessionId: the user
         // may have switched away during the awaits above, and a mode command against the current active session would target the wrong object.
         if (["plan", "yolo", "auto"].includes(laneDefault)) {
+          const laneAttempt = pinvouSharedtauriSessions().beginModeSwitchAttempt(meta.id);
+          let lanePreMode = null;
+          runSyncOnSession(meta.id, function () { lanePreMode = state.modeState && state.modeState.mode; });
           try {
             const laneOutcome = laneDefault === "plan"
               ? await invoke("set_plan_mode_next", { sessionId: meta.id })
               : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
-            const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
-            applyAuthoritativeModeState(meta.id, laneModeState);
-            if (laneOutcome && laneOutcome.persist_error) {
-              runSyncOnSession(meta.id, function () {
-                addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
-              });
+            // Settlement acceptance BEFORE any projection or notice (review
+            // P2): a stale success — a newer switch already settled on this
+            // freshly created session — must not write the default back
+            // over it.
+            if (pinvouSharedtauriSessions().settleModeSwitchSuccess(meta.id, laneAttempt)) {
+              const laneModeState = laneOutcome && laneOutcome.state ? laneOutcome.state : laneOutcome;
+              applyAuthoritativeModeState(meta.id, laneModeState);
+              if (laneOutcome && laneOutcome.persist_error) {
+                runSyncOnSession(meta.id, function () {
+                  addSystemItem(bt("modePersistFailed") + laneOutcome.persist_error);
+                });
+              }
             }
           } catch (laneModeError) {
-            runSyncOnSession(meta.id, function () {
-              addSystemItem(bt("switchModeFailed") + laneModeError);
-            });
+            // Convergence (review P2, receipt-equals-effective): the same
+            // failed-hot-sync shape as every other switch surface — re-read
+            // the authoritative state so the receipt tracks the effective
+            // mode and mark the session for the edit-resend guard.
+            await pinvouSharedtauriSessions().handleModeSwitchFailure(meta.id, laneModeError, bt("switchModeFailed"), laneAttempt, lanePreMode, laneDefault);
           }
         }
         }

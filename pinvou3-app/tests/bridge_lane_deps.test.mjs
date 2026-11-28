@@ -231,7 +231,7 @@ const EXPECTED_SURFACE = {
   // setPlanModeNext; no cluster literal gains a dep — count only.
   // bumpModeSyncAttempt (review P2 ordering fence) is a base-local helper
   // over the same closure Maps — pure, count only.
-  sharedFnCount: 334,
+  sharedFnCount: 335,
   // Rebase reconciliation (+9 vs the pre-rebase pin): main moved
   // discardPlan / exitPlanToYolo into the shared base (lane shells), and
   // the shared exitPlanToYolo now carries the tri-mode settlement
@@ -467,6 +467,10 @@ const EXPECTED_CLUSTER_KEYS = {
     'MAX_EVICTED_SESSION_DRAFT_CHARS',
     'MAX_SCHEDULED_RUN_SESSION_OWNERS',
     'addSystemItem',
+    // round-16 review: the materialization arms now run the shared switch
+    // machinery (attempt/settlement fences + failure convergence), which
+    // needs the lane's applyAuthoritativeModeState/runSyncOnSession.
+    'applyAuthoritativeModeState',
     'basename',
     'bt',
     // round-4: shared leaveSessionView now overrides the fresh-buffer Yolo
@@ -497,6 +501,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'reportSidecarReadFailure',
     'restoreEvictedSessionDraft',
     'restoreSteeredWorkingSet',
+    'runSyncOnSession',
     'saveSteeredWorkingSet',
     'scheduledRunOpenInFlight',
     'scheduledRunOwnerTouchClock',

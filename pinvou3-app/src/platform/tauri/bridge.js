@@ -1065,6 +1065,16 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
     // the reference cannot be passed in directly — a lazy-lookup hook).
     onSessionBufferPurged: function (id, reason) {
       delete modeStateEpochs[id];
+      // The interaction cluster's mode-sync side tables (switch attempts,
+      // settlement fences, unresolved-edit guards) are per-closure state
+      // with no applyDeletedSession caller of their own; the shared base
+      // already sweeps its own tables inside applyDeletedSession, so this
+      // hook covers the remaining cluster (interactionFeature is declared
+      // later in this closure — same lazy-lookup shape as modeStateEpochs,
+      // and purges only run after setup).
+      if (interactionFeature && interactionFeature.purgeModeSyncStateForSession) {
+        interactionFeature.purgeModeSyncStateForSession(id);
+      }
       // The localStorage cache of scene events is the only recovery copy
       // when the sidecar save fails or we are offline
       // (savePinvouSceneEventsForSession intentionally swallows backend

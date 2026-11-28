@@ -756,6 +756,12 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       runOnSession,
       addSystemItemFor,
       patchItemByIdFor,
+      // Deletion sweep forwarder (round-16 review): the host's buffer-purge
+      // hook drops this cluster's per-sid mode-sync side tables (switch
+      // attempts, settlement fences, unresolved-edit guards) for the
+      // deleted/evicted id — the interaction cluster has no
+      // applyDeletedSession caller of its own.
+      purgeModeSyncStateForSession: function (id) { return pinvouSharedtauriInteraction().purgeModeSyncStateForSession(id); },
       startThinking,
       thinkingTool,
       thinkingIdle,
