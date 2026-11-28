@@ -11323,6 +11323,12 @@ fn durable_mode_entry_falls_back_to_boot_cache_while_quarantined() {
     );
     // 缓存 miss 的 None 仍是合法读（不得反过来编造条目）。
     assert_eq!(store.durable_mode_entry("never-cached"), None);
+    // 隔离旗是进程级粘滞态（round-16 评审）：另一条测试在结束时显式复位，
+    // 这里同样必须复位——旗留位会让后续测试的「确认缺席」读全部翻成回退缓存
+    // （aux confirmed-absent 探针、durable None 断言），且本测试自己的隔离断言
+    // 在旗被并行/先行测试置位时可以空洞通过。
+    crate::features::sessions::sidecars::SHARED_MODE_MAP_QUARANTINED
+        .store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// `SessionStore::delete` runs under `scheduled_mutation` (the round-12

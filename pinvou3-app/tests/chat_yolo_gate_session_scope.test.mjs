@@ -293,6 +293,41 @@ function extractFunction(source, name) {
   assert.equal(notes.length, 1, 'the durability note must surface');
   assert.ok(notes[0].includes('modePersistFailed') && notes[0].includes('persist boom'), 'the note carries the copy key and the persist cause');
 }
+{
+  // Success encoding of the same envelope (round-16 review): `{state, …}`
+  // WITHOUT persist_error is the clean-success shape — the inner state
+  // applies and NO durability note fires. Every runtime fixture above this
+  // block drives the error half or the legacy bare shape, so the
+  // absent-persist_error arm (the PR's central wire contract on its happy
+  // path) was unpinned: an implementation that inverted the truthiness test
+  // (treating the absent field as a failure) would still pass the error
+  // fixture while flash-failing every clean switch.
+  const fnText = extractFunction(webBridge, 'setSessionMode');
+  const applied = [];
+  const notes = [];
+  const sandbox = {
+    state: { activeSessionId: 'session-a' },
+    invoke: async () => ({ state: { mode: 'yolo', askOnGuardrail: true, multiAgent: false } }),
+    applyAuthoritativeModeState: (sid, st) => applied.push({ sid, st }),
+    addSystemItemFor: (sid, text) => notes.push(text),
+    bt: key => key,
+    notify: () => {},
+    runSyncOnSession: (sid, fn) => fn(),
+    pinvouSharedweb: () => ({
+      beginModeSwitchAttempt: () => 1,
+      settleModeSwitchSuccess: () => true,
+      handleModeSwitchFailure: async () => {},
+    }),
+  };
+  vm.runInNewContext(`${fnText}\nsetSessionMode(undefined, 'yolo');`, sandbox);
+  await Promise.resolve();
+  await new Promise(resolve => {
+    setImmediate(resolve);
+  });
+  assert.equal(applied.length, 1, 'the clean envelope must apply exactly one authoritative state');
+  assert.equal(applied[0].st && applied[0].st.mode, 'yolo', 'the inner Yolo state applies');
+  assert.equal(notes.length, 0, 'an envelope without persist_error must NOT emit a durability note');
+}
 
 
 // The bridge layer must not retain any argument-less exitPlanToYolo call (void or await).

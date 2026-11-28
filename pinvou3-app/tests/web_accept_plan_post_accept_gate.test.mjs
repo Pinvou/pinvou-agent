@@ -169,3 +169,37 @@ test('web: 拒绝通告按 sid 去重（同一会话重复接受不刷屏）', a
   await assert.rejects(rt.interaction.acceptPlan('item-2', '# Plan', undefined, 'ticket-1'), () => true);
   assert.equal(blockedNoticeCount(rt.view()), 1, '同一会话的重复拒绝只落一条通告');
 });
+
+function postureNoticeCount(view) {
+  // 三语 posture-unknown 文案的特征词：en "approval posture" / ja "承認モード" / zh "审批档位"；
+  // 与 Auto 拒绝面（三语都含「Auto」）互斥，可作运行时判别。
+  return view.chatItems.filter(item => item.type === 'system'
+    && /审批档位|approval posture|承認モード/.test(String(item.text || ''))).length;
+}
+
+// 姿态门 fail-closed 的运行时回归（round-16 评审：此前只有源码形状 regex 钉，
+// 无端到端行为臂）——get_mode_state 两次拒绝（即时重试一次）必须拒收受理、
+// 不开 turn，且拒绝面是可重试的 posture-unknown 文案而非 Auto 拒绝。
+test('web: 姿态未知 fail-closed 拒收且可重试（get_mode_state 两次拒绝）', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  let modeStateCalls = 0;
+  rt.setHandler('get_mode_state', () => { modeStateCalls += 1; return Promise.reject(new Error('bridge down')); });
+  let acceptPlanInvoked = false;
+  rt.setHandler('accept_plan', () => { acceptPlanInvoked = true; return Promise.resolve({}); });
+  await assert.rejects(
+    rt.interaction.acceptPlan('item-1', '# Plan', undefined, 'ticket-1'),
+    error => {
+      const msg = String(error && error.message);
+      return !/Auto/.test(msg) && /审批档位|approval posture|承認モード/.test(msg);
+    },
+    '姿态未知必须走可重试拒绝面（posture-unknown 文案，非 Auto 拒绝）'
+  );
+  assert.equal(modeStateCalls, 2, 'gate must consult get_mode_state twice: the immediate retry before refusing');
+  assert.equal(acceptPlanInvoked, false, '姿态未知不得受理：accept_plan 不被调用');
+  assert.equal(postureNoticeCount(rt.view()), 1, '拒绝必须落一条 posture-unknown 通告');
+  // 可重试拒绝不复用 Auto 通告去重：第二次尝试必须再次完整拒绝并重说通告。
+  await assert.rejects(rt.interaction.acceptPlan('item-2', '# Plan', undefined, 'ticket-1'), () => true);
+  assert.equal(modeStateCalls, 4, 'the second attempt retries get_mode_state again');
+  assert.equal(postureNoticeCount(rt.view()), 2, 'retryable refusals repeat their notice (no Auto-style dedup)');
+});

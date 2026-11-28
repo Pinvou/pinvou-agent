@@ -213,10 +213,17 @@ test('web: set_mode_default 持久化失败 → setDraftMode 保持权威态并�
   // 未绑定 work 草稿的启动基线是解析后的默认档（当前为 auto）；target 取
   // plan，失败与成功才能区分。
   const before = rt.view().modeState.mode;
+  const beforeDefaults = JSON.stringify(rt.view().modeDefaults);
   await rt.flat.setDraftMode('plan');
   const view = rt.view();
   assert.equal(before, 'auto', 'precondition: boot draft baseline is the resolved default');
   assert.equal(view.modeState.mode, 'auto', '失败保持权威态：草稿芯片不画 target（plan）');
+  // 镜像断言与 tauri 孪生对齐（round-16 评审）：失败不得把（旧/空）默认当
+  // 成功收下——web 侧回归若在拒绝后仍提交 stale 默认，旧断言（chip + 通告）
+  // 不会红。tauri 孪生的 pendingDraftMode 暂存断言在此无对应物：Web 车道
+  // 没有 staged-draft 暂存态（物化直接消费 modeDefaults）。
+  assert.equal(JSON.stringify(view.modeDefaults), beforeDefaults,
+    '保存失败不得把（旧/空）默认当成功收下：modeDefaults 不变');
   const sys = view.chatItems.filter(item => item.type === 'system');
   assert.ok(sys.some(item => String(item.text).includes('切') || String(item.text).includes('Failed to switch')),
     '失败必须落显式错误通告（三语码表 switchModeFailed）');
