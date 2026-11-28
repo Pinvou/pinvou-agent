@@ -146,9 +146,18 @@ async fn reconcile_pending_rewind(
         log::warn!(
             "[pinvou3][checkpoints] abandonment sentinel present: clearing the refused rewind without replay sid={session_id}"
         );
-        checkpoints::clear_pending_rewind(ledger);
-        let _ = std::fs::remove_file(checkpoints::pending_rewind_abandoned_sentinel_path(ledger));
-        return true;
+        // r53 P2 跟进（评审）：哨兵是放弃证据——只在暂记清理真实成功后才
+        // 能移除它。清理仍失败（锁不可用）时保留哨兵并阻断本轮快照
+        // （fail-closed）：证据在，重放永不发生；下一轮发送重试清理。
+        if checkpoints::try_clear_pending_rewind(ledger) {
+            let _ =
+                std::fs::remove_file(checkpoints::pending_rewind_abandoned_sentinel_path(ledger));
+            return true;
+        }
+        log::warn!(
+            "[pinvou3][checkpoints] abandonment sentinel kept (pending cleanup still failing), blocking this turn's snapshot sid={session_id}"
+        );
+        return false;
     }
     let pending = match checkpoints::live_pending_rewind(ledger) {
         Ok(Some(pending)) => pending,
