@@ -69,12 +69,12 @@
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-11-24）
+## 0. 当前状态（2026-11-28）
 
-- 当前公开维护头与父仓 gitlink：`cc2adf8ef927fff072e9493734a0a32f3a044996`（2026-11-24）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。2026-11-24 批合入 #127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/#160/#164/#165/#166/#167/#168/#169/#170/#171 共 21 个提交，其中 T11 的 Moonshot 面（#143）与 provider 面（#144/#145/#146）随父仓 close-out re-pin 一并落地，父仓 gitlink 随之跟随（见 §3 表首）。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 121 个提交，r1 `1fafee7e2` 之上 106 个；118 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`44142616aa4aeeb1332c1f4496ea502baf880a29`（2026-11-28）。在 2026-11-24 基线 `cc2adf8ef` 上消费 7 个带 DCO 签署的公开维护提交（[CodeWhale #172](https://github.com/Pinvou/CodeWhale/pull/172), [#173](https://github.com/Pinvou/CodeWhale/pull/173), [#174](https://github.com/Pinvou/CodeWhale/pull/174), [#175](https://github.com/Pinvou/CodeWhale/pull/175), [#177](https://github.com/Pinvou/CodeWhale/pull/177), [#178](https://github.com/Pinvou/CodeWhale/pull/178), [#180](https://github.com/Pinvou/CodeWhale/pull/180)）。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 128 个提交，r1 `1fafee7e2` 之上 113 个；125 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），2026-11-24 批的 21 个提交全部带签署，未签名集合不变。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：583 files, +150708/-54594，净增 96114；384 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：585 files, +151334/-54626，净增 96708；384 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
