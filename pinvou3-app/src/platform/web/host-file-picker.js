@@ -20,6 +20,7 @@
     currentFolder: function (path) { return "当前文件夹：" + path; },
     selectedCount: function (n) { return "已选择 " + n + " 项"; },
     thisComputer: "此电脑", home: "用户目录", emptyFolder: "此目录中没有可选内容",
+    listingTruncated: "目录过大，仅显示部分条目",
     loadFailed: function (err) { return "读取失败：" + err; },
     workspaceNotAuthorized: "请先在桌面端允许远程访问本机目录",
     listingFailed: "读取桌面端文件列表失败，请重试。",
@@ -246,6 +247,12 @@
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = !parentPath && rootEntries.length === 0;
         renderEntries(listing && Array.isArray(listing.entries) ? [...listing.entries] : [], false);
+        // r5 review: the backend truncation marker (file_access.rs
+        // `truncated`, set past the 5000-entry cap) had no consumer — an
+        // oversized directory rendered as a plain, unexplained 5000-row list.
+        if (listing && listing.truncated) {
+          body.append(element("div", "pinvou-host-picker-empty", labels.listingTruncated));
+        }
       }
 
       // Composes the final failure text for both the listing and the

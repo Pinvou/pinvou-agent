@@ -426,7 +426,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadCacheFull: "⚠️ Upload buffer is full: a large attachment is still uploading. Wait for it to finish, then retry",
       deviceParsedTooLarge: "⚠️ The parsed attachment exceeds the 32 MB remote-desktop cache limit and cannot be added",
       deviceCacheFull: "⚠️ Too many attachments are cached on the remote desktop. Remove one, then retry",
-      archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
+      archiveTooManyEntries: "the archive contains more than 200 entries and cannot be attached",
       archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
       archiveUnsafeEntry: "the archive contains unsafe links or paths and cannot be attached",
       deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
@@ -559,7 +559,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadCacheFull: "⚠️ アップロードバッファがいっぱいです：別の大きな添付ファイルをアップロード中です。完了してから再試行してください",
       deviceParsedTooLarge: "⚠️ 解析後の添付ファイルがリモートデスクトップのキャッシュ上限 32 MB を超えているため追加できません",
       deviceCacheFull: "⚠️ リモートデスクトップの添付キャッシュがいっぱいです。1つ削除してから再試行してください",
-      archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
+      archiveTooManyEntries: "アーカイブに 200 個を超える項目が含まれているため添付できません",
       archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
       archiveUnsafeEntry: "アーカイブに安全でないリンクまたはパスが含まれているため添付できません",
       deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
@@ -692,7 +692,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadCacheFull: "⚠️ 上传缓存已满：另一批大附件还在上传，请等待其完成后再试",
       deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB，无法添加",
       deviceCacheFull: "⚠️ 远程桌面附件缓存已满，请移除一个附件后重试",
-      archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
+      archiveTooManyEntries: "压缩包包含超过 200 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
       deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
@@ -5433,6 +5433,11 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       addSystemItem(limitError ? limitError.message : bt("pasteImageFailed") + e);
     }
   }
+  // Frontend-side paste pre-check rejections surface on the same inline
+  // system-item lane addPasteImage uses for its own rejections. The web paste
+  // handler is desktop-only today; the method still exists on the declared
+  // surface so shared feature code can call it unconditionally.
+  function notifyPasteRejected(text) { addSystemItem(text); }
   function releaseAttachmentOnDesktop(attachment) {
     // Accepts a composer attachment ({ result, uploadId }) or a bare
     // WebAttachmentSummary ({ handle }) carried by a queued message.
@@ -6409,6 +6414,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     // 附件
     addAttachmentByPath,
     addPasteImage,
+    notifyPasteRejected,
     removeAttachment,
     pickAndAttach,
     uploadDeviceFiles,

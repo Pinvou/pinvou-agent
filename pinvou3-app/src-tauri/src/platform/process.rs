@@ -41,6 +41,13 @@ pub(crate) const CAPTURE_TIMEOUT_ANCHOR: &str = " timed out after ";
 /// call's capture bound). Same producer/consumer contract as
 /// [`CAPTURE_TIMEOUT_ANCHOR`].
 pub(crate) const CAPTURE_OVERFLOW_ANCHOR: &str = "output exceeded";
+/// The spawn-failure clause this module's fixed error shape opens with
+/// (`spawn {program} failed: {error}`). Same producer/consumer contract as
+/// [`CAPTURE_TIMEOUT_ANCHOR`]: the pip lane classifies "python3 missing"
+/// by this prefix (an unbounded or reworded spawn message would silently
+/// reroute timeout kills into the missing-Python arm), so the prefix lives
+/// here as a shared constant instead of a string literal on both sides.
+pub(crate) const SPAWN_FAILURE_PREFIX: &str = "spawn ";
 
 pub(crate) struct HiddenCommand;
 
@@ -299,7 +306,7 @@ fn output_with_timeout_inner(
         .stderr(Stdio::from(stderr_target));
     let mut child = command
         .spawn()
-        .map_err(|error| format!("spawn {program} failed: {error}"))?;
+        .map_err(|error| format!("{SPAWN_FAILURE_PREFIX}{program} failed: {error}"))?;
 
     let started = Instant::now();
     let status = loop {
@@ -846,6 +853,26 @@ mod tests {
         assert!(
             started.elapsed() < REAP_GRACE,
             "reaping an exited child must not wait out the grace deadline"
+        );
+    }
+
+    /// r10 review: the pip lane classifies "python3 missing" by the
+    /// spawn-failure prefix, so the error shape this module emits for a
+    /// failed `Command::spawn` must keep opening with
+    /// [`SPAWN_FAILURE_PREFIX`] — a reword here would silently reroute
+    /// every spawn failure into the consumer's missing-Python arm. Runs
+    /// the real helper against a nonexistent program; no process is
+    /// spawned, so this is deterministic on every platform.
+    #[test]
+    fn spawn_failure_error_opens_with_the_shared_prefix() {
+        let error = output_with_timeout_and_kill_tree(
+            Command::new("pinvou3-nonexistent-program-for-spawn-prefix-pin"),
+            Duration::from_secs(10),
+        )
+        .expect_err("a nonexistent program must fail to spawn");
+        assert!(
+            error.starts_with(SPAWN_FAILURE_PREFIX),
+            "spawn-failure errors must open with SPAWN_FAILURE_PREFIX: {error:?}"
         );
     }
 

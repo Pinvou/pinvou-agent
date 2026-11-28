@@ -1303,6 +1303,96 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
     assert_eq!(outcome.status(), TaskStatus::Timeout);
 }
 
+/// The `None`-deadline lane (GAIA) keeps the ENGINE TURN unbounded (the test
+/// above pins that), but the harness's LOCAL phases must not hang the whole
+/// `benchmark run` until the operator kills it — the gap
+/// `docs/gaia-benchmark.md` documents. Each local phase (attachment
+/// resolution, prepare, resolve_output, close) gets its own 600 s fallback
+/// cap and fails closed into the same terminal `task_timeout` states the
+/// declared-deadline path produces. Virtual time (`start_paused`) fires the
+/// caps instantly.
+#[tokio::test(start_paused = true)]
+async fn unbounded_deadline_still_bounds_wedged_local_phases() {
+    // Outer regression guard per leg: under paused time the inner 600s
+    // fallback fires first in the correct case (the wrapper never trips),
+    // and if a bound ever regresses to a bare unbounded future the wrapper
+    // turns the regression into a clean assert instead of a hung test
+    // binary with zero diagnostics (r5 review).
+    const REGRESSION_GUARD: std::time::Duration = std::time::Duration::from_secs(6_600);
+    for (name, behavior, expect_run_task_err) in [
+        ("prepare", BackendBehavior::PendingPrepare, true),
+        ("output", BackendBehavior::PendingResolveOutput, false),
+        ("close", BackendBehavior::PendingClose, false),
+    ] {
+        let backend = Arc::new(MockBackend::with_behavior(behavior));
+        let runner = NativeAgentRunner::new(backend);
+        let result = tokio::time::timeout(
+            REGRESSION_GUARD,
+            runner.run_task(
+                &BenchmarkTask::new(
+                    format!("unbounded-{name}"),
+                    None,
+                    ExecutionRequest::native_turn(
+                        PrivateInputHandle::new("private"),
+                        vec![],
+                        None,
+                        ToolPolicyId::new("smoke/v1"),
+                        OutputContract::new("text/v1"),
+                    ),
+                ),
+                &RunContext::new(format!("unbounded-{name}")),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{name}: the 600s local-phase cap regressed to an unbounded future")
+        });
+        if expect_run_task_err {
+            let error = result.expect_err("a wedged prepare must fail closed");
+            assert_eq!(error.code(), "task_timeout", "{name}");
+        } else {
+            let outcome = result.expect("a wedged local phase must fail closed, not hang the run");
+            assert_eq!(outcome.status(), TaskStatus::Timeout, "{name}");
+            assert_eq!(
+                outcome.failure_reason(),
+                Some(benchmark_core::SafeFailureReason::TaskTimeout),
+                "{name}"
+            );
+        }
+    }
+    // Fourth local phase on the same None-deadline lane: attachment
+    // resolution (per-attachment fresh cap — docs/gaia-benchmark.md's
+    // "附件解析按附件逐个计 600 秒"). The resolver's resolve_attachment
+    // pends forever; virtual time fires the fallback cap instantly and the
+    // run must fail closed like the other wedged phases.
+    let backend = Arc::new(MockBackend::default());
+    let runner =
+        NativeAgentRunner::with_private_inputs(backend, Arc::new(PendingAttachmentResolver));
+    let result = tokio::time::timeout(
+        REGRESSION_GUARD,
+        runner.run_task(
+            &BenchmarkTask::new(
+                "unbounded-attachment",
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![AttachmentHandle::new("attachment")],
+                    None,
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+            ),
+            &RunContext::new("unbounded-attachment"),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!("attachment: the 600s local-phase cap regressed to an unbounded future")
+    });
+    let error = result.expect_err("a wedged attachment resolution must fail closed");
+    assert_eq!(error.code(), "task_timeout");
+}
+
 /// Minimal adapter so `resume_adapter`'s manifest gates can be exercised end
 /// to end. `verify_dataset` reports the descriptor's own revision so the
 /// dataset check never fires before the manifest gates under test.

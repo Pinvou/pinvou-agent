@@ -4438,8 +4438,9 @@ fn ima_connect(
 /// Mirror of `ima.rs::validate_credentials` + `request_ima`: one POST to the
 /// allowlisted `openapi/check_skill_update` path; `code == 0` means the
 /// credentials are accepted.
-/// Response cap mirroring `ima.rs` (`MAX_RESPONSE_BYTES`).
-const IMA_MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+/// Response cap mirroring `ima.rs` (`MAX_RESPONSE_BYTES`, 16 MiB since the
+/// GUI side's r2 raise — the mirror contract these comments claim must track it).
+const IMA_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliError> {
     let response = reqwest::blocking::Client::builder()
@@ -4467,7 +4468,7 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
             response.status()
         )));
     }
-    // Mirror the GUI's 1 MiB response cap: a hostile or broken server must
+    // Mirror the GUI's 16 MiB response cap: a hostile or broken server must
     // not be able to balloon the CLI's memory.
     let mut bytes = Vec::new();
     response
@@ -4475,7 +4476,10 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
         .read_to_end(&mut bytes)
         .map_err(|_| CliError::failed("cannot read the ima response"))?;
     if bytes.len() as u64 > IMA_MAX_RESPONSE_BYTES {
-        return Err(CliError::failed("ima response exceeds the 1 MiB cap"));
+        return Err(CliError::failed(format!(
+            "ima response exceeds the {} MiB cap",
+            IMA_MAX_RESPONSE_BYTES / (1024 * 1024)
+        )));
     }
     let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| CliError::failed("ima response is not valid JSON"))?;
@@ -4618,6 +4622,15 @@ mod tests {
     use super::*;
     use crate::ExitCode;
     use std::ffi::OsString;
+
+    #[test]
+    fn ima_response_cap_stays_at_16mib() {
+        // Mutation tripwire for the `ima.rs` mirror: the two constants live in
+        // crates that cannot import each other's `pub(crate)` const, so this
+        // pins the shipped value — the exact desync class this mirror already
+        // hit once (1 MiB vs 16 MiB) (r5 review).
+        assert_eq!(IMA_MAX_RESPONSE_BYTES, 16 * 1024 * 1024);
+    }
 
     /// Unique temp root for this process: `<label>-<pid>-<nanos>` under the
     /// system temp dir. Path construction only — callers keep their own

@@ -198,7 +198,7 @@ export const dictZh = {
         remoteKbDesc: '在自己的设备上创建，或加入团队已有的共享知识库。', remoteKbRefresh: '刷新', remoteKbConnectTitle: '加入共享知识库',  remoteKbDeviceName: '输入姓名', remoteKbConnect: '连接', remoteKbConnected: '已加入共享知识库', remoteKbServers: '共享知识库', remoteKbNoServers: '还没有共享知识库', remoteKbReady: '可用', remoteKbNotReady: '检索不可用', remoteKbOffline: '离线', remoteKbManage: '可管理', remoteKbReadOnly: '只读',  remoteKbShowTrash: '显示回收站', remoteKbDisconnect: '断开', remoteKbRemoveConfirm: '断开后将移除本机连接和所有对话挂载，确定继续吗？', remoteKbCollections: '共享知识集', remoteKbCollectionName: '新知识集名称', remoteKbCreate: '创建', remoteKbCollectionCreated: '知识集已创建', remoteKbNoCollections: '暂无知识集', remoteKbDocuments: '份文档', remoteKbChunks: '片段', remoteKbRestore: '恢复', remoteKbTrash: '移入回收站', remoteKbTrashConfirm: '将该知识集移入回收站？文档会保留，可恢复。', remoteKbFiles: '文档', remoteKbUpload: '上传文件',  remoteKbNoDocuments: '该知识集暂无文档', remoteKbStatusPending: '处理中', remoteKbStatusReady: '可用', remoteKbStatusFailed: '处理失败', remoteKbStatusUnknown: '状态未知', remoteKbDownload: '下载原文件', remoteKbDownloaded: '文件已下载', remoteKbTestSearch: '测试检索', remoteKbSearchPlaceholder: '输入问题或关键词', remoteKbSearch: '检索', remoteKbDesktopOnly: '共享知识库需要 PINVOU 桌面端。',
         remoteKbAddServer: '加入共享知识库',  remoteKbNewCollection: '新建知识集', remoteKbCancel: '取消', remoteKbClose: '关闭', remoteKbCollapse: '收起', remoteKbDone: '完成', remoteKbUploading: '处理中…', remoteKbUploadTitle: '上传文档', remoteKbStartUpload: '上传', remoteKbRetryFailed: '重试失败项', remoteKbUploadingFile: '上传中', remoteKbUploadDone: '已完成', remoteKbUploadPendingIndex: '处理中', remoteKbUploadStillIndexing: '仍在处理', remoteKbUploadIndexFailed: '处理失败', remoteKbUploadFailed: '上传失败', remoteKbUploadSuccess: '{count} 个文档已上传',  remoteKbUploadRefreshFailed: '列表刷新失败：{error}', remoteKbFileName: '名称', remoteKbStatus: '状态', remoteKbSize: '大小',
         remoteKbReplace: '更新文档', remoteKbReplaced: '文档已更新', remoteKbLoadMoreDocuments: '加载更多', remoteKbLoadingMoreDocuments: '正在加载…',
-        remoteKbNearby: '附近的共享知识库', remoteKbDiscovering: '正在安全检测附近的共享知识库…', remoteKbNearbyEmpty: '暂未发现可连接的局域网知识库', remoteKbManualConnect: '手动连接', remoteKbVerify: '检测身份', remoteKbVerifyIdentityDesc: '请在共享知识库主机的“服务与维护”中核对身份码。只有完全一致时才申请加入。', remoteKbIdentityCode: '服务身份码', remoteKbConfirmIdentity: '身份码一致，申请加入', remoteKbBack: '返回', remoteKbLan: '局域网', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: '服务身份', remoteKbHostIdentityDesc: '新设备首次连接时，请在两台设备上核对这个身份码。', remoteKbPublishLocal: '发布本地知识集', remoteKbPublishDesc: '复制所选知识集及其源文档。发布后，本地与共享副本互不影响。', remoteKbPublishChoose: '选择本地知识集', remoteKbPublishContinue: '准备发布', remoteKbPublishEmpty: '这个本地知识集还没有文档', remoteKbNoLocalCollections: '还没有可发布的本地知识集',
+        remoteKbNearby: '附近的共享知识库', remoteKbDiscovering: '正在安全检测附近的共享知识库…', remoteKbNearbyEmpty: '暂未发现可连接的局域网知识库', remoteKbManualConnect: '手动连接', remoteKbVerify: '检测身份', remoteKbVerifyIdentityDesc: '请在共享知识库主机的“服务与维护”中核对身份码。只有完全一致时才申请加入。', remoteKbIdentityCode: '服务身份码', remoteKbConfirmIdentity: '身份码一致，申请加入', remoteKbBack: '返回', remoteKbLan: '局域网', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: '服务身份', remoteKbHostIdentityDesc: '新设备首次连接时，请在两台设备上核对这个身份码。', remoteKbPublishLocal: '发布本地知识集', remoteKbPublishDesc: '复制所选知识集及其源文档。发布后，本地与共享副本互不影响。', remoteKbPublishChoose: '选择本地知识集', remoteKbPublishContinue: '准备发布', remoteKbPublishEmpty: '这个本地知识集还没有文档', remoteKbPublishEnumerationCapped: '发布准备在读完 {count} 篇文档后触及枚举安全帽（上限 {cap}）；继续排队的队列将不完整，因此未准备任何内容。请拆分该知识集或上调上限后完整发布', remoteKbNoLocalCollections: '还没有可发布的本地知识集',
         remoteKbJoinSource: '共享链接或私网地址', remoteKbJoinSourcePlaceholder: '粘贴共享链接，或输入 192.168.1.20:3210', remoteKbJoinHint: '支持局域网地址、Tailscale 100.x 地址或 *.ts.net:端口；私网直连需先核对服务身份。',  remoteKbJoinRequested: '加入申请已发送', remoteKbPendingTitle: '等待加入确认', remoteKbPendingDesc: '所有者批准后会自动加入。', remoteKbCancelRequest: '取消申请', remoteKbOwner: '所有者', remoteKbGovern: '管理', remoteKbGovernTitle: '共享与成员', remoteKbPeopleTab: '成员与邀请', remoteKbServiceTab: '服务与维护',
         remoteKbShareTitle: '邀请团队加入', remoteKbShareDesc: '共享链接默认 24 小时有效，可供多人提交申请。', remoteKbCreateShare: '生成链接', remoteKbAutoApproveRead: '链接有效期内自动批准只读加入', remoteKbCopy: '复制链接', remoteKbLinkCopied: '共享链接已复制', remoteKbRecoveryCopied: '恢复码已复制', remoteKbCopyFailed: '复制失败，请手动选择并复制',  remoteKbRequestsTitle: '加入申请', remoteKbNoRequests: '暂无待处理申请', remoteKbApproveRead: '只读加入', remoteKbApproveManage: '管理加入', remoteKbReject: '拒绝', remoteKbStopShare: '停止', remoteKbAutoReadShort: '自动只读', remoteKbMembersTitle: '成员', remoteKbThisDevice: '本设备', remoteKbRevoked: '已撤销', remoteKbRestoreAccess: '恢复', remoteKbRevokeAccess: '撤销', remoteKbMemberAccess: '成员权限', remoteKbRemoveMember: '移除成员“{name}”', remoteKbRemoveMemberAction: '移除成员', remoteKbRemoveMemberConfirm: '永久移除成员“{name}”？',
         remoteKbPromoteOwner: '设为所有者', remoteKbDemoteOwner: '取消所有者', remoteKbPromoteOwnerConfirm: '将“{name}”设为所有者？该成员将可以管理共享与成员。', remoteKbDemoteOwnerConfirm: '取消“{name}”的所有者权限？', remoteKbModelTitle: '语义检索模型', remoteKbModelReady: '已可用', remoteKbModelMissing: '尚未下载', remoteKbModelDownloading: '正在下载，关闭 PINVOU 后仍会继续', remoteKbDownloadModel: '下载', remoteKbModelDownloadingAction: '下载中', remoteKbPermanentDelete: '永久删除', remoteKbPermanentDeleteConfirm: '永久删除“{name}”？此操作无法撤销。',
@@ -213,7 +213,7 @@ export const dictZh = {
   
  
         kbSearchPlaceholder: '试试：上周的 pdf、大于10mb的视频', 
- kbNoResults: '没有匹配的文件', kbScanningHint: '正在建立索引，已扫描',
+ kbNoResults: '没有匹配的文件', kbScanningHint: '正在建立索引，已扫描', kbFilesShowingFirst: n => `仅显示前 ${n} 个文件`, kbLoadMore: '加载更多',
         kbEmptyHint: '还没建立索引。扫描本机后即可秒搜全盘文件、找出重复。',
  
   
@@ -243,8 +243,11 @@ export const dictZh = {
         kbStReady: '已就绪', kbStIndexing: '解析中', kbStPending: '待索引',
         kbImportInterrupted: '发现未完成的导入任务', kbImportInterruptedHint: '应用上次退出前的进度已保存，可从未完成的文件或分块继续。', kbResumeImport: '继续导入', kbCancelImport: '取消任务',
         kbImportProgress: '文件进度', kbCurrentFile: '当前文件：', kbChunkProgress: '分块进度', kbFailedFiles: '失败文件', kbRetryFile: '重试', kbImportErrors: '失败', kbImportDoneWithErrors: '导入完成，部分文件失败',
+        kbImportDoneSkipped: '导入完成——部分文件被索引规则跳过', kbSkippedByExcluder: (n) => `${n} 个文件被索引规则跳过（不支持的类型；命中排除规则的文件夹不展开）`,
         kbResumeImportFailed: '继续导入失败', kbCancelImportFailed: '取消导入失败', kbRetryImportFailed: '重试文件失败',
         kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
+        kbDocsShowingFirst: n => `仅显示前 ${n} 个文档`,
+        kbLoadMoreDocs: '加载更多文档',
         kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveFailed: '移除失败', 
           kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
         kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式', kbEmbedUnsupported: '当前平台暂不支持本地向量嵌入模型',
@@ -456,7 +459,7 @@ export const dictZh = {
           quoteDuplicate:'这段内容已在引用列表中，不会重复添加',
         },
         uiHomeMode: { work:'工作', code:'代码', providerSettings:'Provider 配置' },
-        uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 50 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 50 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
+        uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:mb=>`文件超过 ${mb} MB 附件上限，无法添加`, archiveTooManyEntries:'压缩包包含超过 200 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
         uiCodex: codexZh,
         uiAcpProviders: acpProvidersZh,
         uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveToUngrouped:'移到未分组', alreadyUngrouped:'已在未分组', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话；文件夹 ${folder} 已加入项目（本对话的可访问范围不变）`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败' , manageFolders:'管理文件夹', newSessionHere:'新建会话', rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindUpToDate:'没有需要重绑定的会话', rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次`  , rebindCarryoverPending:n=>`${n} 个会话已迁移但其运行时尚未完成切换，请空闲后重试一次`, rebindRetryRemaining:'重试剩余会话', rebindFailedSessions:'失败会话', rebindInProgress:'另一个目录重绑定正在进行中' , rebindBusyHint:'这些会话仍在回合中，等待其空闲后重试', rebindToRoot:'目标不能是文件系统根目录，请改选普通文件夹', rebindToNested:'新目录与旧目录不能相互嵌套', rebindToUnusable:'目标文件夹不可用，请重新选择', rebindRootsConflict:'新目录会使项目自身的文件夹互相嵌套，请选择项目现有文件夹之外的目录' , rebindRootsPersist:'无法把重绑定结果写入磁盘，请检查磁盘空间与权限后重试' , rebindRuntimeStarting:'有智能体进程正在启动，暂时无法检查会话状态，请稍后重试' , rebindLegacyTableUnsynced:'未移动任何内容：会话记录同步失败。请将该目录设为可写后重试' , rebindLegacyTableCorrupt:'未移动任何内容：旧版会话记录表已损坏。请修复或删除该文件后重试', rebindRootsExpand:'展开全部失效文件夹', rebindRootsCollapse:'只保留第一个失效文件夹' },
@@ -867,6 +870,7 @@ currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选�
 thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
 loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
 listingFailed: '读取桌面端文件列表失败，请重试。',
+listingTruncated: '目录过大，仅显示部分条目',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。
@@ -1118,9 +1122,9 @@ dictZh.uiSessionWorkspace = {
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 
-dictZh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
 
 dictZh.uiSettingsDetail.memoryDeleteFailed = '记忆删除失败，请重试';
+dictZh.uiSettingsDetail.memorySaveFailed = '保存记忆档案失败，请重试';
 
 dictZh.uiSettingsDetail.memorySourceUnavailable = '部分记忆资料暂时不可用，已保留上次成功加载的内容';
 

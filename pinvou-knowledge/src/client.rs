@@ -1162,6 +1162,60 @@ mod tests {
     }
 
     #[test]
+    fn paged_listing_bounds_hold_shipped_values() {
+        // r13 review (as rebased onto #867's paged_all): the devices walk's
+        // bounds pins re-target onto the shared pager that now serves the
+        // devices and trash listings. A silent widening or removal of the
+        // over-window guard must fail a test, not just a reviewer. The walk
+        // itself is transport-bound (no test seam), so the load-bearing
+        // contract is the values; pin them literally next to their consumer.
+        assert_eq!(KnowledgeClient::PAGED_MAX_PAGES, 100);
+        assert_eq!(PAGE_LIMIT_CAP, 500);
+        assert_eq!(
+            KnowledgeClient::PAGED_MAX_PAGES * PAGE_LIMIT_CAP,
+            50_000,
+            "100 full pages × 500 = the listing ceiling that turns the pathological server into a loud error"
+        );
+    }
+
+    #[test]
+    fn paged_listing_source_keeps_the_bounded_page_walk() {
+        // r14 review (as rebased onto #867's paged_all): the value pins above
+        // hold the constants, but stripping the walk's own bound (the
+        // `full_pages >= PAGED_MAX_PAGES` trigger, the probe page that
+        // disambiguates a legal ceiling from a pager ignoring `offset`, or
+        // the short-page terminator) kept them green — the pin must also
+        // hold the walk shape that converts a hostile always-full-page
+        // server into the loud error. The slice is function-scoped so these
+        // assertion strings cannot self-match.
+        let source = include_str!("client.rs");
+        let start = source
+            .find("async fn paged_all<")
+            .expect("the shared paged walk must stay present");
+        let end = start
+            + source[start..]
+                .find("pub async fn trashed_collections(")
+                .expect("the paged walk slice must stay terminated");
+        let walk = source[start..end].replace([' ', '\n'], "");
+        assert!(
+            walk.contains("iffull_pages>=Self::PAGED_MAX_PAGES{"),
+            "the page walk must stay bounded by PAGED_MAX_PAGES"
+        );
+        assert!(
+            walk.contains("iffetched<PAGE_LIMIT_CAP{returnOk(all);"),
+            "the short-page terminator must stay wired"
+        );
+        assert!(
+            walk.contains("ifprobe.len()>=PAGE_LIMIT_CAP{"),
+            "the over-window probe page must stay wired"
+        );
+        assert!(
+            walk.contains("分页异常"),
+            "the over-cap outcome must stay the loud listing error"
+        );
+    }
+
+    #[test]
     fn stored_http_fqdn_is_retained_but_marked_for_secure_upgrade() {
         let stored = normalize_stored_endpoint(
             "http://knowledge.corp.example:3210/old/path?stale=value#fragment",

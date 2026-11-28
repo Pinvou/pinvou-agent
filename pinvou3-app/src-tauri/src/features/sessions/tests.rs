@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
+use super::rewind::MAX_REWIND_BACKUPS_PER_SESSION;
 use super::scheduled::ScheduledProfileRegistry;
 use super::store::{
     HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND, clear_generated_id_queue_for_test,
@@ -2837,7 +2838,9 @@ fn scheduled_sessions_wait_for_coordinated_run_retention() {
         .expect("create chat");
     let mut scheduled_ids = Vec::new();
 
-    for index in 0..51 {
+    // One past the chat cap: the plain sweep must not eat scheduled
+    // conversations even when they sit over that budget.
+    for index in 0..=MAX_SESSIONS_PER_KIND {
         let scheduled = store
             .create_scheduled_run(scheduled_profile(&format!("task-{index}")))
             .expect("create scheduled run");
@@ -2864,9 +2867,12 @@ fn scheduled_sessions_wait_for_coordinated_run_retention() {
 
     assert_eq!(
         store.manager.list_sessions().expect("session list").len(),
-        52
+        MAX_SESSIONS_PER_KIND + 2
     );
-    assert_eq!(store.scheduled_profiles.read().len(), 51);
+    assert_eq!(
+        store.scheduled_profiles.read().len(),
+        MAX_SESSIONS_PER_KIND + 1
+    );
     assert_eq!(
         store
             .load(&chat.metadata.id)
@@ -2934,7 +2940,7 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
         .create_scheduled_run(scheduled_profile("task-retained-across-chat-pruning"))
         .expect("scheduled conversation");
 
-    for index in 0..51 {
+    for index in 0..=MAX_SESSIONS_PER_KIND {
         let mut chat = store
             .create_new(
                 "/chat-model".to_string(),
@@ -2948,7 +2954,10 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
 
     assert!(store.scheduled_session_exists(&scheduled.metadata.id));
     assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
-    assert_eq!(store.list().expect("chat list").len(), 50);
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND
+    );
     let pruned = deletions
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2962,7 +2971,7 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
 }
 
 /// Pinned sessions are the user's explicit "keep forever" mark: excluded from
-/// the 50 cap and from eviction. A headless `agent run` shares the same store
+/// the retention cap and from eviction. A headless `agent run` shares the same store
 /// by default; without the exemption a single batch run would silently delete
 /// the user's pinned GUI sessions.
 #[test]
@@ -2978,8 +2987,8 @@ fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
     }
     // updated_at decreases with index: ids[MAX-1] is the oldest. Pinning it
     // moves it out of the budget; two fresh unpinned sessions then push the
-    // unpinned count to 51, and eviction must skip the pinned oldest session
-    // and land on the oldest unpinned one (ids[MAX-2]).
+    // unpinned count one past the cap, and eviction must skip the pinned
+    // oldest session and land on the oldest unpinned one (ids[MAX-2]).
     let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
     store.set_pinned(&pinned_id, true).expect("pin");
     for suffix in ["fresh-a", "fresh-b"] {
@@ -2999,7 +3008,7 @@ fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
     assert_eq!(
         store.list().expect("chat list").len(),
         MAX_SESSIONS_PER_KIND + 1,
-        "unpinned stays capped at 50 while the pinned session adds one extra"
+        "unpinned stays capped while the pinned session adds one extra"
     );
 }
 
@@ -3016,8 +3025,8 @@ fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
         store.save(&session).expect("seed session");
         store.set_pinned(&session.metadata.id, true).expect("pin");
     }
-    // The 51st session is unpinned: the unpinned count 1 <= 50, so the whole
-    // sweep must produce no deletion.
+    // The extra session is unpinned: the unpinned count 1 <= cap, so the
+    // whole sweep must produce no deletion.
     let extra = chat_model_session("all-pinned-extra".to_string());
     store.save(&extra).expect("persist the over-cap session");
 
@@ -3290,9 +3299,9 @@ fn a_quarantine_falls_back_to_the_boot_pin_map() {
 /// Headless `agent run` sessions are evicted against their own budget.
 ///
 /// Sharing the chat budget made every default-keep run permanently consume one
-/// of the user's 50 slots and delete their oldest conversation — transcript,
-/// workspace and checkpoints — with the only notice going to a stderr the
-/// desktop user never reads.
+/// of the user's chat-budget slots and delete their oldest conversation —
+/// transcript, workspace and checkpoints — with the only notice going to a
+/// stderr the desktop user never reads.
 #[test]
 fn headless_sessions_do_not_evict_gui_chats() {
     let (store, _g) = isolated_store();
@@ -3377,7 +3386,10 @@ fn retention_notifies_hook_when_record_commit_precedes_cleanup_error() {
         !store.session_models.read().contains_key(oldest_id),
         "committed retention deletions purge process-local side maps"
     );
-    assert_eq!(store.list().expect("retained chat list").len(), 50);
+    assert_eq!(
+        store.list().expect("retained chat list").len(),
+        MAX_SESSIONS_PER_KIND
+    );
 }
 
 #[test]
@@ -5560,7 +5572,7 @@ fn rewind_backups_append_and_cap_at_limit() {
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
     let id = session.metadata.id.clone();
-    for round in 0..21u32 {
+    for round in 0..=MAX_REWIND_BACKUPS_PER_SESSION {
         store
             .update_messages(
                 &id,
@@ -5575,8 +5587,12 @@ fn rewind_backups_append_and_cap_at_limit() {
         store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     }
     let records = rewound_records(&id);
-    assert_eq!(records.len(), 20, "每会话备份条数封顶 20（LRU 裁最老）");
-    // The oldest one (round 0) has been trimmed; the last 20 remain.
+    assert_eq!(
+        records.len(),
+        MAX_REWIND_BACKUPS_PER_SESSION,
+        "每会话备份条数封顶（LRU 裁最老）"
+    );
+    // The oldest one (round 0) has been trimmed; the newest cap-many remain.
     assert!(
         records
             .iter()
@@ -5652,6 +5668,56 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
             .is_none()
     );
     assert!(store.restore_rewound_turns(&id).is_err());
+}
+
+/// The per-record 8 MiB refusal (r11 review M6) must hold through the
+/// public truncate path, before any disk change (r12 review M2: the
+/// enforcement call site had no coverage — mutations showed the whole suite
+/// staying green with the refusal stripped). An oversized tail errors
+/// truthfully, leaves the transcript untouched, and writes no backup
+/// record.
+#[test]
+fn truncate_refuses_an_oversized_tail_before_any_disk_change() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        // The tail alone serializes past MAX_REWIND_RECORD_BYTES (8 MiB):
+        // plain ASCII so JSON escaping cannot shrink it.
+        assistant_text(&"x".repeat(8_600_000)),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    let error = store
+        .truncate_to_user_turn(&id, 1, None)
+        .err()
+        .expect("an oversized tail must be refused");
+    let detail = format!("{error:#}");
+    assert!(
+        detail.contains("单条上限"),
+        "the refusal must name the per-record cap, got: {detail}"
+    );
+    // No disk change: the transcript is intact and no backup record was
+    // written.
+    assert_eq!(
+        store.load(&id).expect("load").messages,
+        messages,
+        "a refused truncate must leave the transcript byte-identical"
+    );
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_none(),
+        "a refused truncate must not stage a backup record"
+    );
 }
 
 /// A new turn sent after the rewind → undo is impossible; errors truthfully
@@ -9583,7 +9649,7 @@ fn retention_rechecks_a_pin_that_lands_mid_sweep() {
         ids.push(session.metadata.id.clone());
     }
     // Four candidates past the cap, written DIRECTLY to the store directory
-    // (a save() at 51+ would sweep per save and delete the candidates before
+    // (a save() past the cap would sweep per save and delete the candidates before
     // the single-sweep window this test pins). All four are OLDER than every
     // seeded session, so under the sweep's newest-first iteration
     // (`updated_at` descending) they are the candidates evicted, in the

@@ -3,6 +3,13 @@
 // each inlined the same WebKit-compatible filter+read, and the jpeg->jpg extension normalization only existed on the codex side;
 // now unified (chat-side image/jpeg pastes normalize the stored name from .jpeg to .jpg).
 
+import '../../shared/chunked-file-upload.js';
+
+// 附件 20 MB 线上限的前端镜像(后端 file_ingest::MAX_FILE_BYTES;chunked-file-upload.js
+// 的 MAX_FILE_BYTES 是同一常量,web_access 契约测试锁定该字面量)。粘贴图先比 file.size
+// 再 FileReader:超限大图不再物化成整份 number[] 字节副本后才被后端拒。
+const { MAX_FILE_BYTES: PASTE_IMAGE_MAX_BYTES } = globalThis.PinvouChunkedFileUpload;
+
 /**
  * Returns the image Files extracted from a paste event. Does not call preventDefault — whether to consume
  * the event (and letting it pass when no channel is available) is the caller's decision.
@@ -21,10 +28,23 @@ export function collectClipboardImages(event) {
 /**
  * Reads into a byte array via FileReader (Safari 14 lacks Blob#arrayBuffer, so the paste bridge path keeps
  * the FileReader approach) and derives the extension; jpeg normalizes to jpg.
+ * Oversized files are rejected BEFORE the read materializes the byte copy; the rejection carries the
+ * `device_upload_too_large` code so callers route it through the existing localized fileTooLarge copy
+ * (attachment-limit-errors.js), same as the backend cap's own rejection.
  * @returns {Promise<{ bytes: number[], ext: string }>} Resolves with the file bytes and the normalized extension.
  */
 export function readPasteImageAsBytes(file) {
   return new Promise((resolve, reject) => {
+    if (file && typeof file.size === 'number' && file.size > PASTE_IMAGE_MAX_BYTES) {
+      // Derived from the constant so the message cannot drift from the cap
+      // it describes (developer-facing only; users see the localized copy).
+      const tooLarge = new Error(
+        `paste image exceeds the ${Math.round(PASTE_IMAGE_MAX_BYTES / (1024 * 1024))} MB attachment cap`,
+      );
+      tooLarge.code = 'device_upload_too_large';
+      reject(tooLarge);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       resolve({

@@ -30,7 +30,8 @@
 //!   semantics" below): the started state, the wait and the final state all
 //!   happen in one command, like `scan start`.
 //! - documents → `L1Store::{list_documents, remove_document}` (`--limit`
-//!   omitted maps to the GUI's 0 = default page of 500).
+//!   omitted maps to the GUI's 0 = default page of 500; `--offset N` pages
+//!   like the GUI's offset pagination).
 //! - index status/cancel/resume/retry/failed → `KnowledgeService::
 //!   {index_status, cancel_index_job, resume_index, retry_index_item,
 //!   failed_index_files}` (`cancel_index_job` is the CLI-facing id-taking
@@ -64,7 +65,7 @@
 //!   (`features::sessions::mode_state`, deliberately not persisted), so a
 //!   one-shot CLI process can neither observe nor durably mutate them. The
 //!   refusal is returned before any `SessionStore::boot()`, which enforces
-//!   the 50-sessions-per-kind retention and would evict the user's oldest
+//!   the 500-sessions-per-kind retention and would evict the user's oldest
 //!   sessions on the way to an answer that can never be anything else.
 //! - remote connections/collections/search → `RemoteKnowledgeService` over
 //!   `~/.pinvou3/knowledge/remote-connections.json`. These are async network
@@ -151,10 +152,10 @@ const USAGE: &str = "usage: pinvou knowledge <scan|stats|type-counts|collections
 const SCAN_USAGE: &str = "usage: pinvou knowledge scan <start [--root DIR]|status|cancel>";
 const COLLECTIONS_USAGE: &str =
     "usage: pinvou knowledge collections <list|create|update|delete|add-sources>";
-const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] | pinvou knowledge documents remove <doc-id> --yes";
+const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] [--offset N] | pinvou knowledge documents remove <doc-id> --yes";
 const INDEX_USAGE: &str = "usage: pinvou knowledge index <status [job-id]|cancel job-id|resume job-id|retry job-id item-id|failed job-id [--offset N --limit N]> (failed page: --offset defaults to 0, --limit to 50)";
 const MODEL_USAGE: &str = "usage: pinvou knowledge model <status|download|cancel> (download: needs network and the desktop model host; long-running)";
-const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query>>";
+const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query> [--limit N]>";
 const HOST_USAGE: &str = "usage: pinvou knowledge host status";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +190,7 @@ pub enum KnowledgeCommand {
     Documents {
         collection_id: i64,
         limit: Option<usize>,
+        offset: usize,
     },
     DocumentsRemove {
         doc_id: i64,
@@ -241,6 +243,7 @@ pub enum KnowledgeCommand {
     RemoteSearch {
         collection: String,
         query: String,
+        limit: Option<usize>,
     },
     HostStatus,
 }
@@ -249,9 +252,33 @@ pub enum KnowledgeCommand {
 const SCAN_START_OPTIONS: &[&str] = &["--root"];
 const CREATE_OPTIONS: &[&str] = &["--name", "--category", "--description"];
 const UPDATE_OPTIONS: &[&str] = &["--name", "--category", "--description"];
-const DOCUMENT_OPTIONS: &[&str] = &["--limit"];
+const DOCUMENT_OPTIONS: &[&str] = &["--limit", "--offset"];
 const INDEX_FAILED_OPTIONS: &[&str] = &["--offset", "--limit"];
 const SEARCH_OPTIONS: &[&str] = &["--limit", "--ext", "--after", "--before"];
+const REMOTE_SEARCH_OPTIONS: &[&str] = &["--limit"];
+
+/// `remote search` result window: the CLI keeps its own default of 8 (the
+/// GUI's default rose to 24 in the limits-audit batch, a frontend product
+/// choice — do not re-point the parity rationale at it), clamped to the
+/// same 1..50 envelope the server applies to `SearchRequest.limit`
+/// (`pinvou-knowledge` service search).
+const REMOTE_SEARCH_LIMIT_DEFAULT: usize = 8;
+const REMOTE_SEARCH_LIMIT_MAX: usize = 50;
+
+#[cfg(test)]
+mod remote_search_limit_pins {
+    use super::{REMOTE_SEARCH_LIMIT_DEFAULT, REMOTE_SEARCH_LIMIT_MAX};
+
+    /// The contract suite pins the clamp bounds and the pass-through
+    /// values, but nothing asserted the DEFAULT a bare `remote search`
+    /// uses — a silent 8→24/8→1 drift would only falsify the docs row
+    /// (r8 review). Value tripwire, same shape as the ima mirror pins.
+    #[test]
+    fn remote_search_default_and_cap_hold_shipped_values() {
+        assert_eq!(REMOTE_SEARCH_LIMIT_DEFAULT, 8);
+        assert_eq!(REMOTE_SEARCH_LIMIT_MAX, 50);
+    }
+}
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
@@ -379,6 +406,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 Ok(KnowledgeCommand::Documents {
                     collection_id,
                     limit: parse_positive(&options, "--limit")?,
+                    offset: parse_offset(&options)?,
                 })
             }
         }
@@ -424,26 +452,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                     let (head, tail) = positionals(&rest[1..]);
                     let job_id = exactly_one(head, "an index job id")?.to_owned();
                     let (options, _) = parse_flags(tail, INDEX_FAILED_OPTIONS, &[])?;
-                    let offset = match option(&options, "--offset") {
-                        None => 0,
-                        Some(value) => {
-                            let parsed = value.parse::<usize>().map_err(|_| {
-                                CliError::usage("knowledge --offset must be a non-negative integer")
-                            })?;
-                            // The value lands upstream as a SQLite i64 (e.g. `index failed
-                            // --offset`); a larger usize would wrap negative in the cast and
-                            // silently serve page 0 again. Rejected as usage, like every
-                            // other out-of-range numeric flag in the family, rather than
-                            // answered with a misleading empty page.
-                            if parsed > i64::MAX as usize {
-                                return Err(CliError::usage(format!(
-                                    "knowledge --offset must be at most {max} (got {value})",
-                                    max = i64::MAX
-                                )));
-                            }
-                            parsed
-                        }
-                    };
+                    let offset = parse_offset(&options)?;
                     let limit = parse_positive(&options, "--limit")?;
                     Ok(KnowledgeCommand::IndexFailed {
                         job_id,
@@ -532,7 +541,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 }
                 "search" => {
                     let (head, tail) = positionals(&rest[1..]);
-                    no_options(tail, "remote search")?;
+                    let (options, _) = parse_flags(tail, REMOTE_SEARCH_OPTIONS, &[])?;
                     let collection = head
                         .first()
                         .ok_or_else(|| {
@@ -545,7 +554,18 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                     if query.trim().is_empty() {
                         return Err(CliError::usage("knowledge remote search requires a query"));
                     }
-                    Ok(KnowledgeCommand::RemoteSearch { collection, query })
+                    // Same result window the server enforces
+                    // (`SearchRequest.limit` is clamped 1..50 service-side):
+                    // clamping at parse time keeps the CLI's effective window
+                    // identical while `--limit 0` still fails as the family's
+                    // positive-integer usage error.
+                    let limit = parse_positive(&options, "--limit")?
+                        .map(|limit| limit.clamp(1, REMOTE_SEARCH_LIMIT_MAX));
+                    Ok(KnowledgeCommand::RemoteSearch {
+                        collection,
+                        query,
+                        limit,
+                    })
                 }
                 _ => Err(CliError::usage(REMOTE_USAGE)),
             }
@@ -655,6 +675,32 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>,
     crate::support::parse_family_positive::<usize>(options, name, "knowledge")
 }
 
+/// Shared `--offset` parse for the paging lanes (`index failed`, `documents`):
+/// defaults to 0 and rejects values that cannot land upstream as a SQLite
+/// i64. The upstream lanes saturate (i64::try_from(...).unwrap_or(i64::MAX)),
+/// so this rejection is defense-in-depth rather than load-bearing — it keeps
+/// the family's usage-error semantics for absurd offsets instead of letting
+/// them land as a silent max-page answer. Rejected as usage, like every
+/// other out-of-range numeric flag in the family, rather than answered with
+/// a misleading empty page.
+fn parse_offset(options: &[(&str, &str)]) -> Result<usize, CliError> {
+    match option(options, "--offset") {
+        None => Ok(0),
+        Some(value) => {
+            let parsed = value.parse::<usize>().map_err(|_| {
+                CliError::usage("knowledge --offset must be a non-negative integer")
+            })?;
+            if parsed > i64::MAX as usize {
+                return Err(CliError::usage(format!(
+                    "knowledge --offset must be at most {max} (got {value})",
+                    max = i64::MAX
+                )));
+            }
+            Ok(parsed)
+        }
+    }
+}
+
 /// Stable error for `model download`: the feature orchestration and its
 /// cancel/downloading state live behind model_download.rs privates that the
 /// parent module cannot reach, and the download path requires the app
@@ -735,7 +781,8 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         KnowledgeCommand::Documents {
             collection_id,
             limit,
-        } => documents(collection_id, limit, output),
+            offset,
+        } => documents(collection_id, limit, offset, output),
         KnowledgeCommand::IndexStatus { job_id } => index_status(job_id.as_deref(), output),
         KnowledgeCommand::IndexCancel { job_id } => index_cancel(&job_id, output),
         KnowledgeCommand::IndexResume { job_id } => index_resume(&job_id, output),
@@ -765,9 +812,11 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         KnowledgeCommand::RemoteConnections => remote_connections(output),
         KnowledgeCommand::RemoteProbe { url } => remote_probe(&url, output),
         KnowledgeCommand::RemoteCollections => remote_collections(output),
-        KnowledgeCommand::RemoteSearch { collection, query } => {
-            remote_search(&collection, &query, output)
-        }
+        KnowledgeCommand::RemoteSearch {
+            collection,
+            query,
+            limit,
+        } => remote_search(&collection, &query, limit, output),
         KnowledgeCommand::HostStatus => host_status(output),
     }
 }
@@ -1333,7 +1382,7 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     // operates on the calling process's in-memory mode states and would
     // return an empty list here by construction. Earlier rounds booted the
     // whole session store just to prove that emptiness — `SessionStore::boot`
-    // is not a read (it enforces the 50-sessions-per-kind retention and
+    // is not a read (it enforces the 500-sessions-per-kind retention and
     // irreversibly evicts the oldest non-pinned sessions), a destructive
     // side effect no knowledge command should trigger. The running app's
     // own mount bookkeeping is its concern; the desktop app's kb delete
@@ -1525,10 +1574,12 @@ fn collections_add_sources(
 // ───────────────────────── documents ─────────────────────────
 
 /// GUI `kb_documents`: `limit` omitted maps to the GUI's 0 = default page of
-/// 500 (`L1Store::list_documents`).
+/// 500, and `--offset N` pages past the first window exactly like the GUI's
+/// offset pagination (`L1Store::list_documents`).
 fn documents(
     collection_id: i64,
     limit: Option<usize>,
+    offset: usize,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
@@ -1547,10 +1598,20 @@ fn documents(
         // app crate, so the CLI cannot import it; a second local copy of the
         // same number would silently desync the day upstream changes it, and
         // the guarantee is upstream's to keep.
-        .list_documents(collection_id, limit.unwrap_or(0))
+        .list_documents(collection_id, limit.unwrap_or(0), offset)
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
-        format!("no documents in collection {collection_id}")
+        // With --offset an empty page no longer implies an empty collection;
+        // claiming "no documents in collection" for `--offset 500` on a
+        // 3-document collection is a false statement (r6 review). JSON
+        // already reports the empty array; the human line states the page.
+        if offset == 0 {
+            format!("no documents in collection {collection_id}")
+        } else {
+            format!(
+                "collection {collection_id} has no documents past offset {offset} (page empty, not collection)"
+            )
+        }
     } else {
         join_rows(&documents, |document| {
             // Store/filesystem-sourced cells: collapsed like every other
@@ -2232,7 +2293,7 @@ mod index_state_result_tests {
 
 #[cfg(test)]
 mod phase_tests {
-    use super::{IndexState, display_phase};
+    use super::{IndexState, display_phase, render_index_state};
 
     fn state(
         running: bool,
@@ -2251,6 +2312,7 @@ mod phase_tests {
             total: 3,
             failed,
             current_path: None,
+            skipped_by_excluder: 0,
             current_chunks_done: 0,
             current_chunks_total: 0,
             updated_at: None,
@@ -2283,6 +2345,20 @@ mod phase_tests {
         );
         assert_eq!(display_phase(&state(false, false, false, None, 0)), "idle");
     }
+
+    #[test]
+    fn render_surface_carries_a_nonzero_excluder_count() {
+        // r5 review: the >0 disclosure branch had no test — the only fixture
+        // pinned 0, so a reverted line would ship green.
+        let mut nonzero = state(false, false, false, Some("j"), 0);
+        nonzero.skipped_by_excluder = 3;
+        let rendered = render_index_state(&nonzero);
+        assert!(rendered.contains("skipped by index rules: 3"), "{rendered}");
+        // Zero stays byte-absent from the human surface (the disclosure is
+        // conditional; the JSON payload always carries the field).
+        let zero = render_index_state(&state(false, false, false, Some("j"), 0));
+        assert!(!zero.contains("skipped by index rules"), "{zero}");
+    }
 }
 
 fn render_index_state(state: &IndexState) -> String {
@@ -2295,6 +2371,18 @@ fn render_index_state(state: &IndexState) -> String {
         format!("progress: {}/{}", state.done, state.total),
         format!("failed: {}", state.failed),
     ];
+    // Round-51 limits audit disclosure: the index rules' allowlist prunes
+    // silently by design, so the walk reports how many files it rejected.
+    // The line only renders when the count is non-zero, keeping output for
+    // unaffected jobs byte-identical; the JSON payload always carries the
+    // field (`skippedByExcluder`).
+    if state.skipped_by_excluder > 0 {
+        lines.push(format!(
+            "skipped by index rules: {} (files outside the indexable types; \
+             folders matched by exclusion rules are not descended into)",
+            state.skipped_by_excluder
+        ));
+    }
     if let Some(path) = &state.current_path {
         // The path originates from DB import rows (a Unix filename may
         // legally carry tab/newline/ESC): collapse it like every other
@@ -2646,13 +2734,18 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     )
 }
 
-/// GUI `remote_kb_search(server_id, collection_ids, query, limit)` with the
-/// GUI's default limit of 8; the CLI's `collection` argument is a name, so
-/// it is resolved against each server's collections first.
+/// GUI `remote_kb_search(server_id, collection_ids, query, limit)`; the
+/// CLI's default stays 8 (the GUI's own default is now 24 after the
+/// limits-audit raise — the surfaces no longer share a default, so the CLI
+/// documents its own value instead of a GUI-parity claim). The CLI's
+/// `collection` argument is a name, so it is resolved against each server's
+/// collections first. `--limit` sizes the per-server result window (clamped
+/// 1..50 at parse time, the same envelope the server enforces).
 #[cfg(feature = "product-backend")]
 fn remote_search(
     collection: &str,
     query: &str,
+    limit: Option<usize>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_remote_service()?;
@@ -2674,7 +2767,12 @@ fn remote_search(
                     Some(matched) => {
                         let collection_id = matched.id;
                         service
-                            .search(&server_id, vec![collection_id], remote_query.clone(), 8)
+                            .search(
+                                &server_id,
+                                vec![collection_id],
+                                remote_query.clone(),
+                                limit.unwrap_or(REMOTE_SEARCH_LIMIT_DEFAULT),
+                            )
                             .await
                             .map(|hits| (Some(collection_id), Some(hits), None))
                             .unwrap_or_else(|error| (Some(collection_id), None, Some(error)))
@@ -2806,6 +2904,7 @@ fn remote_collections(_output: OutputMode) -> Result<CliOutcome, CliError> {
 fn remote_search(
     _collection: &str,
     _query: &str,
+    _limit: Option<usize>,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     Err(crate::support::product_backend_not_enabled())
@@ -2825,7 +2924,7 @@ fn host_status(_output: OutputMode) -> Result<CliOutcome, CliError> {
 ///
 /// The refusal is returned BEFORE any store is opened. It does not depend on
 /// the session at all, and `SessionStore::boot()` is not a read: it enforces
-/// the 50-sessions-per-kind retention policy, which irreversibly deletes the
+/// the 500-sessions-per-kind retention policy, which irreversibly deletes the
 /// user's oldest non-pinned sessions. Booting it to decorate an unavoidable
 /// refusal with "session not found" would destroy chat history as a side
 /// effect of a command that cannot succeed — and that holds for the

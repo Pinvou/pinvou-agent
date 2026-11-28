@@ -444,6 +444,24 @@ pub async fn rewind_to_turn(
     }
     let plan = resolve_rewind_plan(entries, keep_turns, conversation_only)?;
 
+    // 备份准入预检（review P2，编排次序）：恢复工作区之前按截断落点的同一
+    // 口径跑全部备份准入（单条上限 + 全局预算余量）。先前「先恢复代码、
+    // 后发现超限被拒」会留下工作区已回滚、对话未动、无 Undo 条目、且重试
+    // 必然复现同一拒绝的死锁形态——预检让拒绝发生在任何不可逆变更之前。
+    // 预检与截断落点之间的窗口内另一位写者可能改变条件，落点处的权威检查
+    // 保持不变（同口径，拒绝语义一致）。
+    {
+        let store_precheck = store.inner().clone();
+        let session_id_precheck = session_id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            store_precheck
+                .precheck_rewind_truncate(&session_id_precheck, keep_turns)
+                .map_err(|error| format!("回退备份预检失败，已中止回退: {error:#}"))
+        })
+        .await
+        .map_err(|error| format!("回退预检任务失败: {error}"))??;
+    }
+
     // 1) 恢复代码（内部强制 PreRestore，失败则中止）；降级模式跳过本步。
     let mut restored_checkpoint = None;
     if let Some(checkpoint) = plan.checkpoint {

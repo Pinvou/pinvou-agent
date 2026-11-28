@@ -53,7 +53,7 @@ Pinvou Agent 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agen
 <type>(<scope>)!: <English description>
 ```
 
-`scope` 和 `!` 可省略。允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`style`、`test`、`build`、`ci`、`chore` 和 `revert`。使用不超过 50 个字符且结尾无标点的简洁英文描述。CI 只校验格式，不校验语言。
+`scope` 和 `!` 可省略。允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`style`、`test`、`build`、`ci`、`chore` 和 `revert`。使用不超过 72 个字符且结尾无标点的简洁英文描述。CI 只校验格式，不校验语言。
 
 分支、Issue、PR、Commit、代码注释、开发文档和诊断信息使用英文。既有历史和本地化资源除外；UI 文案遵循 [AGENTS.md](AGENTS.md)。
 

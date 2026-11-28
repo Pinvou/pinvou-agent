@@ -3151,10 +3151,17 @@ function hasStoredCredential(record) {
       // The three memory error banners (delete / profile-save / load-or-warning) share the
       // identical banner chrome and priority order; only the copy differs, so collapse them
       // into one computed message and render a single banner.
+      // profileSaveError carries the backend's own refusal message (e.g. the
+      // wipe-shaped-label guard's hint to shorten or clear the label) — surface
+      // it verbatim instead of the generic "please try again" copy, which
+      // invited retrying the exact rejected input (r4 review). Generic
+      // failures stay localized: the save lane maps non-refusal errors to
+      // `memorySaveFailed` so zh/ja users never see a raw English backend
+      // string (r12 review).
       const memoryBannerMessage = memoryDeleteError
         ? settingsCopy.memoryDeleteFailed
         : profileSaveError
-          ? settingsCopy.memorySaveFailed
+          ? profileSaveError
           : memoryError
             ? memoryErrorMessage
             : '';
@@ -3189,8 +3196,17 @@ function hasStoredCredential(record) {
           }
           setMemoryEditor(null);
         } catch (error) {
-          setMemoryEditorError(String(error));
-          setProfileSaveError(String(error));
+          // The backend's crafted refusal (`memory_profile_label_rejected`,
+          // the wipe-shaped-label guard's repair hint) is shown verbatim —
+          // it names the fix (r4 review). Generic failures (IO, lock,
+          // transport) are backend internals: keep them trilingual via the
+          // shared copy (r12 review — the verbatim pass-through regressed
+          // zh/ja users to raw English strings when `memorySaveFailed` was
+          // dropped).
+          const detail = String(error ?? '');
+          const refusal = detail.startsWith('memory_profile_label_rejected');
+          setMemoryEditorError(refusal ? detail : settingsCopy.memorySaveFailed);
+          setProfileSaveError(refusal ? detail : settingsCopy.memorySaveFailed);
         } finally {
           setMemorySaving(false);
         }
@@ -3876,7 +3892,7 @@ function hasStoredCredential(record) {
                       />
                     )}
                   </label>
-                  {memoryEditorError && <div data-testid="memory-editor-error" role="alert" aria-live="assertive" className="mt-3 text-[13px] leading-5 text-[#FF3B30]">{settingsCopy.memorySaveFailed}</div>}
+                  {memoryEditorError && <div data-testid="memory-editor-error" role="alert" aria-live="assertive" className="mt-3 text-[13px] leading-5 text-[#FF3B30]">{memoryEditorError}</div>}
                   <div className="mt-6 flex justify-end gap-2.5">
                     <button type="button" onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 px-4 rounded-full text-[14px] font-semibold bg-[#E5E5EA] dark:bg-[#2C2C2E] disabled:opacity-40`}>{settingsCopy.cancel}</button>
                     <button type="button" data-testid="memory-editor-save" onClick={saveMemoryEditor} disabled={memorySaving} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-40">{memorySaving ? settingsCopy.saving : settingsCopy.save}</button>

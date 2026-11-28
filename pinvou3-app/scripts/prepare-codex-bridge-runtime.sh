@@ -344,7 +344,7 @@ for node_target in "${NODE_TARGETS[@]}"; do
   node_archive_path="$BUILD_DIR/$node_archive"
   downloaded=false
   for base_url in $(node_dist_urls "$node_target"); do
-    if curl --fail --location --retry 2 --connect-timeout 15 \
+    if curl --fail --location --retry 2 --connect-timeout 15 --max-time 600 \
       "$base_url/$node_archive" --output "$node_archive_path"; then
       downloaded=true
       break
@@ -386,7 +386,22 @@ npm_ci_for_target() {
   # here during a cross build (ENOEXEC). Dependency resolution is governed by
   # --os/--cpu/--libc above, not by the interpreter. Outside cross builds
   # NPM_NODE_ROOT equals NODE_DIST_ROOT, so nothing changes.
-  PATH="$NPM_NODE_ROOT/bin:$PATH" "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
+  # Per-leg bound (r12 review), the same discipline as
+  # scripts/ci/npm-ci-bounded.sh: a wedged registry must fail this step at
+  # its own budget, not burn the job's timeout-minutes window. Where GNU
+  # timeout exists it is used with the same --kill-after discipline; where it
+  # does not (macOS images), the step degrades loudly to the job cap — the
+  # helper's documented pattern. The double probe (command -v, then
+  # --version) keeps Windows' System32 sleep utility, which resolves on PATH
+  # but rejects GNU flags, out of the bounded branch.
+  NPM_CI_BUDGET_SECS="${NPM_CI_BUDGET_SECS:-900}"
+  if command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1; then
+    PATH="$NPM_NODE_ROOT/bin:$PATH" timeout --kill-after=15 "$NPM_CI_BUDGET_SECS" \
+      "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
+  else
+    echo "::warning::GNU timeout unavailable on $(uname -s); bridge-prep npm ci runs without a per-leg bound (under CI the job's timeout-minutes cap still applies)"
+    PATH="$NPM_NODE_ROOT/bin:$PATH" "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
+  fi
 }
 
 npm_ci_for_target "$ACP_ROOT" "$NODE_OS" "$NODE_CPU"

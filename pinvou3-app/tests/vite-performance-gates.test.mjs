@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import { VIEW_LOADERS } from '../src/app/view-loaders.js';
 import createViteConfig, {
+  MAIN_ENTRY_BUDGET_BYTES,
+  WEB_MAIN_ENTRY_BUDGET_BYTES,
   assertLazyChunks,
   lazyChunkContracts,
   lazyToolChunkContracts,
@@ -20,9 +22,23 @@ function buildPlugins(mode) {
 }
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // Startup size is managed by refactoring (lazy contracts, periodic
-  // measurement-and-refactor passes), not by a byte ceiling; the build keeps
-  // only the structural lazy-chunk gate on both platforms.
+  // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, the shared
+  // PR #833 + PR #834 487_000 desktop raise, PR #834's review-fix-wave
+  // 488_000 desktop raise, PR #835's 129_000 web raise, PR #835's
+  // review-fix-wave 489_000 desktop raise, PR #835's second fix wave
+  // 490_000 desktop raise, PR #835's rebase re-measure 492_000 desktop
+  // raise (PR #894's rebase re-measure 493_000 desktop raise, and PR #826's
+  // measured-inside-ceiling raises, are measured per policy), PR #847's
+  // rebase re-measure 494_000 → 495_000 desktop raises, and PR #847's second
+  // rebase re-measure 495_000 → 496_000 desktop raise (the 2026-11-16 main's
+  // #881 frontend additions; the aarch64 measurement binds) and the review-
+  // wave re-measure 496_000 → 498_000 desktop raise (hosted writeBundle
+  // measured 497,476 B — the first 497_000 re-cut still sat under the
+  // measured size and the hosted build refused it; the aarch64-class
+  // measurement binds) are measured per policy; the config comment
+  // preserves both platforms' measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 498_000);
+  assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));
     assert.ok(pluginNames.has('pinvou-enforce-lazy-chunks'), `${mode} must enforce lazy chunks`);

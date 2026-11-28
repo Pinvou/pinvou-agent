@@ -97,19 +97,23 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 const _: () = assert!(DEFAULT_TIMEOUT.as_secs() == 180);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
-/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
-const FULL_FEED_CHAR_LIMIT: usize = 24_000;
+/// （≈1.2 万 token）不崩；96000 字（≈5.6 万 token）仍在 256k 上下文预算内，
+/// 96000 字以内直接全喂，超过才投影降级（§6）。
+const FULL_FEED_CHAR_LIMIT: usize = 96_000;
 
 /// 产物上限（字符）。产物真相在 workspace 文件，整篇读、整篇喂——本地 256k 扛得住
 /// （实测 2 万字全喂稳）。常规产物（文档/邮件/代码）都在此内整篇喂；超此才截断+标注，
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
-const ARTIFACT_CHAR_LIMIT: usize = 30_000;
+const ARTIFACT_CHAR_LIMIT: usize = 100_000;
 
-/// 产物读取上限（字节）。先 stat 再读：极端路径下 AI 可能写出大数据文件，整读进
-/// 内存只为截前 30k 字符 = 为丢掉的内容付全量内存+阻塞读（r9 审 m8；与
-/// deliverables.rs `MAX_LIST_SCAN_BYTES` 同款哲学）。超帽产物跳过、退对话流审查
-/// （与二进制产物同一退化路径）；常规产物（文档/代码/邮件）都在此内，行为不变。
-const ARTIFACT_READ_BYTE_CAP: u64 = 32 * 1024 * 1024;
+/// 降级投影保留的 web_search 事实条数。超出部分不静默丢弃，在投影尾部
+/// 显式标注省略条数（见 project）。
+const FACT_PROJECTION_KEEP: usize = 12;
+
+/// 每条纳入投影的 web_search 摘录截断长度（字符）；与保留条数一起由
+/// `fact_projection_literals_hold_shipped_values` 钉住（r16 审 NIT：
+/// 行为测试从常量推导期望，12→8 会全绿；500 原是裸字面量无人持有）。
+const FACT_PROJECTION_CHARS: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
@@ -365,13 +369,47 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     // read_to_string 对二进制产物(.docx/.pdf/.xlsx 等)静默失败返回 None——该类
     // session 退化成只凭对话流审查。文本抽取是后续功能候选(P1),当前形态刻意
     // 如此(2026-11-09 审:把已知限制写进代码,别只活在 PR 描述里)。
-    // 超帽产物同样跳过（r9 审 m8）：整读进内存只为截前 30k 字符不划算。
-    if !artifact_within_read_cap(&abs) {
-        return None;
+    // 读侧同样限长（Take = 上限 + 1，镜像 read_artifact_text 的读界；取代 r9 审
+    // m8 的 stat 预检——stat→read 之间存在 TOCTOU 窗，有界读在读取侧一次闭合）：
+    // 召唤审核读的是 workspace 内任意被指名的文件，多 GiB 文件整读进内存
+    // 是纯内存尖峰（r4 review）。超硬读界的产物不杀死整个召唤，按「部分
+    // 展示 + 明示」同一口径截断并在标注里写明。
+    let hard_cap = crate::features::files::MAX_ARTIFACT_TEXT_BYTES;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let Ok(file) = std::fs::File::open(&abs) else {
+            return None;
+        };
+        if file.take(hard_cap + 1).read_to_end(&mut bytes).is_err() {
+            return None;
+        }
     }
-    let content = std::fs::read_to_string(&abs).ok()?;
+    let read_capped = bytes.len() as u64 > hard_cap;
+    // 未触线保持严格 UTF-8（与原 read_to_string 同语义，坏字节 → 跳过该
+    // 产物）；仅当字节截断可能切在字符中间时才容忍尾部损字。
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if read_capped => {
+            let lossy = String::from_utf8_lossy(e.as_bytes()).into_owned();
+            if lossy_is_mostly_replacement(&lossy) {
+                return None;
+            }
+            lossy
+        }
+        Err(_) => return None,
+    };
     let n = content.chars().count();
-    let bounded = if n > ARTIFACT_CHAR_LIMIT {
+    let bounded = if read_capped {
+        let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
+        // 与下方未封顶分支同一披露纪律：字节硬读界与字符投影截取必须同时说明，
+        // 否则评审模型会把「读了 50 MiB」误当成「看到了 50 MiB 的内容」。
+        format!(
+            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB，投影再截取前 {ARTIFACT_CHAR_LIMIT} 字；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
+            hard_cap / (1024 * 1024),
+            hard_cap / (1024 * 1024),
+        )
+    } else if n > ARTIFACT_CHAR_LIMIT {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
         format!(
             "{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）"
@@ -382,11 +420,14 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     Some((path, bounded))
 }
 
-/// 产物读取字节帽判定（r9 审 m8）。stat 失败按超帽处理（读不到 = 跳过、退对话流）。
-fn artifact_within_read_cap(abs: &std::path::Path) -> bool {
-    std::fs::metadata(abs)
-        .map(|m| m.len() <= ARTIFACT_READ_BYTE_CAP)
-        .unwrap_or(false)
+/// 判断损字解码结果是否以替换符为主，即源字节本就是二进制（.docx/.pdf），
+/// 而非「截断恰好切在一个多字节字符中间」的文本：U+FFFD 占比 >1% 视为
+/// 二进制。截断切字符只产生至多一个替换符，在数千万字的读取里占比远低于
+/// 该阈值；带零星坏字节的文本产物则依旧展示（比原 read_to_string 的整体
+/// 跳过更宽容，与 r8 审的取舍一致）。
+fn lossy_is_mostly_replacement(lossy: &str) -> bool {
+    let replacement = lossy.matches('\u{FFFD}').count();
+    replacement * 100 > lossy.chars().count()
 }
 
 /// 账目是否已被 Boss 结清、核账不再核（§5）：accept=缺陷接受现状、confirmed=需核实但 Boss
@@ -1920,7 +1961,7 @@ fn project(messages: &[Message]) -> String {
                             }
                         }
                     }
-                    "web_search" => facts.push(truncate_chars(content, 200)),
+                    "web_search" => facts.push(truncate_chars(content, FACT_PROJECTION_CHARS)),
                     _ => {}
                 },
                 _ => {}
@@ -1939,8 +1980,14 @@ fn project(messages: &[Message]) -> String {
     }
     if !facts.is_empty() {
         out.push_str("\n\n【相关事实(搜索摘录)】\n");
-        for f in facts.iter().take(4) {
+        for f in facts.iter().take(FACT_PROJECTION_KEEP) {
             out.push_str(&format!("- {f}\n"));
+        }
+        // 超出保留数的事实不静默丢弃：显式标注省略条数，审查模型能察觉
+        // 还有事实没进来，需要时可让 Boss 重开全喂或缩小检索。
+        let omitted = facts.len().saturating_sub(FACT_PROJECTION_KEEP);
+        if omitted > 0 {
+            out.push_str(&format!("-（另有 {omitted} 条搜索事实未纳入投影）\n"));
         }
     }
     out
@@ -3787,42 +3834,40 @@ mod tests {
         );
     }
 
-    /// r9 审 m8：产物读取字节帽——超大文件跳过（退对话流审查），不为截 30k
-    /// 字符整读进内存。行为钉 helper 本体；调用点用源钉（删调用=红）。
+    /// r9 审 m8 + 限制审计 rebase 后继：产物读取硬读界——读取侧 Take 限长
+    /// （取代 stat 预检，同时闭合 stat→read 的 TOCTOU 窗）。行为 fixture
+    /// （>50 MiB）不重（同 visual_preview r4 豁免口径：常量编译期定，fixture
+    /// 成本压过覆盖收益）；调用点用源钉（删调用=红）。
     #[test]
-    fn latest_artifact_file_caps_oversize_reads() {
-        let ws = tempfile::tempdir().expect("tempdir");
-        let small = ws.path().join("small.txt");
-        std::fs::write(&small, b"hello artifact").expect("write small");
-        assert!(
-            artifact_within_read_cap(&small),
-            "normal artifact within cap must be readable"
-        );
-
-        let big = ws.path().join("big.txt");
-        std::fs::write(&big, vec![b'a'; (ARTIFACT_READ_BYTE_CAP + 1) as usize]).expect("write big");
-        assert!(
-            !artifact_within_read_cap(&big),
-            "oversize artifact must be skipped, not fully read into memory"
-        );
-
-        let missing = ws.path().join("missing.txt");
-        assert!(
-            !artifact_within_read_cap(&missing),
-            "unreadable artifact = skip (same degradation as binary files)"
-        );
-
+    fn latest_artifact_file_take_limited_read_stays_wired() {
         // 只扫生产区（tests module 之前）——self-反引：include_str 全文含本测试
         // 自身的 needle 文本，删调用点也恒绿（r9 突变复核抓出）；也不能锚
         // #[cfg(test)] 首现（生产区 182 行有 cfg 辅助项）。
         let source = include_str!("mod.rs");
         let prod_end = source.find("mod tests {").expect("tests module present");
         assert!(
-            source[..prod_end].contains("if !artifact_within_read_cap(&abs) {"),
-            "the cap guard must be wired into latest_artifact_file before \
-             read_to_string; deleting the call site re-opens the unbounded \
-             read (r9 review m8)"
+            source[..prod_end].contains("file.take(hard_cap + 1)"),
+            "the hard read cap must be wired into latest_artifact_file's \
+             Take-limited read; deleting it re-opens the unbounded read \
+             (r9 review m8, ported to the Take-limited successor)"
         );
+    }
+
+    /// r8 审：截断损字容忍只属于「文本被截断」形态。二进制产物（密集
+    /// U+FFFD）必须被判为二进制并跳过，而不是整段替换符噪声进召唤；
+    /// 单个切界替换符的正常文本必须保留。1% 阈值的两侧都要钉住。
+    #[test]
+    fn lossy_detector_skips_binary_and_keeps_boundary_split_text() {
+        // 单个切界损字（50 MiB 文本只会在截断边界产生 1 个）——保留。
+        // 阈值按真实读取规模（数百万字）设计，fixture 用 200 万字级别。
+        let boundary_split = format!("{}{}", "正常正文 ".repeat(400_000), '\u{FFFD}');
+        assert!(!lossy_is_mostly_replacement(&boundary_split));
+        // 全坏字节（二进制产物头部形态）——跳过。
+        assert!(lossy_is_mostly_replacement(&"\u{FFFD}".repeat(4)));
+        // 密集替换符但夹带可读字节（PDF/zip 混合形态）——仍判二进制。
+        assert!(lossy_is_mostly_replacement("\u{FFFD}\u{FFFD}ab"));
+        // 空串不是二进制（防御臂，实际路径到不了）。
+        assert!(!lossy_is_mostly_replacement(""));
     }
 
     /// r6 审 m3：finish_reason=length 诊断层——k3 旧线上「预算全被 reasoning
@@ -4438,6 +4483,52 @@ mod tests {
         ];
         let projected = project(&messages);
         assert!(projected.contains("当前报价：100 元"), "{projected}");
+    }
+
+    #[test]
+    fn project_keeps_fact_cap_and_annotates_omitted_facts() {
+        // 超出 FACT_PROJECTION_KEEP 的事实不静默丢弃：保留前 N 条，尾部标注省略数。
+        let mut messages = vec![user_text("核对当前报价")];
+        for i in 0..FACT_PROJECTION_KEEP + 3 {
+            let id = format!("w{i}");
+            messages.push(assistant_tool(&id, "web_search", json!({"query": "报价"})));
+            messages.push(tool_result(&id, &format!("事实{i}：100 元")));
+        }
+        let p = project(&messages);
+        assert!(p.contains("事实0：100 元"), "第一条事实要留: {p}");
+        assert!(
+            p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP - 1)),
+            "保留数内的最后一条事实要留: {p}"
+        );
+        assert!(
+            !p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP)),
+            "保留数外的事实不逐条进投影: {p}"
+        );
+        assert!(
+            p.contains("另有 3 条搜索事实未纳入投影"),
+            "省略条数要显式标注: {p}"
+        );
+    }
+
+    #[test]
+    fn project_facts_without_overflow_has_no_omission_note() {
+        let messages = vec![
+            user_text("核对当前报价"),
+            assistant_tool("w1", "web_search", json!({"query": "报价"})),
+            tool_result("w1", "事实1：100 元"),
+        ];
+        let p = project(&messages);
+        assert!(p.contains("事实1：100 元"), "{p}");
+        assert!(!p.contains("未纳入投影"), "没省略就不要标注: {p}");
+    }
+
+    /// 行为测试是 cap-relative（期望从常量推导），12→8 全绿；500 原是裸
+    /// 字面量。这里钉住两个字面量本身，静默回退（12×200→4×200 的旧口径）
+    /// 会红（r16 审 NIT）。
+    #[test]
+    fn fact_projection_literals_hold_shipped_values() {
+        assert_eq!(FACT_PROJECTION_KEEP, 12);
+        assert_eq!(FACT_PROJECTION_CHARS, 500);
     }
 
     #[test]

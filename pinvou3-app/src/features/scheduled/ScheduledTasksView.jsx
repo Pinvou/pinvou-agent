@@ -497,10 +497,10 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       // 单例,能力位在挂载时即为最终值;首刷保持挂载即执行,与原实现一致。
       useEffect(() => {
         if (!bridge || !bridge.scheduled.refreshScheduledTaskData) return;
-        bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+        bridge.scheduled.refreshScheduledTaskData(100).catch(() => {});
       }, []);
       useIntervalWhen(() => {
-        bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+        bridge.scheduled.refreshScheduledTaskData(100).catch(() => {});
       }, 3000, !!(bridge && bridge.scheduled.refreshScheduledTaskData));
 
       useEffect(() => {
@@ -748,7 +748,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         setCreateScheduleRepeatIntent(null);
         if (!(await flushBeforeAction())) return;
         if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(id);
-        if (id && bridge && bridge.scheduled.refreshScheduledTaskData) bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+        if (id && bridge && bridge.scheduled.refreshScheduledTaskData) bridge.scheduled.refreshScheduledTaskData(100).catch(() => {});
       }
 
       async function startTemplate(template) {

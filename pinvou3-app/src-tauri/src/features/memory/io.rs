@@ -26,11 +26,11 @@ use super::types::{
     PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
     RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
     RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem,
-    RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
-    TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnMemoryCapture,
-    WorkContextFile, looks_like_profile_preference_text, normalize_preference_topic,
-    normalize_profile_label, normalize_timed_memory_kind, normalize_timed_memory_topic,
-    normalize_work_context_topic,
+    RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TIMED_MEMORY_MAX_TTL_DAYS,
+    TimedMemoryItem, TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation,
+    TurnMemoryCapture, WorkContextFile, looks_like_profile_preference_text,
+    normalize_preference_topic, normalize_profile_label, normalize_timed_memory_kind,
+    normalize_timed_memory_topic, normalize_work_context_topic, profile_label_would_be_wiped,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
@@ -337,6 +337,34 @@ pub fn load_profile() -> io::Result<MemoryProfile> {
 
 pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     let _guard = write_lock().lock();
+    // The stored wipe-shaped check runs under the same write lock as the
+    // write-back (r15 review): the surfaces' lock-free pre-check left a
+    // check-then-act window where a hand-edited or legacy wipe-shaped
+    // label could still be silently emptied by a patch touching only
+    // another field. The auto-write path (`llm_review`) reaches
+    // update_profile without any surface pre-check, so this is also that
+    // lane's only guard. Read errors fall through to load_profile's own
+    // error path, as before.
+    if let Ok(stored) = stored_wipe_shaped_identity_labels() {
+        for topic in stored {
+            let patch_sets_label = match topic {
+                "call_name" => patch.call_name.is_some(),
+                "assistant_alias" => patch.assistant_alias.is_some(),
+                _ => true,
+            };
+            if !patch_sets_label {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "memory_profile_label_rejected: the stored {topic} label does not \
+                         survive the profile normalization and would be silently emptied by \
+                         this update; nothing was written — supply a shorter label, clear \
+                         the field, or fix the stored value by hand first"
+                    ),
+                ));
+            }
+        }
+    }
     let mut profile = load_profile()?;
     if let Some(value) = patch.call_name {
         profile.identity.call_name = value;
@@ -361,6 +389,50 @@ pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     let path = profile_path();
     write_json_atomic(&path, &profile)?;
     Ok(profile)
+}
+
+/// The identity labels whose STORED value (read raw, before any
+/// `normalize`) would be emptied by normalization. `load_profile`
+/// normalizes on read, so by the time `update_profile` applies a patch the
+/// stored value is already gone in memory and a patch that only touches
+/// `language` would persist the emptied label behind a success payload.
+/// The surface guards (app command + CLI) call this before writing and
+/// refuse with the same `memory_profile_label_rejected` contract — a patch
+/// that sets the label itself is judged by the same rule on its own value
+/// and needs no stored check (r5 review). `update_profile` itself runs
+/// this check under the profile write lock immediately before the
+/// write-back (r15 review) — the lock-free surface pre-check left a
+/// check-then-act window, and the auto-write path (`llm_review`) has no
+/// surface pre-check at all; the surfaces keep their pre-checks for an
+/// early refusal with surface-appropriate advice.
+pub fn stored_wipe_shaped_identity_labels() -> io::Result<Vec<&'static str>> {
+    let path = profile_path();
+    let raw = match read_text_recovering(&path, |raw| {
+        serde_json::from_str::<serde_json::Value>(raw).is_ok()
+    }) {
+        Ok(raw) => raw,
+        // No file (or unreadable/invalid): nothing stored to destroy —
+        // update_profile's own error path owns those cases.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(invalid_data)?;
+    let mut wiped = Vec::new();
+    for (topic, key) in [
+        ("call_name", "call_name"),
+        ("assistant_alias", "assistant_alias"),
+    ] {
+        if let Some(label) = value
+            .get("identity")
+            .and_then(|identity| identity.get(key))
+            .and_then(|v| v.as_str())
+        {
+            if profile_label_would_be_wiped(label, topic) {
+                wiped.push(topic);
+            }
+        }
+    }
+    Ok(wiped)
 }
 
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
@@ -1000,7 +1072,9 @@ pub(super) fn upsert_timed_memory_unlocked(
     } else {
         CURRENT_FOCUS_DEFAULT_TTL_DAYS
     };
-    let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, 90);
+    let ttl_days = ttl_days
+        .unwrap_or(default_ttl)
+        .clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
     let text = clean_candidate_sentence(content, TIMED_TEXT_MAX_CHARS);
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
@@ -1483,6 +1557,62 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
     match item.kind.as_str() {
         "preference" => write_preference_unlocked(item)?,
         "profile" if matches!(item.topic.as_str(), "call_name" | "assistant_alias") => {
+            // L3 review (round-17 fixwave): this confirm arm was the last
+            // unguarded label write path. It applied the pending row's RAW
+            // content to the profile and re-normalized, so a wipe-shaped
+            // `item.content` (hand-edited or legacy `memory_pending.jsonl`
+            // row — today's shipped creators pre-clean via
+            // `clean_memory_label`) normalized to "" and the emptied label
+            // was persisted behind a success payload: the silent
+            // data-destruction class the incoming-value guard
+            // (app/commands/memory.rs), the in-lock stored guard
+            // (`update_profile`), and the CLI pre-checks all refuse. Judge
+            // the content with the shared predicate BEFORE mutating the
+            // profile, under the same write lock as the write-back. The
+            // `return` below leaves the pending row UNCONSUMED (status and
+            // `updated_at` are only rewritten after this match, and
+            // `write_pending_memory_unlocked` only runs at the end), so the
+            // user can dismiss the candidate instead.
+            let topic = item.topic.as_str();
+            if profile_label_would_be_wiped(&item.content, topic) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "memory_profile_label_rejected: the {topic} label does not survive the \
+                         profile normalization (at most twelve characters after the \
+                         punctuation/particle strip, no question shapes, not task-like); \
+                         nothing was written and the candidate stays pending — supply a \
+                         shorter label and confirm again, or dismiss the candidate instead"
+                    ),
+                ));
+            }
+            // 确认一个称呼前也检查文件里保留的另一个称呼（复审 P2）：
+            // normalize() 归一化的是整份档案且 load_profile 读时即归一化——
+            // 若存量对侧标签在文件里是 wipe 形（update_profile 的存量守卫
+            // 所保护的历史/手改形态），确认本侧的完全合法候选仍会在整档
+            // 写回时把已读时被清空的对侧静默落盘抹掉。同一写锁内复用
+            // 现成的存量字段检查（原始文件读取，绕过 load_profile 的读时
+            // 归一化），只看保留侧；本侧由候选值整体替换，无需查。拒绝
+            // 路径保持候选 pending（与上方待定值守卫同一语义）。
+            let retained_topic = if item.topic == "call_name" {
+                "assistant_alias"
+            } else {
+                "call_name"
+            };
+            if let Ok(stored) = stored_wipe_shaped_identity_labels() {
+                if stored.contains(&retained_topic) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "memory_profile_label_rejected: the stored {retained_topic} label \
+                             does not survive the profile normalization and confirming this \
+                             candidate rewrites the whole profile, wiping it; nothing was \
+                             written and the candidate stays pending — fix the stored \
+                             {retained_topic} value by hand (or via its own candidate) first"
+                        ),
+                    ));
+                }
+            }
             let mut profile = load_profile()?;
             let value = item.content.clone();
             if item.topic == "call_name" {
@@ -2073,7 +2203,7 @@ fn normalize_timed_memory(item: &mut TimedMemoryItem) {
     item.text = clean_text(&item.text, TIMED_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
     item.status = normalize_status_active_or_archived(&item.status);
-    item.ttl_days = item.ttl_days.clamp(1, 90);
+    item.ttl_days = item.ttl_days.clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
 }
 
 /// Whitespace-normalized content identity: collapse every whitespace run to

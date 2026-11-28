@@ -383,14 +383,66 @@ fn load_topic_memory_source<T: Default>(
     }
 }
 
+/// Round-51 review gap closure: this gate is the GUI save path's refusal for
+/// wipe-shaped identity labels. `update_memory_profile` previously applied
+/// the patch unguarded — a label that `MemoryProfile::normalize` maps to ""
+/// (over twelve characters after the punctuation/particle strip,
+/// question-shaped, task-like) silently destroyed the stored value behind a
+/// success payload. The CLI lane already refuses up front via the same rule
+/// (`profile_label_would_be_wiped`); the desktop command now runs the
+/// identical rule. An empty or whitespace-only value still clears the field:
+/// clearing a stored label stays a desktop-app action (the CLI's own comment
+/// in pinvou-cli/crates/cli/src/memory.rs states the same split). Returns
+/// the explicit rejection message for the first wipe-shaped label, or None
+/// when the patch may proceed.
+fn memory_profile_patch_rejection(patch: &crate::features::memory::ProfilePatch) -> Option<String> {
+    for (topic, value) in [
+        ("call_name", &patch.call_name),
+        ("assistant_alias", &patch.assistant_alias),
+    ] {
+        if value.as_deref().is_some_and(|label| {
+            crate::features::memory::profile_label_would_be_wiped(label, topic)
+        }) {
+            return Some(format!(
+                "memory_profile_label_rejected: the {topic} label does not survive the \
+                 profile normalization (at most twelve characters after the \
+                 punctuation/particle strip, no question shapes, not task-like); \
+                 nothing was written — supply a shorter label, or clear the field \
+                 to remove the stored value"
+            ));
+        }
+    }
+    // r5 review: a STORED wipe-shaped label (hand-edited profile.json, or
+    // data written before these guards) is emptied by `normalize` on the
+    // write-back even when the patch only touches another field. That
+    // stored check lives INSIDE `update_profile`, under the same write
+    // lock as the write-back (r15 review): the lock-free pre-check here
+    // left a check-then-act window, and the auto-write path reaches
+    // update_profile without any surface pre-check at all. The in-lock
+    // refusal carries the `memory_profile_label_rejected` prefix; the
+    // command below passes it through verbatim so the editor keeps
+    // surfacing the crafted hint (r4/r12 contract).
+    None
+}
+
 #[tauri::command]
 pub async fn update_memory_profile(
     patch: crate::features::memory::ProfilePatch,
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryProfileState, String> {
+    if let Some(rejection) = memory_profile_patch_rejection(&patch) {
+        return Err(rejection);
+    }
     let profile = crate::features::memory::update_profile(patch).map_err(|e| {
-        crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+        // The in-lock stored-label refusal is a crafted user-facing
+        // contract — passed verbatim for the editor's prefix match
+        // (r4/r12); every other error folds the storage prefix.
+        if e.to_string().starts_with("memory_profile_label_rejected") {
+            e.to_string()
+        } else {
+            crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+        }
     })?;
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store);
     Ok(MemoryProfileState {
@@ -604,7 +656,14 @@ pub async fn confirm_pending_memory(
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
     let event = crate::features::memory::confirm_pending_memory(&id).map_err(|e| {
-        crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+        // The wipe-shaped-label refusal is a crafted user-facing
+        // contract — passed verbatim for the editor's prefix match
+        // (r4/r12); every other error folds the storage prefix.
+        if e.to_string().starts_with("memory_profile_label_rejected") {
+            e.to_string()
+        } else {
+            crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+        }
     })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
@@ -1525,5 +1584,189 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// Round-51 review gap closure pin: the GUI save path
+    /// (`update_memory_profile`) must refuse a wipe-shaped identity label
+    /// with an explicit error instead of letting `MemoryProfile::normalize`
+    /// silently empty the stored value behind a success payload — the shape
+    /// the CLI lane has refused up front since round 40. An empty patch
+    /// value stays the desktop-app "clear the field" action, and a short
+    /// valid label still saves.
+    #[test]
+    fn update_memory_profile_refuses_wipe_shaped_labels_but_still_clears() {
+        fn test_state(store: &SessionStore) -> State<'_, SessionStore> {
+            // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
+            // 大小由编译器静态校验一致；引用生命周期随 'r 存活到调用结束，
+            // 每次调用构造独立 State，不引入新的别名或对齐约束。
+            unsafe { std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(store) }
+        }
+        crate::platform::test_support::with_temp_home("pinvou3-profile-label-guard-test", || {
+            let root = crate::platform::paths::pinvou3_home();
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+
+            // 基线：合法短称呼正常落库。
+            let saved = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("阿欣".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("a valid short label saves");
+            assert_eq!(saved.profile.identity.call_name, "阿欣");
+
+            // 超长称呼（strip 后 >12 字符）：显式拒绝，存量值原样保留。
+            let rejected = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("Christian Wolf".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect_err("a wipe-shaped label must be refused");
+            assert!(
+                rejected.contains("memory_profile_label_rejected"),
+                "{rejected}"
+            );
+            assert_eq!(
+                crate::features::memory::load_profile()
+                    .unwrap()
+                    .identity
+                    .call_name,
+                "阿欣",
+                "nothing was written: the stored label survives the refusal"
+            );
+
+            // 疑问句形状（助手昵称）：同样拒绝。
+            let rejected = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    assistant_alias: Some("who?".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect_err("a question-shaped label must be refused");
+            assert!(
+                rejected.contains("assistant_alias"),
+                "the rejection must name the offending field: {rejected}"
+            );
+
+            // 清空仍是桌面端动作：空值清掉字段，而不是被守卫拦下。
+            // 纯空白值与空值同义（SettingsView 在发送前先 trim），一并钉住
+            // (r5 review: 之前只钉了空串那条腿)。
+            let cleared = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some(String::new()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("clearing the field stays allowed");
+            assert_eq!(cleared.profile.identity.call_name, "");
+            assert_eq!(
+                crate::features::memory::load_profile()
+                    .unwrap()
+                    .identity
+                    .call_name,
+                ""
+            );
+            let cleared_by_whitespace = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("   ".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("a whitespace-only value is clear-intent, not a wipe refusal");
+            assert_eq!(cleared_by_whitespace.profile.identity.call_name, "");
+        });
+    }
+
+    /// r13 review: the STORED wipe-shaped-label leg of the pre-guard had no
+    /// test — deleting the stored-check block shipped green. A hand-edited
+    /// profile.json carrying a wipe-shaped identity label (written before
+    /// these guards, or by anything that bypasses normalization) must refuse
+    /// a patch that does not set that label — normalize would silently empty
+    /// it on write-back — and the repair path, a patch setting the label
+    /// itself, must be judged on its own value rather than the stored one.
+    #[test]
+    fn update_memory_profile_refuses_a_stored_wipe_shaped_label_until_replaced() {
+        fn test_state(store: &SessionStore) -> State<'_, SessionStore> {
+            // SAFETY: 与上方测试相同的单引用 State newtype 构造，理由同前。
+            unsafe { std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(store) }
+        }
+        crate::platform::test_support::with_temp_home("pinvou3-stored-label-guard-test", || {
+            let root = crate::platform::paths::pinvou3_home();
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+
+            // 手写一份带擦除形状称呼的 profile.json（绕过 normalize 的写路径）。
+            let profile = crate::features::memory::load_profile().expect("load default profile");
+            let mut raw = serde_json::to_value(&profile).expect("serialize profile");
+            let mut identity = match raw.get("identity") {
+                Some(value @ serde_json::Value::Object(_)) => value.clone(),
+                _ => serde_json::to_value(&profile.identity).expect("serialize identity"),
+            };
+            identity["call_name"] = serde_json::Value::String("Christian Wolf".into());
+            raw["identity"] = identity;
+            let path = crate::features::memory::profile_path();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("profile dir");
+            }
+            std::fs::write(
+                &path,
+                serde_json::to_string(&raw).expect("stringify profile"),
+            )
+            .expect("write hand-edited profile");
+
+            // 不触碰该字段的 patch：拒绝，存量原样保留。
+            let rejected = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    language: Some("en".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect_err("a stored wipe-shaped label must refuse untouched-field patches");
+            assert!(
+                rejected.contains("memory_profile_label_rejected") && rejected.contains("stored"),
+                "{rejected}"
+            );
+            assert_eq!(
+                crate::features::memory::stored_wipe_shaped_identity_labels().unwrap(),
+                vec!["call_name"],
+                "nothing was written: the stored label survives the refusal"
+            );
+
+            // 修复路径：patch 自己设置该字段时按新值判定，合法值替换成功。
+            let saved = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("阿欣".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("a patch setting the label is judged on its own value");
+            assert_eq!(saved.profile.identity.call_name, "阿欣");
+            assert!(
+                crate::features::memory::stored_wipe_shaped_identity_labels()
+                    .unwrap()
+                    .is_empty(),
+                "the replaced label no longer reads as wipe-shaped"
+            );
+        });
     }
 }

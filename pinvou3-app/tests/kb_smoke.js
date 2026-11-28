@@ -89,7 +89,15 @@ function injectSource() {
         case 'kb_search': return Promise.resolve(FILES);
         case 'kb_collection_list': return Promise.resolve(COLLS);
         case 'kb_documents': return Promise.resolve((args&&args.collectionId>0)?DOCS:DOCS);
-        case 'kb_index_status': return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,done:0,total:0,failed:0});
+        case 'kb_index_status':
+          // 复审 P2 的竞态闸门(一次性):测试置 __KB_GATE_INDEX__ 后,下一个
+          // 状态请求挂起并自动清旗——保证被持的 tick 闭包确定捕获的是切集
+          // 前的集,后续 tick 不再进闸。
+          if (window.__KB_GATE_INDEX__) {
+            window.__KB_GATE_INDEX__ = false;
+            return new Promise(resolve => { window.__KB_RESOLVE_INDEX__ = resolve; });
+          }
+          return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,done:0,total:0,failed:0});
         case 'kb_index_resume': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,resumable:false}; return Promise.resolve(window.__KB_INDEX_STATE__);
         case 'kb_index_cancel': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:false,resumable:false}; return Promise.resolve(null);
         case 'kb_index_failed_files':
@@ -1579,6 +1587,55 @@ async function chooseRemoteUploadSource(page, testId) {
       && cancelFailure.visible && cancelFailure.refreshed
       && retryFailure.visible && retryFailure.refreshed,
     JSON.stringify({ resumeFailure, cancelFailure, retryFailure }));
+
+  // 复审 P2:索引完成轮询的 await 跨越用户切集。A 库(产品资料库)的状态
+  // 请求待定期间切到 B(市场调研),A 的迟到「索引完成」若仍以闭包里的旧集
+  // 调 loadDocs(1),该请求拿到的 generation 晚于 B——A 的内容盖掉 B,分页
+  // 页状态属于 A:续页被身份校验拒发,B 的后续页不可达,行操作引用 A 的
+  // 文档。落地后必须核对当前选择:已切集则绝不再碰旧集(切换路径自己加载)。
+  await page.evaluate(() => {
+    window.__KB_INDEX_STATE__ = { running: true, done: 1, total: 2, failed: 0, jobId: 'kb-race', collectionId: 1 };
+    window.__KB_GATE_INDEX__ = false;
+  });
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地文件管理')?.click());
+  await sleep(150);
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地知识库')?.click());
+  await sleep(1200);
+  // 先聚焦 A(产品资料库):轮询闭包要捕获「正在看 A」的渲染,竞态才有意义
+  // ——重进视图后 activeColl 为 null,空集不会触发 loadDocs。
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('div')].filter(d => typeof d.className === 'string' && d.className.includes('cursor-pointer') && (d.textContent || '').includes('产品资料库'));
+    if (cards.length) cards[0].click();
+  });
+  await sleep(800);
+  await page.evaluate(() => { window.__KB_GATE_INDEX__ = true; });
+  await sleep(1500);
+  const gateHeld = await page.evaluate(() => !!window.__KB_RESOLVE_INDEX__);
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('div')].filter(d => typeof d.className === 'string' && d.className.includes('cursor-pointer') && (d.textContent || '').includes('市场调研'));
+    if (cards.length) { cards[0].scrollIntoView({ block: 'center' }); cards[0].click(); }
+  });
+  await sleep(800);
+  const docsAtSwitch = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_documents').map(c => c.args && c.args.collectionId));
+  await page.evaluate(() => {
+    window.__KB_GATE_INDEX__ = false;
+    if (window.__KB_RESOLVE_INDEX__) {
+      window.__KB_RESOLVE_INDEX__({ running: false, done: 2, total: 2, failed: 0, jobId: 'kb-race', collectionId: 1 });
+      window.__KB_RESOLVE_INDEX__ = null;
+    }
+  });
+  await sleep(800);
+  const docsAfterRelease = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_documents').map(c => c.args && c.args.collectionId));
+  const staleReloaded = docsAfterRelease.slice(docsAtSwitch.length).includes(1);
+  // zhuowp r5 合流语义的第二半:释放后轮询必须针对**真实当前集**(B,id=2)
+  // 补一次刷新——切换加载等到的是导入中的不完整首批,轮询停止后只有这条
+  // 迟到的「索引完成」能把 B 刷完整;绝不允许回写旧 A(cid=1)。
+  const currentRefreshed = docsAfterRelease.slice(docsAtSwitch.length).includes(2);
+  rec('⑫ 索引完成轮询落地后刷新真实当前集(当前 B 补全刷新,旧 A 不得回写)',
+    gateHeld && docsAtSwitch.includes(2) && currentRefreshed && !staleReloaded,
+    JSON.stringify({ gateHeld, docsAtSwitch, docsAfterRelease, currentRefreshed, staleReloaded }));
 
   const localRowsBeforeDelete = await page.$$eval('[data-testid="kb-remove-document"]', buttons => buttons.length);
   await page.evaluate(() => { window.__KB_DEFER_REMOVE_DOCUMENT__ = true; });

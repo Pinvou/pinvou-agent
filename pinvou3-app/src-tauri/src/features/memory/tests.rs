@@ -1545,6 +1545,188 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     drop(home);
 }
 
+/// L3 review (round-17 fixwave): the profile confirm arm applied the pending
+/// row's RAW content to the profile and re-normalized — the last unguarded
+/// label write path. A wipe-shaped row (hand-edited or legacy
+/// `memory_pending.jsonl`; today's shipped creators pre-clean via
+/// `clean_memory_label`) silently emptied the stored label behind a success
+/// payload. The confirm must refuse with the family's crafted
+/// `memory_profile_label_rejected` prefix, keep the candidate UNCONSUMED so
+/// the user can dismiss it instead, write nothing — and still confirm a
+/// clean candidate.
+#[test]
+fn confirm_pending_memory_refuses_wipe_shaped_profile_labels_and_keeps_them_pending() {
+    let home = IsolatedPinvouHome::new("confirm-wipe-shaped-profile-label");
+
+    // (a) 擦除形状的 call_name 候选（strip 后超长）：显式拒绝，拒绝消息带
+    // 家族前缀并点名 topic，profile 不落盘，候选保持 pending 未消费。
+    let wiped = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "Christian Wolf".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused =
+        confirm_pending_memory(&wiped.id).expect_err("a wipe-shaped pending label must be refused");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("memory_profile_label_rejected"),
+        "the refusal carries the family's crafted prefix: {refused}"
+    );
+    assert!(
+        refused.to_string().contains("call_name"),
+        "the refusal names the offending topic: {refused}"
+    );
+    assert!(
+        !profile_path().exists(),
+        "nothing was written: no profile file after the refusal"
+    );
+    let still_pending = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == wiped.id)
+        .expect("the refused candidate stays in the pending store");
+    assert_eq!(still_pending.status, PENDING_STATUS_PENDING);
+    assert_eq!(still_pending.content, "Christian Wolf");
+
+    // 拒绝不消费候选：用户仍可改为忽略（dismissal 分支照常工作）。
+    assert!(matches!(
+        ignore_pending_memory(&wiped.id).unwrap(),
+        PendingIgnoreOutcome::Ignored(_)
+    ));
+
+    // (b) 干净内容的候选照常确认：写库成功、行被消费为 confirmed。
+    let clean = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "Ada".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&clean.id).unwrap().unwrap();
+    assert_eq!(
+        load_profile().unwrap().identity.call_name,
+        "Ada",
+        "a clean candidate still confirms"
+    );
+    let confirmed = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == clean.id)
+        .expect("the confirmed row stays in the pending store with its decision");
+    assert_eq!(confirmed.status, PENDING_STATUS_CONFIRMED);
+    drop(home);
+}
+
+/// 复审 P2：确认一个称呼会整档写回 profile——若文件里保留的另一称呼是
+/// wipe 形（手改或旧版本写入的历史形态，update_profile 的存量守卫所保护
+/// 的同一形状），确认本侧的完全合法候选仍会把它静默抹掉。确认臂在同一条
+/// 写锁内复用现成的存量字段检查（原始文件读取：load_profile 读时即归一
+/// 化，内存档案无法作证），只看保留侧；拒绝保持候选 pending。两个方向
+/// 各钉一例，同侧豁免（候选整体替换存量）与干净档案照常确认各收一例。
+#[test]
+fn confirm_refuses_when_the_retained_stored_label_is_wipe_shaped() {
+    let home = IsolatedPinvouHome::new("confirm-retained-wipe-shaped-label");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    // (a) 确认 call_name，文件里保留的 assistant_alias 是 wipe 形：拒绝并
+    // 点名保留侧 topic，原始文件原样保留，候选保持 pending。
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"阿宝","assistant_alias":"Christian Wolf"}}"#,
+    )
+    .unwrap();
+    let candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "阿欢".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused = confirm_pending_memory(&candidate.id)
+        .expect_err("confirming over a wipe-shaped retained alias must be refused");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("memory_profile_label_rejected"),
+        "the refusal carries the family's crafted prefix: {refused}"
+    );
+    assert!(
+        refused.to_string().contains("assistant_alias"),
+        "the refusal names the retained topic: {refused}"
+    );
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.contains("Christian Wolf"),
+        "nothing was written: the stored alias survives untouched: {raw}"
+    );
+    let still = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == candidate.id)
+        .expect("the refused candidate stays pending");
+    assert_eq!(still.status, PENDING_STATUS_PENDING);
+    drop(home);
+
+    // (b) 反向：确认 assistant_alias，保留侧 call_name 是 wipe 形——同样
+    // 拒绝并点名 call_name。
+    let home = IsolatedPinvouHome::new("confirm-retained-wipe-shaped-call-name");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"Christian Wolf","assistant_alias":"小品"}}"#,
+    )
+    .unwrap();
+    let alias_candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "assistant_alias".to_string(),
+        content: "小宝".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused_alias = confirm_pending_memory(&alias_candidate.id)
+        .expect_err("the retained call_name shape must refuse an alias confirm");
+    assert!(
+        refused_alias.to_string().contains("call_name"),
+        "the refusal names the retained call_name: {refused_alias}"
+    );
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("Christian Wolf"), "nothing written: {raw}");
+    drop(home);
+
+    // (c) 同侧豁免：wipe 形的是候选自己的 topic——候选整体替换存量，照常
+    // 确认（对侧字段缺省不受影响）。
+    let home = IsolatedPinvouHome::new("confirm-same-topic-stored-shape-exempt");
+    let path = profile_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"version":1,"identity":{"call_name":"Christian Wolf"}}"#,
+    )
+    .unwrap();
+    let same_topic = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "阿欢".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&same_topic.id)
+        .unwrap()
+        .expect("replacing the same topic's stored shape must confirm");
+    let profile = load_profile().unwrap();
+    assert_eq!(profile.identity.call_name, "阿欢");
+    assert!(
+        profile.identity.assistant_alias.is_empty(),
+        "the absent alias stays absent"
+    );
+    drop(home);
+}
+
 #[test]
 fn render_empty_profile_is_empty() {
     let profile = MemoryProfile {
@@ -2196,9 +2378,12 @@ fn memory_jsonl_writes_are_bounded() {
     );
     assert!(recent.len() <= RECENT_WORK_ACTIVE_MAX_STORED + RECENT_WORK_ARCHIVED_MAX_STORED);
 
-    let pending: Vec<PendingMemoryItem> = (0..120)
+    // Round-51 limits audit: the active (unconfirmed) bucket cap rose 20 →
+    // 200, so the fixture now feeds 260 pending + 60 resolved rows to still
+    // exercise the newest-first truncation the assertions pin.
+    let pending: Vec<PendingMemoryItem> = (0..320)
         .map(|i| {
-            let pending = i < 25;
+            let pending = i < 260;
             let ts = (now - Duration::minutes(i)).to_rfc3339();
             PendingMemoryItem {
                 id: format!("pending_{i}"),
@@ -2227,6 +2412,15 @@ fn memory_jsonl_writes_are_bounded() {
         PENDING_MEMORY_ACTIVE_MAX_STORED
     );
     assert!(pending.len() <= PENDING_MEMORY_ACTIVE_MAX_STORED + PENDING_MEMORY_RESOLVED_MAX_STORED);
+    // Newest-first retention: the most recent pending row survives, the
+    // overflow beyond the active cap is dropped oldest-first (same shape the
+    // never-store block below pins).
+    assert!(
+        pending
+            .iter()
+            .any(|item| item.id == "pending_0" && item.status == PENDING_STATUS_PENDING)
+    );
+    assert!(!pending.iter().any(|item| item.id == "pending_259"));
 
     let never: Vec<NeverMemoryItem> = (0..205)
         .map(|i| NeverMemoryItem {
@@ -3566,16 +3760,36 @@ fn compact_timed_memory_store_dedupes_and_enforces_capacity() {
 }
 
 #[tokio::test]
-async fn organize_history_is_bounded_to_recent_twenty() {
+async fn organize_history_is_bounded_to_recent_two_hundred() {
     let _home = IsolatedPinvouHome::new("organize-history-bound");
     enable_memory_for_tests();
     let bridge = FakeOrganizeModel {
         base_url: "http://127.0.0.1:9".to_string(),
     };
-    for _ in 0..25 {
+    for _ in 0..(crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS + 5) {
         organize_memory_with_llm(&bridge, None).await.unwrap();
     }
-    assert_eq!(load_organize_history().len(), 20);
+    assert_eq!(
+        load_organize_history().len(),
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS
+    );
+}
+
+/// The audited limits' VALUES are part of the disclosure (register row in
+/// docs/fork-modifications.md), so they are pinned literally — the mechanism
+/// tests above stay green if a constant silently reverts to its old
+/// pre-audit value (20/20/90).
+#[test]
+fn audited_memory_limit_values_match_the_register() {
+    assert_eq!(PENDING_MEMORY_ACTIVE_MAX_STORED, 200);
+    assert_eq!(
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS,
+        200
+    );
+    assert_eq!(
+        crate::features::memory::types::TIMED_MEMORY_MAX_TTL_DAYS,
+        3650
+    );
 }
 
 #[tokio::test]

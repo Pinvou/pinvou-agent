@@ -271,9 +271,29 @@ where
     }
 }
 
-/// Bound a future by the request's harness deadline, if it declares one.
-/// `None` (unbounded) runs the future as-is: the run is then bounded only by
-/// the engine's own limits (model steps, per-turn wall clock, cancellation).
+/// Per-phase cap for the harness's LOCAL phases (attachment resolution,
+/// `prepare`, `resolve_output`, `close`) when a task declares NO harness
+/// deadline (the GAIA lane). The engine turn itself stays engine-bounded by
+/// design (per-turn wall clock, step budget, cancellation), but a wedged
+/// local phase would otherwise hang `benchmark run` until the operator kills
+/// it — exactly the failure class the retired per-task 600 s deadline used to
+/// cover. Each local phase gets its own fresh cap and fails closed into the
+/// same terminal `task_timeout` states the declared-deadline path produces.
+const HARNESS_LOCAL_PHASE_FALLBACK: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The instant one harness local phase is bounded by: the task's declared
+/// deadline when it declares one, otherwise the [`HARNESS_LOCAL_PHASE_FALLBACK`]
+/// cap measured from now — so every phase under a `None` deadline gets its
+/// own fresh window instead of sharing one across the task.
+fn local_phase_deadline(deadline: Option<tokio::time::Instant>) -> tokio::time::Instant {
+    deadline.unwrap_or_else(|| tokio::time::Instant::now() + HARNESS_LOCAL_PHASE_FALLBACK)
+}
+
+/// Bound a future by the given harness deadline. The task's `run` future is
+/// called with the declared deadline, if any: `None` runs it as-is, bounded
+/// only by the engine's own limits (model steps, per-turn wall clock,
+/// cancellation). Local phases go through [`local_phase_deadline`] instead,
+/// so a `None` deadline never leaves them unbounded.
 async fn bound_by_deadline<T>(
     deadline: Option<tokio::time::Instant>,
     future: impl std::future::Future<Output = T>,
@@ -330,15 +350,17 @@ where
         let deadline = timeout_duration.map(|timeout| tokio::time::Instant::now() + timeout);
         let mut resolved_attachments = Vec::with_capacity(attachments.len());
         for attachment in &attachments {
-            let resolved =
-                bound_by_deadline(deadline, self.private_inputs.resolve_attachment(attachment))
-                    .await
-                    .map_err(|_| BenchmarkError::coded("task_timeout"))?
-                    .map_err(|_| BenchmarkError::coded("attachment_resolution_failed"))?;
+            let resolved = bound_by_deadline(
+                Some(local_phase_deadline(deadline)),
+                self.private_inputs.resolve_attachment(attachment),
+            )
+            .await
+            .map_err(|_| BenchmarkError::coded("task_timeout"))?
+            .map_err(|_| BenchmarkError::coded("attachment_resolution_failed"))?;
             resolved_attachments.push(resolved);
         }
         let session = bound_by_deadline(
-            deadline,
+            Some(local_phase_deadline(deadline)),
             self.backend.prepare(
                 PrepareRequest::new(task.task_id(), attachments)
                     .with_resolved_attachments(resolved_attachments)
@@ -374,7 +396,12 @@ where
         let private_output = match &result {
             Ok(outcome) => match outcome.output_handle() {
                 Some(handle) => {
-                    match bound_by_deadline(deadline, self.backend.resolve_output(handle)).await {
+                    match bound_by_deadline(
+                        Some(local_phase_deadline(deadline)),
+                        self.backend.resolve_output(handle),
+                    )
+                    .await
+                    {
                         Ok(resolved) => Some(resolved),
                         Err(_) => {
                             let elapsed = run_started.elapsed().as_millis() as u64;
@@ -393,21 +420,25 @@ where
             },
             Err(_) => None,
         };
-        let close_result =
-            match bound_by_deadline(deadline, self.backend.close(session.clone())).await {
-                Ok(result) => result,
-                Err(_) => {
-                    let elapsed = run_started.elapsed().as_millis() as u64;
-                    self.cleanup_timed_out_session(&session).await;
-                    return Ok(failed_task_outcome_with_metrics(
-                        task.task_id(),
-                        "task_timeout",
-                        elapsed,
-                        collected_tools(observer.as_ref()),
-                        result.as_ref().ok(),
-                    ));
-                }
-            };
+        let close_result = match bound_by_deadline(
+            Some(local_phase_deadline(deadline)),
+            self.backend.close(session.clone()),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                let elapsed = run_started.elapsed().as_millis() as u64;
+                self.cleanup_timed_out_session(&session).await;
+                return Ok(failed_task_outcome_with_metrics(
+                    task.task_id(),
+                    "task_timeout",
+                    elapsed,
+                    collected_tools(observer.as_ref()),
+                    result.as_ref().ok(),
+                ));
+            }
+        };
         if close_result.is_err() {
             return Ok(failed_task_outcome_with_metrics(
                 task.task_id(),
@@ -483,6 +514,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// The 600s fallback value is documented shipped contract
+    /// (docs/gaia-benchmark.md); the behavioral phase test in
+    /// run_core_contract.rs runs under `start_paused` virtual time, which
+    /// fires ANY duration — pin the literal here so a silent
+    /// 600→600_000 loosening stays invisible no longer (r4 review).
+    #[test]
+    fn harness_local_phase_fallback_stays_at_600s() {
+        assert_eq!(
+            crate::runner::HARNESS_LOCAL_PHASE_FALLBACK,
+            std::time::Duration::from_secs(600)
+        );
+    }
     use super::{safe_failure_code, safe_tool_name};
 
     #[test]

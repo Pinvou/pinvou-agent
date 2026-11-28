@@ -1,3 +1,14 @@
+import '../../shared/chunked-file-upload.js';
+
+const { MAX_FILE_BYTES: ATTACHMENT_MAX_FILE_BYTES } = globalThis.PinvouChunkedFileUpload;
+
+// The localized fileTooLarge copy takes the MB figure as an argument (same
+// shape as the skill-store zipTooLarge copy) so the "20 MB" users see cannot
+// drift from the cap it describes — the browser preflight mirror of
+// file_ingest::MAX_FILE_BYTES, locked as a literal by the web_access contract
+// test. Derive it once here and inject it at render time.
+const MAX_FILE_MB = Math.round(ATTACHMENT_MAX_FILE_BYTES / (1024 * 1024));
+
 export const ATTACHMENT_LIMIT_ERROR_CODES = Object.freeze({
   fileTooLarge: 'attachment_file_too_large',
   uploadCacheFull: 'web_attachment_upload_cache_full',
@@ -9,7 +20,7 @@ export const ATTACHMENT_LIMIT_ERROR_CODES = Object.freeze({
 });
 
 /** @typedef {{ code?: unknown, message?: unknown }} AttachmentLimitErrorLike */
-/** @typedef {{ fileTooLarge?: string, deviceUploadCacheFull?: string, deviceParsedTooLarge?: string, deviceCacheFull?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string, archiveUnsafeEntry?: string }} AttachmentLimitCopy */
+/** @typedef {{ fileTooLarge?: (mb: number) => string, deviceUploadCacheFull?: string, deviceParsedTooLarge?: string, deviceCacheFull?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string, archiveUnsafeEntry?: string }} AttachmentLimitCopy */
 
 /**
  * Normalize browser-side size failures and backend attachment rejection codes.
@@ -39,7 +50,9 @@ export function attachmentLimitErrorCode(error) {
 export function formatAttachmentLimitError(error, copy = {}) {
   switch (attachmentLimitErrorCode(error)) {
     case ATTACHMENT_LIMIT_ERROR_CODES.fileTooLarge:
-      return copy.fileTooLarge || '';
+      // Tolerate a missing copy object (the `copy = {}` default) the way the
+      // old `|| ''` fallback did instead of throwing inside an error renderer.
+      return typeof copy.fileTooLarge === 'function' ? copy.fileTooLarge(MAX_FILE_MB) : '';
     case ATTACHMENT_LIMIT_ERROR_CODES.uploadCacheFull:
       return copy.deviceUploadCacheFull || '';
     case ATTACHMENT_LIMIT_ERROR_CODES.parsedCacheTooLarge:

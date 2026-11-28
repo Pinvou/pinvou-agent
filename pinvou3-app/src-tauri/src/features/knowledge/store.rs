@@ -25,7 +25,13 @@ use serde::{Deserialize, Serialize};
 /// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。v4 现容忍两种物理形态：
 /// 本版本起的全新建库不再创建 collections.embed_model/embed_dim（从未有代码读写），
 /// 旧库的这两列原样保留——所有语句都走显式列清单，两形态行为一致，故不 bump 版本。
-const SCHEMA_VERSION: i64 = 4;
+///
+/// v5: knowledge_import_jobs 增加 skipped_by_excluder（显式导入的 Excluder 拒绝
+/// 文件数披露，round-51 limits audit——白名单把整个根剪空时此前只有幸存数可见）。
+/// v4→v5 迁移在 open() 的迁移分支里先探测列存在再补 ALTER：迁移分支本身不
+/// 容错——包括列已存在的「duplicate column name」，那一次打开会响亮失败、
+/// 下次打开走 steady state（跨进程并发迁移的一次性竞态，注释见迁移分支）。
+const SCHEMA_VERSION: i64 = 5;
 
 /// Whether a store at `version` may be deleted and rebuilt on open.
 ///
@@ -209,7 +215,10 @@ CREATE TABLE IF NOT EXISTS knowledge_import_jobs (
     state           TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
-    finished_at     INTEGER
+    finished_at     INTEGER,
+    -- v5 披露列：显式导入遍历中被 Excluder 直接拒绝的文件数（目录整株剪枝
+    -- 时其下文件不可枚举，故为下界）。旧库经 open() 的迁移分支 ALTER 补列。
+    skipped_by_excluder INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_import_jobs_collection
     ON knowledge_import_jobs(collection_id, updated_at DESC);
@@ -497,12 +506,14 @@ impl Store {
                 ));
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
-            // A v4 steady-state store may still carry the old-shape files_au
-            // (opened before the WHEN upgrade landed; this branch skips the
-            // DDL batch, so the batch's replacement never reaches existing
-            // stores). Identify the old shape with a read-only probe
-            // (sqlite_master.sql without the WHEN clause) and run the
-            // replacement when the trigger is missing or wrong-shaped —
+            // A steady-state store may still carry the old-shape files_au:
+            // any store stamped v5 by a binary built before the WHEN upgrade
+            // landed in this tree (the DDL batch it ran never contained the
+            // replacement, and this branch skips the batch, so nothing else
+            // reaches existing stores). Identify the old shape with a
+            // read-only probe (sqlite_master.sql without the WHEN clause)
+            // and run the replacement when the trigger is missing or
+            // wrong-shaped —
             // the probe is a plain SELECT and takes no write lock, so the
             // steady-state open's two-process contention window is unchanged
             // (a present, correct trigger means neither branch fires); the
@@ -558,12 +569,62 @@ impl Store {
                 }
             }
         } else {
-            // Fresh create / in-place v3 migration: the DDL batch and the
+            // Fresh create / in-place migration: the DDL batch and the
             // version write each take the write lock once; busy_timeout makes
             // them wait out the other process's short transaction instead of
             // failing immediately.
             w.execute_batch(&schema_sql())?;
-            w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+            // v4 → v5 column migration. The idempotent DDL batch above cannot
+            // add a column to an existing table (`CREATE TABLE IF NOT EXISTS`
+            // skips), so pre-v5 stores get the disclosure column through this
+            // ALTER. Column presence is checked structurally (PRAGMA
+            // table_info) instead of string-matching SQLite's error text: a
+            // fresh v5 database already has the column from the CREATE TABLE
+            // and skips the ALTER, a pre-v5 store takes it, and any real
+            // fault still propagates. Concurrency (review P2): the check →
+            // ALTER → version write now run inside one BEGIN IMMEDIATE —
+            // same convergence shape as the files_au replacement above — so
+            // the desktop app and the CLI opening the SAME pre-v5 store
+            // concurrently no longer race a column-absent observation: the
+            // loser blocks on BEGIN IMMEDIATE within busy_timeout, then its
+            // in-transaction check sees the winner's committed column and
+            // skips the ALTER; both opens converge instead of the loser
+            // failing with "duplicate column name" until the next open. A
+            // mid-batch failure (or a >5s lock holder timing out loudly,
+            // same as before) rolls the transaction back explicitly — a
+            // stranded txn would break every later transaction on this
+            // connection and hold the write lock against the other process
+            // until close. `PRAGMA user_version` is transactional in SQLite,
+            // so the version stamp cannot land without the column.
+            let migration_result = (|| -> rusqlite::Result<()> {
+                w.execute_batch("BEGIN IMMEDIATE;")?;
+                let column_present = {
+                    let mut stmt = w.prepare("PRAGMA table_info(knowledge_import_jobs)")?;
+                    let mut rows = stmt.query([])?;
+                    let mut found = false;
+                    while let Some(row) = rows.next()? {
+                        let name: String = row.get(1)?;
+                        if name.eq_ignore_ascii_case("skipped_by_excluder") {
+                            found = true;
+                            break;
+                        }
+                    }
+                    found
+                };
+                if !column_present {
+                    w.execute_batch(
+                        "ALTER TABLE knowledge_import_jobs \
+                         ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
+                    )?;
+                }
+                w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                w.execute_batch("COMMIT;")?;
+                Ok(())
+            })();
+            if let Err(err) = migration_result {
+                let _ = w.execute_batch("ROLLBACK");
+                return Err(err);
+            }
         }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
@@ -1561,6 +1622,135 @@ mod tests {
         assert_eq!(name, "保留的知识集");
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(import_table, 1);
+        drop(conn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// v4 → v5 migration pin (round-51 limits audit): a pre-v5 store's
+    /// `knowledge_import_jobs` row lacks the `skipped_by_excluder` disclosure
+    /// column, and the idempotent DDL batch cannot add it (CREATE TABLE IF
+    /// NOT EXISTS skips). `Store::open`'s tolerant ALTER must add the column
+    /// in place — keeping existing rows readable — and a fresh v5 database
+    /// (column already present) must take the duplicate-column arm without
+    /// surfacing an error. Without the migration every walk disclosure write
+    /// on an existing user store would fail.
+    /// 迁移收敛（review P2，同时打开）：输家状态可静态复现——列已存在但
+    /// user_version 仍钉在 v4（另一进程 ALTER 已提交、版本写尚未发生的
+    /// 窗口，或输家在 BEGIN IMMEDIATE 上等到赢家提交后的情形）。重开必须
+    /// 在事务内看到列已在、跳过 ALTER、补钉版本并成功打开——不再出现
+    /// "duplicate column name" 的硬失败。
+    #[test]
+    fn stale_version_store_with_column_present_reopens() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_v4_race_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE knowledge_import_jobs (\
+               id              TEXT PRIMARY KEY,\
+               collection_id   INTEGER NOT NULL,\
+               roots_json      TEXT NOT NULL,\
+               state           TEXT NOT NULL,\
+               created_at      INTEGER NOT NULL,\
+               updated_at      INTEGER NOT NULL,\
+               finished_at     INTEGER,\
+               skipped_by_excluder INTEGER NOT NULL DEFAULT 0\
+             );\
+             PRAGMA user_version=4;",
+        )
+        .unwrap();
+        drop(c);
+
+        let store = Store::open(&path).expect("reopen must converge, not fail on duplicate column");
+        let conn = store.conn_arc();
+        let version: i64 = conn
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v4_database_gains_the_skipped_by_excluder_column_on_open() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_v4_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // A v4-shaped store: the import-jobs table in its pre-v5 column set,
+        // one existing job row, no disclosure column.
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE knowledge_import_jobs (\
+               id              TEXT PRIMARY KEY,\
+               collection_id   INTEGER NOT NULL,\
+               roots_json      TEXT NOT NULL,\
+               state           TEXT NOT NULL,\
+               created_at      INTEGER NOT NULL,\
+               updated_at      INTEGER NOT NULL,\
+               finished_at     INTEGER\
+             );\
+             INSERT INTO knowledge_import_jobs(id,collection_id,roots_json,state,created_at,updated_at)\
+             VALUES('kb-import-legacy',1,'[]','done',1,1);\
+             PRAGMA user_version=4;",
+        )
+        .unwrap();
+        drop(c);
+
+        let store = Store::open(&path).unwrap();
+        let conn = store.conn_arc();
+        let version: i64 = conn
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // The legacy row survived the migration ...
+        let legacy: i64 = conn
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_import_jobs WHERE id='kb-import-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 1);
+        // ... and the disclosure column is present with the pre-column
+        // default, then writable.
+        let skipped: i64 = conn
+            .lock()
+            .query_row(
+                "SELECT COALESCE(skipped_by_excluder,0) FROM knowledge_import_jobs \
+                 WHERE id='kb-import-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(skipped, 0);
+        conn.lock()
+            .execute(
+                "UPDATE knowledge_import_jobs SET skipped_by_excluder=7 \
+                 WHERE id='kb-import-legacy'",
+                [],
+            )
+            .unwrap();
         drop(conn);
         drop(store);
         let _ = std::fs::remove_file(&path);

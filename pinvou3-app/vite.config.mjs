@@ -467,11 +467,272 @@ function enforceLazyChunks() {
   };
 }
 
-// Startup size is managed by refactoring, not by a byte ceiling: keep
-// render-path code out of the main entry via the lazy contracts above and
-// revisit the startup graph with periodic measurement-and-refactor passes
-// instead of paying a per-PR budget ritual. Vite's informational 500 kB
-// chunk warning on the web build is expected and carries no gate.
+// The enforced gates are assertMainEntryBudget below, one ceiling per build
+// mode. Vite's informational 500 kB chunk warning still fires on every web
+// build (on the statically-preloaded chat-view group chunk) and is expected
+// — the gate, not the warning, is the budget. New entry work should still be
+// split or lazy-loaded. Raising a ceiling requires measured desktop + web
+// before/after sizes and an explicit review decision.
+//
+// 500_000 → 502_000 (round-21 B-1; decided in PR #627 and disclosed after
+// the round-22 review found the raise missing from that PR's description):
+// the session-messaging receive path adds ≈ +2 kB of web entry (same-base:
+// main@007f5ea4 alone = 498.54 kB web; merged head = 500.69 kB web /
+// 498.34 kB desktop on the current toolchain). The deferrable UI (sender
+// card) and the send-side builder were already split out (round-18/20);
+// the remainder is the synchronous receive-path parser, which cannot defer
+// without breaking render semantics. An in-PR trim (builder split into the
+// lazy graph) was measured net +122 B and rejected.
+//
+// Round-43 (this PR): the same ceiling also absorbs the node-version
+// minification delta between local (v22) and CI (v24) toolchains — the
+// identical tree measured 499.7 kB locally and 500.6 kB on CI; only the
+// minifier output differs.
+//
+// 502_000 → 504_000 (this PR's rebase onto the #627+#714 main, measured per
+// policy): main's own web entry is now 500.69 kB on the local v22 toolchain
+// (1.3 kB under its own ceiling); this PR's feature net adds +2.10 kB
+// (500.69 → 502.79 local; CI projects ≈503.7 at the stable +0.9 kB toolchain
+// delta). The picker/grouping helpers are render-path synchronous and cannot
+// defer; the ceiling is the measured projection, not padded.
+//
+// 504_000 → 505_000 (this PR's re-cut onto the #733 main, measured per
+// policy): #733's Tachyon app-side wiring rides the shared entry; the
+// joint main entry measures 504,082 B locally and identically on CI —
+// 82 B over the 504_000 ceiling this PR last raised. The picker/grouping
+// helpers are render-path synchronous and cannot defer; the ceiling is
+// the measured projection, not padded.
+//
+// 505_000 → 506_000 (PR #628 follow-ups, measured per policy):
+// The author explicitly approved 506_000 on 2026-10-21 after reviewing
+// both targets. On this branch, npm ci with pinned Vite 8.3.4 / Node 22.23.1
+// produces 505,454 B web and 502,135 B desktop. Review 5596933329 measured
+// its combined tree with main@0baf7fa6c at 505,848 / 502,533 B; that is
+// 152 B web headroom, not a reproduced toolchain-tolerance allowance.
+// The card/parser remain lazy. Future combined trees must pass this gate;
+// this cap does not promise headroom for unrelated main changes.
+//
+// 506_000 → 507_000 (PR #773, measured per policy): the swarm overlay's
+// structured worker-status merge rides the startup graph; same-base build
+// against main@f1ae1279a measures 505,844 → 506,175 B web (CI node 24:
+// 506,192) and 502,529 → 502,862 B desktop, i.e. +331 B of synchronous
+// event-path merge rules (token precedence, identity guard, ending-token
+// set). The merge runs on the always-mounted overlay and cannot defer
+// without breaking render semantics; the minified delta is all live logic
+// (verified by chunk diff — no comments or dead code ride along). The next
+// thousand step leaves 808 B web headroom at the CI measurement; this cap
+// does not promise headroom for unrelated main changes.
+//
+// 507_000 → 485_000 desktop / 128_000 web (PR #787, measured per policy):
+// the browser view joined the lazy route table, so the startup graph no
+// longer carries the browser pane graph: entry 502,952 → 484,660 B desktop
+// and 506,357 → 127,605 B web; startup closures 1,114,837 → 1,096,545 B
+// desktop main window and 1,114,426 → 1,093,018 B web; pet/reader windows
+// byte-identical. The web build additionally groups ChatView and the
+// marked/dompurify stack out of the entry file (both chunks still load at
+// startup, so that part is layout and cache stability, not a startup
+// reduction; the groups' constraints are documented at the groups below).
+// The web entry therefore gets its own ceiling: a single 507_000 ceiling
+// would have stayed ≈4× the web entry and never fired again. Both ceilings
+// are the next thousand step above the measured entry. Toolchain headroom:
+// the last two recorded CI (node 24) vs local (node 22) comparisons differed
+// by 0–17 B, but round-43 above recorded ~0.9 kB; a recurrence of that
+// delta exceeds this headroom and forces a re-cut per policy.
+//
+// 485_000 → 486_000 desktop only (PR #782, measured per policy): the
+// internal-runtime user-message classification (canonical context-update
+// and turn-meta envelopes) joins the shared startup graph so the CodeX
+// native lane and the bridge lanes classify persisted role=user messages
+// with one parser; same-base build against main@1e9cdd225 measures
+// 484,699 → 485,800 B desktop and 127,596 → 127,596 B web (byte count
+// unchanged — on web the classification rides the chat-view group, not
+// the entry file). The desktop ceiling takes the next thousand step,
+// leaving 200 B headroom at the local node 24 measurement; the web
+// ceiling already sits the next thousand step above the unchanged web
+// entry and stays 128_000. This cap does not promise headroom for
+// unrelated main changes.
+//
+// 486_000 → 487_000 desktop only (PR #833 fix wave, measured per policy):
+// the input-needed settings toggle joins the shared startup graph — state,
+// load sync, and one shared save/rollback pipeline for both notification
+// switches (the toggle handler factory replaced the duplicated pair and
+// gave back 62 B; the row's master-derivation rides the lazy SettingsView).
+// Same-base build against 65d2030a9 (the 2026-11-06 rebase base: the #832
+// squash now on main) measures 485,915 → 486,097 B desktop and
+// 127,596 → 127,777 B web on the local node 24 toolchain. The desktop
+// ceiling takes the next thousand step; the web ceiling stays 128_000
+// (223 B headroom above the measured web entry). This cap does not promise
+// headroom for unrelated main changes.
+//
+// PR #834 owns the 487_000 → 488_000 desktop step on top of #833's shared
+// 486_000 → 487_000 raise (re-cut per policy on top of the rebased #833,
+// whose rebase onto main brought in the tray feature): the main-lane
+// manual-compaction entry hardens in the always-mounted chat surface —
+// busy/compacting click gate, session-keyed in-flight state with a
+// 15-minute lost-terminal self-heal (mirroring the Rust
+// MAX_COMPACTION_LATCH_AGE), and localized engine-error mapping. All of
+// that is ChatView render-path code; it cannot defer without breaking the
+// composer footer. The shared compactingSessions bridge slice with
+// eviction protection lives in the bridge/shared helpers, which ride the
+// classic startup bundles on both platforms — outside this entry gate.
+// Both endpoints measured on the local node 24 toolchain: 486,097 →
+// 487,290 B desktop (+1,193 B: +789 feature entry, +158 review-fix
+// hardening, +15 marker-takeover release fix, +231 gate self-heal tick)
+// and 127,777 → 127,777 B web (byte-identical in size: the web entry
+// chunk is untouched — ChatView rides the web-only lazy chat-view group,
+// and the bridge-side additions ride the classic startup bundles). The
+// desktop ceiling takes the next thousand step (710 B headroom); the web
+// ceiling stays 128_000 (223 B headroom above the measured web entry).
+// This cap does not promise headroom for unrelated main changes.
+//
+// Review 5874108926 fix waves, measured on the same toolchain: the
+// per-session marker map + the start-signal reconcile sweep (+215 B
+// desktop) → 487,810 B desktop (190 B headroom under the 488_000
+// ceiling, no re-cut needed); web unchanged (still size-identical).
+// Review 5876783763 wave: the reconcile arm orders by the monotonic
+// compaction sequence instead of two wall-clock/flag arms (−34 B
+// desktop) → 487,776 B desktop (224 B headroom under the 488_000
+// ceiling, no re-cut needed).
+//
+// PR #835 owns the 128_000 → 129_000 web raise (and rides the 488_000
+// desktop ceiling from #834): the session-fork wiring joins the chat
+// surface on both platforms (fork entries, per-turn ordinal plumbing,
+// and the fork handler in ChatView; the archive-import surface lives in
+// the lazily-loaded SettingsView and does not touch the entry). Measured
+// on the pre-rebase stack (old feat-manual-compact tip): 487,840 → 487,840 B
+// desktop (byte-identical — the fork wiring sits inside the desktop entry's
+// existing headroom) and 127,777 → 128,263 B web on the local node 24
+// toolchain. The web ceiling takes the next thousand step (737 B headroom).
+// This cap does not promise headroom for unrelated main changes.
+//
+// PR #835 review-fix wave owns the 488_000 → 489_000 desktop raise: the
+// fork/rewind ordinal counter (context_update runtime-message plumbing in
+// ChatView/bridge), the fork auto-switch mount guard + split switch-failure
+// notice, and the case-insensitive sched- gate. Measured at the wave tip:
+// 487,867 → 488,188 B desktop (+321 B; 812 B under the new ceiling). The
+// web entry measured 127,863 B at the review head and stays under 129_000.
+// This cap does not promise headroom for unrelated main changes.
+//
+// PR #835 second fix wave (r2 review) owns the 489_000 → 490_000 desktop
+// raise: the committed-transcript context_update resync wiring on the fork
+// surface, the rebind-error classification in the fork failure toast, and the
+// artifact-html sandbox hardening (postMessage measurement/zoom/install
+// bootstrap in artifact-preview-navigation.js, the entry-side copy via
+// composer-shared; ArtifactsPanel rides a lazy chunk). Measured at the wave
+// tip: 488,188 → 489,518 B desktop (+1,330 B; 482 B under the new ceiling).
+// The web entry measured 126,661 B at the wave tip and stays under 129_000
+// (the tauri-only counter plumbing does not ride the web entry). This cap
+// does not promise headroom for unrelated main changes.
+//
+// PR #835 r7 review-fix wave owns the 490_000 → 491_000 desktop raise: the
+// compaction-latched fork entry gate + real switch-failure surfacing, the
+// compaction counter-baseline reset wiring, the embedded rebind-marker
+// classification fallback, and the bootstrap parse-safety harness on the
+// preview frame surface. Measured at the wave tip on the reconciled stack:
+// 490,073 B desktop (73 B over the old ceiling). The web entry measured
+// 126,790 B and stays under 129_000. This cap does not promise headroom
+// for unrelated main changes.
+//
+// PR #835 rebase re-measure on the rebased feat-manual-compact tip
+// (60d4f3796): the parent's four compaction-marker commits land under the
+// same replayed r7 wiring, measuring 490,994 B desktop — 6 B of headroom
+// under the 491_000 ceiling, below toolchain-noise tolerance — so the
+// desktop ceiling takes the next thousand step. The web entry measured
+// 126,911 B and stays under 129_000. This cap does not promise headroom
+// for unrelated main changes.
+// PR #826 (measured per policy): the computer-use virtual display target
+// joins the shared startup graph. What grows the desktop entry is the
+// consent, chat and computer-use logic surface, which the desktop build
+// inlines into main-*.js where the web build lazy-splits it into the
+// chat-view group; the tauri bridge files are classic startup scripts
+// OUTSIDE this module graph (they have a script count gate, not a byte
+// gate) and the locale dicts stay lazy chunks (the consent caveat keys
+// land there, not in the entry). Measured same-base against main@eb06c5e6f
+// (the 2026-11-15 rebase base, after #835's 492_000 re-measure): 491,677
+// B desktop and 126,578 B web on the local toolchain — inside the 492_000
+// desktop and 129_000 web ceilings main already set, so no raise of its
+// own. This cap does not promise headroom for unrelated main changes.
+//
+// PR #894 (2026-11-18 rebase onto main@9a5968933, measured per policy):
+// the upload-lane wire-code localization joins the shared startup graph
+// (ACP error mapping, shared limit formatter, i18n/BT copy), measuring
+// 492,582 B desktop — and main-only already measures 492,245 B after
+// #857's timeline panel landed without its own re-measure — so the
+// desktop ceiling takes the next thousand step. Web stays 126,770 B
+// under 129_000. The r4 re-rebase onto main@34bb36b7af (#867) touches no
+// frontend entry file, so those figures carry over; the build gates
+// re-verified both ceilings on the rebased head.
+//
+// PR #847 rebase re-measure on the limits-audit tip rebased onto the
+// 2026-11-15 main: the audit's frontend lanes join the shared startup
+// graph — the rewind chip's bounded-window expander, the knowledge
+// paging generation guards plus the "showing first N" disclosure keys,
+// the localized paste-refusal copy delivered through
+// attachments.notifyPasteRejected, and the archive 200-entry strings
+// (the audit's other derived-MB figures live in Rust error strings and
+// paste-image.js, which is listed separately above). Measured on the local
+// node 26 toolchain: 493,834 B desktop — 1,834 B over the 492_000
+// ceiling — so the desktop ceiling takes the next thousand step; with
+// #826's virtual-display surface and #835's fork/archive-import UI in
+// the same base, the same re-measure reads 494,589 B desktop — 589 B
+// over the 494_000 step — so the ceiling takes the next thousand step
+// again. The web entry measured 126,560 B and stays under 129_000. This
+// cap does not promise headroom for unrelated main changes.
+//
+// PR #847 second rebase re-measure, onto the 2026-11-16 main whose #881
+// frontend follow-ups (navigation, composer, tool-store, design-runtime)
+// joined the shared startup graph: the same re-measure reads 495,005 B
+// desktop on the local aarch64 toolchain — 5 B over the 495_000 ceiling —
+// so the ceiling takes the next thousand step. The x86_64 CI build still
+// fits under the old ceiling, so the arm64-class build (this toolchain,
+// the arm64/loongarch64 release legs) is the binding measure. Web
+// unchanged. This cap does not promise headroom for unrelated main
+// changes.
+//
+// PR #847 r12 rebase re-measure, onto the 2026-11-16 main that landed #851
+// (endpoint-model UI rides the lazy settings chunk) and #879: the desktop
+// entry measures 495,040 B on this toolchain — the 496_000 ceiling holds
+// with ~960 B of headroom, no re-cut needed.
+// PR #847 r16 rebase re-measure: 495,163 B on this toolchain — the 496_000 ceiling holds.
+//
+// PR #847 r18 re-measure (review evidence, hosted frontend job
+// 140124247539): with the review waves' contracts joined to the shared
+// startup graph, writeBundle measures 497,476 B desktop — 1,476 B over
+// the 496_000 ceiling — so the ceiling takes the next thousand step
+// (498_000; the first re-cut to 497_000 still sat 476 B under the
+// measured size and the hosted build correctly refused it). Web
+// unchanged. This cap does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 498_000;
+export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
+
+function mainEntryBudgetBytesFor(mode) {
+  return mode === 'web' ? WEB_MAIN_ENTRY_BUDGET_BYTES : MAIN_ENTRY_BUDGET_BYTES;
+}
+
+export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
+  const mainEntry = Object.values(bundle).find(output => (
+    output.type === 'chunk' && output.isEntry && output.name === 'main'
+  ));
+  if (!mainEntry) throw new Error('Vite build did not emit the main entry chunk');
+  const bytes = Buffer.byteLength(mainEntry.code);
+  if (bytes > budgetBytes) {
+    throw new Error(`Main entry chunk ${bytes} B exceeds the ${budgetBytes} B startup budget`);
+  }
+  return bytes;
+}
+
+function enforceMainEntryBudget(mode) {
+  return {
+    name: 'pinvou-enforce-main-entry-budget',
+    apply: 'build',
+    // Vite's build-import-analysis mutates chunks after user generateBundle
+    // hooks. writeBundle sees the final code that is written to disk, so the
+    // reported byte count matches the built asset exactly.
+    writeBundle(_options, bundle) {
+      assertMainEntryBudget(bundle, mainEntryBudgetBytesFor(mode));
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const webBuild = mode === 'web';
@@ -490,6 +751,7 @@ export default defineConfig(({ mode }) => {
     react(),
     copyRuntimeAssets(),
     enforceLazyChunks(),
+    enforceMainEntryBudget(mode),
     conditionalPlatformScripts(webBuild),
     bundleClassicStartup(webBuild),
   ],

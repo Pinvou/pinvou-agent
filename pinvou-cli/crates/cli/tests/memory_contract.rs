@@ -441,6 +441,74 @@ fn memory_profile_set_refuses_a_label_the_normalizer_would_wipe() {
     assert_eq!(profile.identity.call_name, "Alice");
 }
 
+/// r14 review: the STORED wipe-shaped guard (a hand-edited profile.json, or
+/// data written before these guards) had no contract test — deleting the
+/// stored-check block shipped the whole suite green, the exact r13 lesson
+/// proven on the desktop twin. The untouched-field patch must refuse on the
+/// stored shape, the repair path must be judged on its own value, and the
+/// post-replace store must accept further patches.
+#[test]
+fn memory_profile_set_refuses_a_stored_wipe_shaped_label_and_allows_the_repair() {
+    let _guard = env_lock();
+    let _home = temp_home("profile-stored-wipe-refusal");
+
+    // Hand-write a stored profile whose call_name the normalizer would
+    // silently empty (a plain name far over the twelve-character survivor
+    // rule), bypassing the guarded write paths.
+    let path = pinvou3_lib::features::memory::profile_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let raw_stored =
+        r#"{"identity":{"call_name":"Bartholomew Whiskersworth","assistant_alias":""}}"#;
+    std::fs::write(&path, raw_stored).unwrap();
+
+    // Patching the OTHER field must refuse on the stored call_name shape.
+    let error = command_error(&[
+        "pinvou",
+        "memory",
+        "profile",
+        "set",
+        "--assistant-alias",
+        "Pin",
+    ])
+    .to_string();
+    // The captured error Display is not interpolated into these payloads:
+    // a CliError can carry oauth login material on the plugins dispatch arm,
+    // and formatting it into a panic payload trips the cleartext-logging
+    // scanner (the repo-wide assert-message hygiene rule).
+    assert!(
+        error.starts_with("memory_profile_label_rejected"),
+        "the stored shape must refuse with the stable code"
+    );
+    assert!(
+        error.contains("stored call_name"),
+        "the refusal must name the stored topic it protects"
+    );
+
+    // Nothing was written: the stored file is untouched.
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        raw_stored,
+        "the refused stored-shape patch must not write anything"
+    );
+
+    // The repair path sets the label itself and is judged on its own value.
+    run_ok(&["pinvou", "memory", "profile", "set", "--call-name", "Alice"]);
+
+    // Post-replace: with the wipe-shaped stored value gone, further
+    // patches on the other field go through again.
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "profile",
+        "set",
+        "--assistant-alias",
+        "Pin",
+    ]);
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
+    assert_eq!(profile.identity.call_name, "Alice");
+    assert_eq!(profile.identity.assistant_alias, "Pin");
+}
+
 /// Round-40 review MINOR: `pending never --reason` truncates at the store's
 /// 80-character cap; the same dual-channel disclosure the add/update lanes
 /// carry (stderr note before the write, `truncated` fields in the output

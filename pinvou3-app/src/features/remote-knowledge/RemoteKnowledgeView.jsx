@@ -1100,15 +1100,43 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
     pollTimedOut: false,
   })));
 
+  // Publish enumeration page size + safety cap (review P2, full
+  // enumeration): `kb_documents` with `limit: 0` is deliberately clamped by
+  // the backend to an implicit 500-row page (memory guard), so a single
+  // call silently truncated large collections — documents beyond the first
+  // page were never queued and the reported count looked complete. Enumerate
+  // by advancing offset until a short page; the cap is a runaway guard.
+  const KB_PUBLISH_PAGE_SIZE = 200;
+  const KB_PUBLISH_PAGE_CAP = 100;
   async function preparePublish() {
     const localCollection = localCollections.find(item => String(item.id) === String(publishCollectionId));
     if (!localCollection || !selectedServerId) return;
     const prepared = await run('prepare-publish', async () => {
-      const localDocuments = await invokeTauri('kb_documents', {
-        collectionId: localCollection.id,
-        limit: 0,
-      });
+      const localDocuments = [];
+      let offset = 0;
+      // 溢出判定（review P2）：只有「确认短页」才能证明枚举完整。安全帽
+      // 跑满仍是整页 = 无法证明（后端没有同口径的集合大小上限可比对），
+      // 按不完整如实报错，绝不按「完整」准备发布。
+      let capped = true;
+      for (let pages = 0; pages < KB_PUBLISH_PAGE_CAP; pages += 1) {
+        const page = await invokeTauri('kb_documents', {
+          collectionId: localCollection.id,
+          limit: KB_PUBLISH_PAGE_SIZE,
+          offset,
+        }) || [];
+        localDocuments.push(...page);
+        if (page.length < KB_PUBLISH_PAGE_SIZE) {
+          capped = false;
+          break;
+        }
+        offset += page.length;
+      }
       if (!localDocuments?.length) throw new Error(t.remoteKbPublishEmpty);
+      if (capped) {
+        throw new Error(t.remoteKbPublishEnumerationCapped
+          .split('{count}').join(String(localDocuments.length))
+          .split('{cap}').join(String(KB_PUBLISH_PAGE_CAP * KB_PUBLISH_PAGE_SIZE)));
+      }
       return { localCollection, localDocuments };
     });
     if (!prepared) return;
@@ -1396,7 +1424,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
       serverId,
       collectionIds: [collectionId],
       query: query.trim(),
-      limit: 8,
+      limit: 24,
     }));
     if (next
       && requestId === searchRequestRef.current

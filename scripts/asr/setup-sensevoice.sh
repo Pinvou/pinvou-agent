@@ -50,7 +50,7 @@ else
     x86_64) CMAKE_SHA256="3ada9a3f5d8a85413579bdd0ea6aa8e8da86efdd6d15c91a1afa517f2021956c" ;;
     *) echo "❌ cmake 自动下载暂不支持架构: $(uname -m)" >&2; exit 1 ;;
   esac
-  curl --retry 4 --retry-all-errors -fsSL -o "$WORK/cmake.tgz" \
+  curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 600 -fsSL -o "$WORK/cmake.tgz" \
     "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-$(uname -m).tar.gz"
   # --status is silent; report expected/actual explicitly, because the EXIT
   # trap deletes the download and this message is the only record left.
@@ -106,7 +106,15 @@ cp "$WORK/sv/build/bin/sense-voice-main" "$engine_tmp" || { rm -f "$engine_tmp";
 mv -f "$engine_tmp" "$ASR_DIR/sense-voice-main"
 
 echo "[4/5] 下载模型 $MODEL_FILE（modelscope，国内可达）…"
-curl --retry 4 --retry-all-errors -fsSL -o "$WORK/$MODEL_FILE" \
+# 单次尝试预算 900s（--max-time 按每次传输计时，--retry 4 最坏约
+# 5×900s）；断点续传（-C -）让超时重试从已收字节继续，整体进度单调推进，
+# 而不是每次从头重烧全部流量。单次 900s 的取值与 CLI 模型下载的 900s
+# 总时钟对齐（pinvou-cli voice.rs 里的字面量 .timeout(900s)，按
+# ~300 KB/s 推算；注意 src-tauri platform/download.rs 的
+# ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT 虽同为 900s，但那属于归档下载预算，
+# 勿据其推理本档位）：600s 只够 q4_k 在 ~300 KB/s 下
+# 勉强完成，q8_0 档（~250 MB）必超。
+curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 900 -C - -fsSL -o "$WORK/$MODEL_FILE" \
   "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/$MODEL_FILE"
 printf '%s  %s\n' "$MODEL_SHA256" "$WORK/$MODEL_FILE" | sha256sum --check --status \
   || { echo "❌ model sha256 check failed (corrupt download or changed upstream asset): $MODEL_FILE (expected $MODEL_SHA256, actual $(sha256sum "$WORK/$MODEL_FILE" | cut -d' ' -f1))" >&2; exit 1; }
