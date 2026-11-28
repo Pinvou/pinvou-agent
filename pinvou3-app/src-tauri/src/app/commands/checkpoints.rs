@@ -3990,6 +3990,123 @@ fn ",
         assert!(!snapshot.is_empty(), "the turn snapshot registers");
         let _ = std::fs::remove_dir_all(&ledger);
     }
+    /// r53-P2 可执行故障回归（评审 23:15 内联 + 00:45 跟进）：拒绝臂双失败
+    /// （暂记移除与 aborted 标记双双未落盘）残留 = 活暂记 + 放弃哨兵文件。
+    /// 随后**两次**普通发送：第一轮对账消费哨兵——清暂记删哨兵、**不重放**
+    /// （transcript 保持 2 轮、工作区不动）、本轮快照照常；第二轮照常收敛。
+    /// 哨兵消费臂的清理失败保留语义由 try_clear 的布尔契约承载。
+    #[tokio::test]
+    async fn abandonment_sentinel_blocks_replay_across_two_sends() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("sentinel-2sends");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v1
+",
+        )
+        .expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v2
+",
+        )
+        .expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+
+        // 拒绝臂双失败残留的形态：活暂记（写于 apply 之前——此刻 apply 未跑、
+        // 工作区未动）+ 放弃哨兵文件。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        std::fs::write(
+            ledger.join("pending_rewind.json.abandoned"),
+            "1
+",
+        )
+        .expect("plant the abandonment sentinel");
+
+        // 第一轮发送：哨兵消费——不重放（被拒回退视为已放弃）。
+        let snapshot1 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("哨兵消费后本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            2,
+            "哨兵消费不得重放被拒回退（误重放会截到 1 轮）"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "哨兵消费必须清掉活暂记"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json.abandoned").exists(),
+            "哨兵文件在暂记清理成功后移除"
+        );
+        assert!(!snapshot1.is_empty(), "本轮快照登记");
+
+        // 第二轮发送：无残留、照常收敛。
+        let snapshot2 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第四轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("第二轮发送照常登记");
+        assert!(!snapshot2.is_empty(), "第二轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
     /// r35 MAJOR-2 行为 pin：planted pending（伪造 pre_restore_id）必须被
     /// fail-closed 拒绝——不得触发重放臂的破坏性恢复 + 截断，工作区不动。
     #[tokio::test]
