@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use crate::features::marketplace::ConnectorScope;
 use crate::platform::paths;
 
+use deepseek_tui::skills::install::INSTALLED_FROM_MARKER;
+
 // ---------------------------------------------------------------------------
 // 开关持久化（单一真相源在 `features/marketplace/scope.rs` 的
 // `disabled_bundles.json`，包 id × SessionMode；与连接器开关同领域、避免
@@ -225,8 +227,8 @@ fn copy_skill_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        // .installed-from 是市场落盘标记，不属技能运行内容
-        if name == ".installed-from" {
+        // 市场落盘标记，不属技能运行内容
+        if name == INSTALLED_FROM_MARKER {
             continue;
         }
         let target = dest.join(&name);
