@@ -142,6 +142,10 @@ async fn reconcile_pending_rewind(
     // r53 P2（评审）：放弃哨兵消费——拒绝臂的双失败通道（清理与 aborted
     // 标记均未落盘）留下的哨兵文件在此阻断普通重放：清暂记、放行本轮快照
     // （被拒绝的回退视为已放弃；显式重试会重新走完整协议）。
+    eprintln!(
+        "[r53debug] reconcile entry sentinel={}",
+        checkpoints::pending_rewind_abandoned_sentinel_present(ledger)
+    );
     if checkpoints::pending_rewind_abandoned_sentinel_present(ledger) {
         log::warn!(
             "[pinvou3][checkpoints] abandonment sentinel present: clearing the refused rewind without replay sid={session_id}"
@@ -4104,6 +4108,154 @@ fn ",
         .await
         .expect("第二轮发送照常登记");
         assert!(!snapshot2.is_empty(), "第二轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r53-P2 故障注入回归（评审 00:45 跟进）：确定性制造「清理失败」——
+    /// 测试自持 pending flock，使拒绝臂双失败残留（活暂记 + 放弃哨兵）下
+    /// 第一次发送被 fail-closed 阻断（快照跳过、暂记与哨兵原样保留、工作
+    /// 区不动）；解除故障后第二次发送安全清理并照常登记，且**不重放**。
+    #[tokio::test]
+    async fn abandonment_sentinel_blocks_the_send_while_cleanup_fails() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("sentinel-fault");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v1
+",
+        )
+        .expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v2
+",
+        )
+        .expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+
+        // 双失败残留形态：活暂记（apply 未跑、工作区未动）+ 放弃哨兵。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        std::fs::write(
+            ledger.join("pending_rewind.json.abandoned"),
+            "1
+",
+        )
+        .expect("plant the abandonment sentinel");
+
+        // 故障注入：自持 pending flock——try_clear / mark_aborted 的锁获取
+        // 都会失败（与生产锁不可用同型）。
+        // 故障注入（确定性、跨平台）：把锁文件路径替换为目录——
+        // 对锁文件 open 必败，清暂记与 aborted 标记双双失败，哨兵成为唯
+        // 一落盘面（自持阻塞锁会与生产锁互斥死锁，不可用于注入）。
+        std::fs::remove_file(ledger.join("pending_rewind.json.lock")).ok();
+        // 先删旧的锁文件（先前的锁获取会以文件形态创建它），再建同路径目录。
+        // 故障注入（确定性、跨平台）：对锁文件 open 必败，清暂记与 aborted
+        // 标记双双失败，哨兵成为唯一落盘面（自持阻塞锁会与生产锁互斥死锁，
+        // 不可用于注入）。
+        std::fs::create_dir_all(ledger.join("pending_rewind.json.lock"))
+            .expect("plant the lock-path fault");
+        let blocked = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await;
+        assert!(blocked.is_none(), "清理失败 ⇒ 本轮快照 fail-closed 阻断");
+        assert!(
+            ledger.join("pending_rewind.json").exists(),
+            "清理失败 ⇒ 活暂记保留"
+        );
+        assert!(
+            ledger.join("pending_rewind.json.abandoned").exists(),
+            "清理失败 ⇒ 放弃哨兵保留（放弃证据不丢）"
+        );
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            2,
+            "阻断臂不得重放被拒回退（误重放会截到 1 轮）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v2
+",
+            "阻断臂不得触碰工作区"
+        );
+        std::fs::remove_dir(ledger.join("pending_rewind.json.lock")).expect("remove the fault");
+
+        // 故障解除后的发送：哨兵安全消费——清暂记删哨兵、不重放、快照照常。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第四轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("故障解除后本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            2,
+            "安全清理不得重放被拒回退"
+        );
+        assert!(!ledger.join("pending_rewind.json").exists(), "暂记清除");
+        assert!(
+            !ledger.join("pending_rewind.json.abandoned").exists(),
+            "哨兵移除"
+        );
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v2
+",
+            "工作区保持 v2（重放从未执行）"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
