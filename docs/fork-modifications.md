@@ -2,7 +2,7 @@
 
 ## 候选：工具 schema 策略独立于工具调用选择（T2，依赖 CodeWhale #176/#179）
 
-- 状态：候选，不得先于 [Pinvou/CodeWhale#176](https://github.com/Pinvou/CodeWhale/pull/176) 与 [Pinvou/CodeWhale#179](https://github.com/Pinvou/CodeWhale/pull/179) 合入。当前候选 gitlink `2774d8b5de2cf06a75a6618aa43a2b0e56daeffe`（CodeWhale#179 当前头，已 rebase 到 #926 对齐后的公开维护头 `44142616a` 之上，因此同时携带公开 +7 批次）包含 #179 的策略拆分；相关底座 PR 仍有独立评审问题待解决，不能由本宿主候选登记代替其验收。公开维护头与父仓基线仍以第 0 节为准，待两项底座 PR 合入后改用实际公开维护提交并同步计数。
+- 状态：候选，不得先于 [Pinvou/CodeWhale#176](https://github.com/Pinvou/CodeWhale/pull/176) 与 [Pinvou/CodeWhale#179](https://github.com/Pinvou/CodeWhale/pull/179) 合入。当前候选 gitlink `2774d8b5de24546cab42f41be94f09e24fa0caa2`（CodeWhale#179 当前头，已 rebase 到 #926 对齐后的公开维护头 `44142616a` 之上，因此同时携带公开 +7 批次）包含 #179 的策略拆分；相关底座 PR 仍有独立评审问题待解决，不能由本宿主候选登记代替其验收。公开维护头与父仓基线仍以第 0 节为准，待两项底座 PR 合入后改用实际公开维护提交并同步计数。
 - 底座策略：`tool_schema_policy = "auto" | "relaxed"` 独立于 `strict_tool_mode`。`auto` 保留逐工具 `strict` 值及既有严格准备流程；`relaxed` 在 Engine 层将每个选中工具设为 `Tool.strict = Some(false)`，跳过额外严格 schema 准备并保留选中 schema，且不改变 `tool_choice`。父请求、deferred 激活、preview 与子代理共用同一投影；显式 `Op::SetToolSchemaPolicy` 负责运行时 reload，普通 route install 不覆盖宿主自有 `EngineConfig` 策略。Provider 各自的 schema normalization 与 strict 字段移除规则继续生效，因此不宣称所有 provider 都收到 `function.strict = false` 或逐字不变的 wire schema。
 - 宿主接入：Pinvou 固定 `strict_tool_mode = false` 与 `tool_schema_policy = ToolSchemaPolicy::Relaxed`，即自动工具选择与宽松 schema 解耦；仅在显式 `EngineConfig` 构造处设置，不复制到 `DtConfig` 形成第二事实源。新增 `forkguard_relaxed_tool_schema_preserves_automatic_tool_choice`，同时钉住两项配置。此策略不改变工具白名单、权限或执行边界。
 - guard 同步：APP 指纹钉宿主 `Relaxed` 构造与结果测试；T2 指纹钉 `ToolSchemaPolicy::Relaxed` 投影、策略/tool_choice 独立性、Moonshot registry-to-wire 及子代理 surface。第 2 层新增三个非 `forkguard_` 命名测试的 pinned runner，逐一要求 `1 passed`，防止改名或删除后静默 no-op。
