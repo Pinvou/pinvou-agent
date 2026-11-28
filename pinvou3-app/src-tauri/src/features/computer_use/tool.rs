@@ -76,14 +76,19 @@ pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// (`cu-<hex>`) are far below this; over the cap is rejected as a parse
 /// error.
 pub const MAX_CONFIRM_ID_CHARS: usize = 128;
-/// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
-/// properties (`minimum: 1`, maximums = these constants); the parser rejects
-/// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
-/// clamping or truncating. Note the macOS/Windows backends additionally cap
-/// their own tree walks below these values (slower cross-process a11y APIs):
-/// a parser-accepted `max_nodes` above their cap is clamped there — this is
-/// disclosed in the tool description so the model is not surprised by a
-/// smaller tree than requested.
+/// `ui_tree` argument caps — the SAME values the schema declares (`maximum`):
+/// the parser rejects out-of-range values explicitly ([`opt_u32_range`])
+/// instead of silently clamping or truncating. Interface maximums stay at
+/// the historical 64/10000 (review P2: the unchanged Linux AT-SPI writer
+/// feeds these straight into its `TreeWriter` with no clamp, so tightening
+/// them to the stack ceilings removed previously legal Linux requests —
+/// Windows clamp parity does not own this interface). The per-stack
+/// EFFECTIVE caps are narrower and disclosed honestly: macOS/Windows clamp
+/// in-backend (helpers.rs `MAX_TREE_DEPTH`/`MAX_TREE_NODES` = 24/2000),
+/// and the truncation footer is cap-aware (review P3) so a walk truncated
+/// at a stack's own ceiling no longer advises "larger" values the parser
+/// would reject — that footer advice was the r6 loop's actual driver, not
+/// the interface width.
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
 /// `open` program-name cap (characters), mirroring the parse-time cap
@@ -1836,16 +1841,21 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // the timeout for no safety gain. Unknown target ⇒ lock, the
         // conservative direction.
         //
-        // The skip's safety rests on a coupling that must stay true: a
-        // pending confirmation can only be minted from a Blocked screening
-        // verdict, and every virtual stack answers the accessibility
-        // queries (`element_at_point` / `focused_element`) with an explicit
-        // unsupported — a virtual session can never mint a pending, so
-        // nothing mints outside the lock (grant dialogs stay serialized via
-        // `mark_grant_requested_serialized` regardless of target). If a
-        // virtual stack ever grows a real accessibility tree, restore the
-        // lock for at least the mint path — the dialog-under-injection
-        // window the physical lock exists to close would otherwise reopen.
+        // The skip's original safety rested on "a virtual stack can never
+        // mint": its accessibility queries answered explicit unsupported, so
+        // no Blocked screening verdict — and therefore no pending
+        // confirmation — could come from a virtual session. The
+        // hidden-desktop stack now answers those queries with a REAL tree
+        // (the UIA helper / window-class walk), so its Input actions CAN
+        // reach the mint. The injection itself still skips the lock
+        // (serializing independent isolated displays would cap process-wide
+        // input throughput and stall a second session up to the timeout for
+        // no safety gain — unknown target ⇒ lock, the conservative
+        // direction), and the mint path takes the lock itself (see the
+        // mint site below): the dialog-under-injection window the physical
+        // lock exists to close stays shut on every stack. Grant dialogs
+        // stay serialized via `mark_grant_requested_serialized` regardless
+        // of target.
         let target_is_virtual = parts.state.lock().display_target == Some(DisplayTarget::Virtual);
         let _input_guard = (action.class() == ActionClass::Input && !target_is_virtual)
             .then(|| parts.shared.lock_physical_input())
@@ -1997,6 +2007,27 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         if let Err(rejection) = parts.shared.begin_input_action(&parts.session_id) {
                             return Err(rejection.message());
                         }
+                        // The physical-input lock guards the
+                        // dialog-under-injection window: a pending consent
+                        // must not mint while a physical session is
+                        // mid-injection. A non-virtual Input action already
+                        // holds the dispatch guard (the lock is NOT
+                        // reentrant — never take it twice), and a virtual
+                        // target skipped it at dispatch, so the mint takes
+                        // it here: "restore the lock for the mint path", as
+                        // the dispatch-skip coupling doc prescribes now
+                        // that this stack mints pendings via its real
+                        // accessibility tree.
+                        let _mint_lock_guard = if target_is_virtual {
+                            Some(
+                                parts
+                                    .shared
+                                    .lock_physical_input()
+                                    .map_err(|rejection| rejection.message())?,
+                            )
+                        } else {
+                            None
+                        };
                         let mut blocked = request_confirmation(
                             &parts,
                             &action,
@@ -2786,9 +2817,11 @@ impl ToolSpec for ComputerUseTool {
          there with `open` and work freely; this isolation is subject to the \
          platform residuals the target note discloses (e.g. on macOS an app \
          you just opened passes through the user's desktop while it is being \
-         moved in), and per-action screening cannot read the isolated \
-         display (its apps cannot be screened, so nothing there is \
-         confirmed against a user-facing control). When the target is the user's real \
+         moved in), and per-action screening on the Windows hidden-desktop stack returns a \
+         REAL tree (a consequential target there CAN raise a confirmation \
+         against a user-facing control), while stacks whose display cannot \
+         be read answer unreadable and still execute without confirmation. \
+         When the target is the user's real \
          desktop, every action is visible to the user: minimize disruption, keep \
          actions to the minimum the task needs, and say what you are about to do \
          before doing it. \
@@ -2822,9 +2855,11 @@ impl ToolSpec for ComputerUseTool {
          as a clear one, and every unreadable location binds identically, so the \
          replay only detects a readable target appearing. The CONTENT you type is never \
          screened, and \
-         key chords are not screened for destructiveness. On macOS and Windows the \
-         accessibility tree walk is additionally capped below the max_depth/max_nodes \
-         arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \
+         key chords are not screened for destructiveness. The max_depth/max_nodes arguments accept up to 64 levels / 10000 nodes; on \
+         macOS and Windows the accessibility tree walk is additionally clamped below \
+         those arguments (24 levels / 2000 nodes effective), and a walk truncated at \
+         that stack's own ceiling says so instead of advising larger values. Observation \
+         (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
          attached; if it is not visible, call image_analyze with the returned attachments \
@@ -2835,7 +2870,9 @@ impl ToolSpec for ComputerUseTool {
         // Bounds parity: every parser-enforced cap is declared here so a
         // schema-validating client sees the same domain the parser enforces
         // (ms 1-30000 shared by wait/hold_key, amount 1-100, text ≤ 10000
-        // chars for type, max_depth ≤ 64, max_nodes ≤ 10000). The `text`
+        // chars for type, max_depth ≤ 24, max_nodes ≤ 2000 — the parser
+        // constants ARE these maximums, and the same values are the
+        // backends' hard ceilings). The `text`
         // maxLength covers type; chord text for key/hold_key is capped
         // tighter (128) at parse time but shares this field, so the schema
         // declares only the common bound.

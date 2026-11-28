@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -223,6 +223,10 @@ enum BackendRequestKind {
     /// Drain the backend's accumulated action warnings (see the trait method
     /// of the same name). Never fails.
     TakeWarnings,
+    /// Internal no-op that only wakes an idle worker (see
+    /// [`BackendInner::release_cleanup_reservation`]): touches no backend
+    /// method and carries no reply a caller reads.
+    Wake,
     Shutdown,
 }
 
@@ -339,6 +343,7 @@ fn dispatch(
             Err(error) => return Some(Err(error)),
         },
         BackendRequestKind::TakeWarnings => BackendReply::Warnings(backend.take_warnings()),
+        BackendRequestKind::Wake => BackendReply::Unit,
         BackendRequestKind::Shutdown => return None,
     };
     Some(Ok(result))
@@ -377,7 +382,15 @@ fn worker_loop(
     factory: BackendFactory,
     rx: Receiver<BackendRequest>,
     startup: Sender<Result<(), ComputerUseError>>,
+    cleanup_pending: Arc<AtomicUsize>,
 ) {
+    // The worker deliberately holds NO sender of `rx`: the Drop path drops
+    // the last external sender and relies on `rx.recv()` observing the
+    // disconnect so a worker wedged in an OS call exits on its own once the
+    // call unwinds (see `BackendInner::drop`). A sender clone kept for
+    // requeueing would silence that disconnect forever and leak the thread
+    // on every teardown — parked requests below are held in a local slot
+    // instead, never re-sent into the channel.
     install_worker_panic_redaction();
     let mut backend = match factory() {
         Ok(backend) => {
@@ -389,7 +402,32 @@ fn worker_loop(
             return;
         }
     };
-    while let Ok(request) = rx.recv() {
+    // (#897 review P2 round 3: the cleanup reservation) While an emergency
+    // cleanup is pending on this handle, an OpenApp must not execute ahead
+    // of it: the whole point of the synchronous enqueue is that the release
+    // precedes anything a re-granted session opens. A probe that fell back
+    // to Deferred (the state mutex busy) enqueues late, so the reservation —
+    // not the queue position — carries the ordering: the open parks in this
+    // local FIFO slot until the reservation count reaches zero (each
+    // in-flight cleanup releases exactly its own count when its requests
+    // are enqueued, or it decides there is nothing to enqueue). The cycle
+    // is bounded: counts always drain, and the last release also wakes an
+    // idle worker so the parked slot drains at the very next loop-top with
+    // no polling. Only OpenApp parks — it is the one request whose
+    // EXECUTION feeds the kill list the cleanup terminates; a parked
+    // type/drag has no ordering contract with the wind-down. Control
+    // requests (the cleanup's own) are exempt by the guard's control term.
+    fn reservation_parks(request: &BackendRequest, cleanup_pending: &AtomicUsize) -> bool {
+        !request.control
+            && cleanup_pending.load(Ordering::SeqCst) > 0
+            && matches!(request.kind, BackendRequestKind::OpenApp { .. })
+    }
+    // Outcome of one request's full pre-execution checks and dispatch.
+    enum Flow {
+        Continue,
+        Exit,
+    }
+    fn handle_request(backend: &mut Box<dyn ComputerUseBackend>, request: BackendRequest) -> Flow {
         // Check the cancel flag after dequeue and before execution: a request the caller
         // has abandoned (timeout) or that a control request / Drop has cancelled (see
         // `BackendInner::cancel_live_requests`) is not executed. Multi-event injection
@@ -408,7 +446,7 @@ fn worker_loop(
                 "request was cancelled before it executed (caller timeout, stop, or revoke); \
                  nothing was injected",
             )));
-            continue;
+            return Flow::Continue;
         }
         // Hand the cancel flag to the backend before dispatch: multi-event injection (type)
         // checks it between events so a request the caller has abandoned stops injecting.
@@ -433,8 +471,9 @@ fn worker_loop(
         match dispatched {
             Ok(Some(result)) => {
                 let _ = request.reply.send(result);
+                Flow::Continue
             }
-            Ok(None) => return,
+            Ok(None) => Flow::Exit,
             Err(panic) => {
                 // Deref first: `&panic` would unsize-coerce the Box itself to
                 // `&dyn Any` (a Box is also `Any`), and every payload downcast
@@ -447,7 +486,55 @@ fn worker_loop(
                     "the computer use backend panicked while handling the request; \
                      the action may have partially executed",
                 )));
+                Flow::Continue
             }
+        }
+    }
+    // OpenApps parked behind a pending cleanup, in arrival order.
+    let mut parked: Vec<BackendRequest> = Vec::new();
+    loop {
+        // Resume parked opens the moment the last reservation releases (the
+        // releasing side also sends a `Wake` so an idle worker gets this
+        // loop-top even with no other traffic). The guard is re-checked per
+        // request: a fresh cleanup starting mid-resume outranks the
+        // remaining parked opens again.
+        if !parked.is_empty() && cleanup_pending.load(Ordering::SeqCst) == 0 {
+            for request in std::mem::take(&mut parked) {
+                if reservation_parks(&request, &cleanup_pending) {
+                    parked.push(request);
+                    continue;
+                }
+                if let Flow::Exit = handle_request(&mut backend, request) {
+                    return;
+                }
+            }
+        }
+        let Ok(request) = rx.recv() else {
+            // Disconnect: every sender dropped. Reached in production only
+            // by a worker wedged in an OS call whose teardown detached
+            // instead of joining — the same silence that wedged case
+            // already carries. Parked requests drop unreplied here; their
+            // flags were set by the teardown's cancel_live_requests, and
+            // callers time out against their own budget as they already do
+            // for a request stranded behind a wedged dispatch.
+            break;
+        };
+        if reservation_parks(&request, &cleanup_pending) {
+            parked.push(request);
+            continue;
+        }
+        if let Flow::Exit = handle_request(&mut backend, request) {
+            // Shutdown (sent by `BackendInner::drop` after cancelling every
+            // queued flag): parked siblings get the same cancelled reply as
+            // queued ones — dropping them unreplied would strand their
+            // callers on the full call budget with no answer.
+            for request in std::mem::take(&mut parked) {
+                let _ = request.reply.send(Err(ComputerUseError::unavailable(
+                    "request was cancelled before it executed (caller timeout, stop, or revoke); \
+                     nothing was injected",
+                )));
+            }
+            return;
         }
     }
 }
@@ -492,6 +579,18 @@ struct BackendInner {
     /// to 1, and excess calls fail immediately instead of queueing onto
     /// threads.
     in_flight: AtomicBool,
+    /// (#897 review P2 round 3) True from the moment a Stop/revoke schedules
+    /// an emergency cleanup until that cleanup's requests are enqueued (or
+    /// the cleanup decides there is nothing to enqueue). The worker parks a
+    /// dequeued OpenApp behind this while it is non-zero, so a cleanup that
+    /// fell back to Deferred (state mutex busy) still terminates the apps of
+    /// the grant being revoked before any app a re-granted session opens —
+    /// queue position alone cannot carry that ordering across a busy probe.
+    /// A COUNT, not a bool: each in-flight cleanup owns one reservation and
+    /// releases exactly its own, so an overlapping cleanup that enqueues
+    /// first cannot open the gate while another cleanup's release is still
+    /// outside the queue. Shared across handle clones (Arc).
+    cleanup_pending: Arc<AtomicUsize>,
     /// Cancel flags of every action request currently queued on or executing
     /// in the worker (registered in `request_inner`, pruned when consumed).
     /// Control requests (emergency stop / revoke / shutdown) set every flag
@@ -501,6 +600,18 @@ struct BackendInner {
     /// click had to wait out the entire remaining request while the
     /// emergency release queued behind it.
     live_cancels: Mutex<Vec<Arc<AtomicBool>>>,
+    /// The worker's request sender, stashed at spawn time for non-blocking
+    /// reservation-release wakes (see [`BackendInner::release_cleanup_reservation`]).
+    /// `None` while never started. `release_cleanup_reservation` must NEVER
+    /// reach the state mutex for this — `ensure_sender` holds that mutex
+    /// across the whole factory startup (up to BACKEND_CALL_TIMEOUT), so a
+    /// state-lock acquisition or an `ensure_sender` call on a release path
+    /// would block Stop/revoke for as long as a concurrent first request's
+    /// lazy start takes. The two startup-failure arms clear this entry
+    /// alongside the local sender drop: a cached sender that outlives the
+    /// teardown would hold the channel open past the disconnect contract
+    /// (see the arms' comments).
+    wake_tx: Mutex<Option<Sender<BackendRequest>>>,
 }
 
 impl BackendInner {
@@ -521,8 +632,10 @@ impl BackendInner {
                 // payload redaction for every worker panic.
                 let thread = match std::thread::Builder::new()
                     .name(WORKER_THREAD_NAME.to_string())
-                    .spawn(move || worker_loop(factory, rx, startup_tx))
-                {
+                    .spawn({
+                        let cleanup_pending = Arc::clone(&self.cleanup_pending);
+                        move || worker_loop(factory, rx, startup_tx, cleanup_pending)
+                    }) {
                     Ok(thread) => thread,
                     Err(error) => {
                         // Sticky failure, same as the factory-error branch below: the
@@ -534,6 +647,14 @@ impl BackendInner {
                         return Err(ComputerUseError::unavailable(message));
                     }
                 };
+                // Stash a wake sender for `release_cleanup_reservation`
+                // BEFORE the startup wait: from this moment a worker thread
+                // exists, so a concurrent release may signal it without
+                // touching this (still-held) state mutex or running
+                // `ensure_sender`. The Wake may queue while the worker is
+                // still inside the factory; on a startup failure the worker
+                // exits and the queued request is simply never consumed.
+                *self.wake_tx.lock() = Some(tx.clone());
                 let startup = startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT);
                 // On the failure branches, stash (sender, thread): write the state under the
                 // lock first and release the state lock, then finish up outside the lock.
@@ -553,6 +674,14 @@ impl BackendInner {
                     Ok(Err(error)) => {
                         let message = error.to_string();
                         *state = WorkerState::StartFailed(message.clone());
+                        // The cached wake sender must die with the local one:
+                        // keeping it would hold a channel sender past the
+                        // teardown drops below, silencing the disconnect the
+                        // surviving worker (timeout arm) relies on to exit
+                        // once it unwinds from the factory — the same
+                        // thread-leak class the worker's no-sender rule
+                        // exists for.
+                        *self.wake_tx.lock() = None;
                         cleanup = Some((tx, thread));
                         Err(error)
                     }
@@ -567,6 +696,12 @@ impl BackendInner {
                              return within the startup budget, or the thread died)"
                                 .to_string(),
                         );
+                        // Same reason as the factory-error arm: the cached
+                        // wake sender must not outlive the teardown drops,
+                        // or a worker still wedged inside the factory
+                        // loses its disconnect exit when it finally
+                        // unwinds into recv().
+                        *self.wake_tx.lock() = None;
                         cleanup = Some((tx, thread));
                         Err(ComputerUseError::unavailable(
                             "computer use backend startup was abandoned (the factory did not \
@@ -633,6 +768,48 @@ impl BackendInner {
             flag.store(true, Ordering::SeqCst);
         }
         live
+    }
+
+    /// Arms one cleanup's cleanup-pending reservation (see the field docs):
+    /// overlapping cleanups each own one count, so cleanup B releasing its
+    /// own cannot open the gate while cleanup A's release is still outside
+    /// the queue.
+    fn acquire_cleanup_reservation(&self) {
+        self.cleanup_pending.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Releases one cleanup's reservation. When the LAST one drops, parked
+    /// opens may resume — but the worker may already be idle in `recv()`
+    /// (it dispatched the enqueued release and looped back while this
+    /// thread was still inside `enqueue_emergency_cleanup`), and the
+    /// loop-top resume only runs between requests. A no-op `Wake` control
+    /// request gives it one more dequeue, so the parked slot drains
+    /// promptly instead of stranding the re-granted session until the next
+    /// unrelated request arrives.
+    /// Strictly non-blocking by design (review P2 round 6): this runs on
+    /// the Stop/revoke caller thread, so it must not wait on the state
+    /// mutex — `ensure_sender` holds that mutex across the whole factory
+    /// startup (up to BACKEND_CALL_TIMEOUT), and a first request racing
+    /// the NeverStarted probe's guard release can be mid-startup right
+    /// here. The wake sender therefore comes from `wake_tx` (stashed at
+    /// spawn time, behind a microsecond-scale mutex) — never from an
+    /// `ensure_sender` call, which would also re-enter the blocking
+    /// startup path. `None` = no worker yet (nothing could have parked);
+    /// a send to a torn-down worker's dropped receiver errors and is
+    /// ignored, same as Drop's Shutdown send.
+    fn release_cleanup_reservation(&self) {
+        if self.cleanup_pending.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if let Some(tx) = self.wake_tx.lock().clone() {
+                let _ = tx.send(BackendRequest {
+                    kind: BackendRequestKind::Wake,
+                    // Same reply-orphan shape as Drop's Shutdown send: the
+                    // worker's reply goes to an already-dropped receiver.
+                    reply: channel::<BackendResult>().0,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    control: true,
+                });
+            }
+        }
     }
 
     /// Drops the registration of a request whose reply the caller received:
@@ -803,6 +980,123 @@ impl BackendInner {
         }
     }
 
+    /// Control lane, ENQUEUE-only: performs exactly the control arm of
+    /// [`Self::request_inner`] minus the reply wait — the sweep-plus-send
+    /// runs under the same registry guard (a request registering in that
+    /// window would otherwise queue ahead of the control request with a
+    /// clear flag), the mpsc send cannot block, and the caller gets the
+    /// reply receiver to await elsewhere. This is what keeps an emergency
+    /// cleanup's queue position bound to the moment the cleanup was
+    /// requested (see [`BackendRegistry::emergency_release`]): the
+    /// serialized worker executes it before anything enqueued later.
+    /// Returns the receiver plus the request's cancel flag so the awaiting
+    /// thread can reproduce the timeout arm of `request_inner`.
+    fn enqueue_control(
+        &self,
+        kind: BackendRequestKind,
+    ) -> Result<(Receiver<BackendResult>, Arc<AtomicBool>), ComputerUseError> {
+        let (reply_tx, reply_rx) = channel::<BackendResult>();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let tx = self.ensure_sender()?;
+        let live = self.cancel_live_requests();
+        let sent = tx.send(BackendRequest {
+            kind,
+            reply: reply_tx,
+            cancelled: Arc::clone(&cancelled),
+            control: true,
+        });
+        drop(live);
+        sent.map_err(|_| {
+            self.mark_thread_dead();
+            ComputerUseError::unavailable("computer use backend thread died")
+        })?;
+        Ok((reply_rx, cancelled))
+    }
+
+    /// Synchronous, NON-BLOCKING enqueue probe for the emergency cleanup
+    /// (#897 review P2 round 2): the Stop/revoke command thread must never
+    /// wait on the startup state lock, so this takes the live-cancels guard
+    /// first (the same live→state order `Drop` uses — try_lock cannot wait,
+    /// so no path holds state and waits for live) and then TRIES the state
+    /// mutex:
+    /// - `Pending` → never started; nothing was injected, skip the cleanup
+    ///   without ever running the factory;
+    /// - `Running` → clone the sender under the guard, sweep the live
+    ///   cancels, and enqueue the button releases plus the OS-grant release
+    ///   BEFORE releasing the guard — the serialized worker executes them
+    ///   before anything a later re-grant of the session can enqueue, which
+    ///   is what keeps the wind-down take() bound to the revoked grant;
+    /// - guard busy / `StartFailed` / `Shutdown` → `Deferred`: the caller
+    ///   falls back to the detached blocking cleanup. A busy guard can also
+    ///   be an ORDINARY request cloning its sender (the round-3 correction):
+    ///   a Running backend with recorded apps can therefore take this arm,
+    ///   which is exactly why the caller arms the `cleanup_pending`
+    ///   reservation before probing — the worker parks OpenApp requests
+    ///   until the fallback's release is enqueued, carrying the ordering
+    ///   the busy window loses.
+    fn try_enqueue_emergency_cleanup(&self) -> EmergencyEnqueue {
+        let live = self.cancel_live_requests();
+        let state = match self.state.try_lock() {
+            Some(state) => state,
+            None => return EmergencyEnqueue::Deferred,
+        };
+        let tx = match &*state {
+            WorkerState::Pending(_) => return EmergencyEnqueue::NeverStarted,
+            WorkerState::Running { tx, .. } => tx.clone(),
+            // StartFailed / Shutdown: the fallback's blocking enqueue answers
+            // with the honest sticky error; nothing to reserve here.
+            WorkerState::StartFailed(_) | WorkerState::Shutdown => {
+                return EmergencyEnqueue::Deferred;
+            }
+        };
+        let mut steps = Vec::new();
+        let mut dead = false;
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let sent = tx.send(BackendRequest {
+                kind: BackendRequestKind::MouseUp { button },
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control: true,
+            });
+            match sent {
+                Ok(()) => steps.push((EmergencyCleanupStep::MouseUp, reply_rx, cancelled)),
+                Err(_) => {
+                    dead = true;
+                    break;
+                }
+            }
+        }
+        if !dead {
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let sent = tx.send(BackendRequest {
+                kind: BackendRequestKind::ReleaseOsGrant,
+                reply: reply_tx,
+                cancelled: Arc::clone(&cancelled),
+                control: true,
+            });
+            match sent {
+                Ok(()) => steps.push((EmergencyCleanupStep::ReleaseOsGrant, reply_rx, cancelled)),
+                Err(_) => dead = true,
+            }
+        }
+        // Release both guards BEFORE mark_thread_dead: it takes the state
+        // lock, and this frame still holds it.
+        let outcome = if dead {
+            EmergencyEnqueue::Deferred
+        } else {
+            EmergencyEnqueue::Enqueued(steps)
+        };
+        drop(live);
+        drop(state);
+        if dead {
+            self.mark_thread_dead();
+        }
+        outcome
+    }
+
     /// Control lane: identical to [`Self::request`] but it deliberately
     /// bypasses the in-flight gate (no compare_exchange, `in_flight` is
     /// never touched). revoke/stop/emergency cleanup must not be rejected
@@ -897,7 +1191,9 @@ impl BackendHandle {
             inner: Arc::new(BackendInner {
                 state: Mutex::new(WorkerState::Pending(Some(Box::new(factory)))),
                 in_flight: AtomicBool::new(false),
+                cleanup_pending: Arc::new(AtomicUsize::new(0)),
                 live_cancels: Mutex::new(Vec::new()),
+                wake_tx: Mutex::new(None),
             }),
         }
     }
@@ -1031,6 +1327,58 @@ impl BackendHandle {
         self.unit_control(BackendRequestKind::ReleaseOsGrant)
     }
 
+    /// ENQUEUE the emergency cleanup's control requests (release the three
+    /// mouse buttons one by one — the same sequence
+    /// [`Self::emergency_mouse_up`] sends — then close the persistent
+    /// OS-level grant) on the CALLER's thread and return their pending
+    /// replies; the caller detaches the reply waits. See
+    /// [`spawn_emergency_cleanup`] for why the enqueue must happen at
+    /// revoke/stop time instead of on the detached thread (#897 review P2).
+    fn enqueue_emergency_cleanup(&self) -> Result<Vec<PendingEmergencyStep>, ComputerUseError> {
+        let mut steps = Vec::new();
+        let mut first_err = None;
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            match self
+                .inner
+                .enqueue_control(BackendRequestKind::MouseUp { button })
+            {
+                Ok((reply, cancelled)) => {
+                    steps.push((EmergencyCleanupStep::MouseUp, reply, cancelled));
+                }
+                Err(error) => {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
+            }
+        }
+        match self
+            .inner
+            .enqueue_control(BackendRequestKind::ReleaseOsGrant)
+        {
+            Ok((reply, cancelled)) => {
+                steps.push((EmergencyCleanupStep::ReleaseOsGrant, reply, cancelled));
+            }
+            Err(error) => {
+                if first_err.is_none() {
+                    first_err = Some(error);
+                }
+            }
+        }
+        match first_err {
+            Some(error) => Err(error),
+            None => Ok(steps),
+        }
+    }
+
+    /// Non-blocking probe variant of [`Self::enqueue_emergency_cleanup`]:
+    /// never waits on the startup state lock (see
+    /// [`BackendInner::try_enqueue_emergency_cleanup`] for the three
+    /// outcomes and why Stop/revoke must take this path).
+    fn try_enqueue_emergency_cleanup(&self) -> EmergencyEnqueue {
+        self.inner.try_enqueue_emergency_cleanup()
+    }
+
     /// Launch an application inside the backend's display target. Only
     /// virtual backends implement it (the trait default answers
     /// explicit-unsupported for physical backends — opening apps on the
@@ -1129,14 +1477,14 @@ impl BackendHandle {
     /// and no request was ever sent — nothing was injected (no button can
     /// be held) and no persistent OS grant was ever obtained. Cheap: one
     /// state-mutex lock, no backend construction. Used by
-    /// [`emergency_cleanup`]'s fast path.
+    /// [`spawn_emergency_cleanup`]'s fast path.
     fn is_never_started(&self) -> bool {
         matches!(&*self.inner.state.lock(), WorkerState::Pending(_))
     }
 
     /// Sets the cancel flag of every registered action request without any
     /// backend contact (worker-free: it never sends a control request, so it
-    /// can never trigger a lazy start). Used by [`emergency_cleanup`] so a
+    /// can never trigger a lazy start). Used by [`spawn_emergency_cleanup`] so a
     /// request queued behind a still-running lazy start is latched *before*
     /// the Pending fast-path check skips the control-request sweep.
     fn cancel_all_registered_flags(&self) {
@@ -1160,19 +1508,22 @@ impl BackendRegistry {
         self.handles.lock().insert(session_id.to_string(), handle);
     }
 
-    // Both release paths funnel into [`emergency_cleanup`] (physical button
+    // Both release paths funnel into [`spawn_emergency_cleanup`] (physical button
     // up, then OS-grant close). A bare remove with no cleanup was removed on
     // purpose: an unregister-only path would let a dying session skip the
     // button/grant cleanup while still looking successful.
 
-    /// Emergency cleanup for one session (per-session revoke): on a detached
-    /// thread, first unpress the physical left button (a model that pressed
-    /// and died must not leave the machine in button-held drag state), then
-    /// close the persistent OS-level grant. Both go through the control
-    /// lane, so they are NOT rejected while an action is in flight — they
-    /// queue behind it on the serialized worker channel and run once it
-    /// resolves. Errors are only logged: the worst case (a leaked grant or
-    /// a held button) must never panic or block the caller.
+    /// Emergency cleanup for one session (per-session revoke): unpress the
+    /// physical left button (a model that pressed and died must not leave
+    /// the machine in button-held drag state), then close the persistent
+    /// OS-level grant. Both ride the control lane, so they are NOT rejected
+    /// while an action is in flight — they queue behind it on the
+    /// serialized worker channel and run once it resolves; the requests
+    /// are ENQUEUED here, before this call returns, and only the reply
+    /// waits run detached (see [`spawn_emergency_cleanup`] — the queue
+    /// position binds the cleanup to the grant being revoked). Errors are
+    /// only logged: the worst case (a leaked grant or a held button) must
+    /// never panic or block the caller.
     ///
     /// Known trade-off (acknowledged rather than gated): the
     /// synthetic mouse-up is machine-global and the control lane does not
@@ -1196,7 +1547,7 @@ impl BackendRegistry {
         let Some(handle) = self.handles.lock().get(session_id).cloned() else {
             return;
         };
-        std::thread::spawn(move || emergency_cleanup(handle));
+        spawn_emergency_cleanup(handle);
     }
 
     /// [`Self::emergency_release`]'s cleanup plus synchronous
@@ -1233,7 +1584,7 @@ impl BackendRegistry {
             }
         };
         if let Some(target) = cleanup {
-            std::thread::spawn(move || emergency_cleanup(target));
+            spawn_emergency_cleanup(target);
         }
     }
 
@@ -1244,7 +1595,7 @@ impl BackendRegistry {
     pub fn emergency_release_all(&self) {
         let handles: Vec<BackendHandle> = self.handles.lock().values().cloned().collect();
         for handle in handles {
-            std::thread::spawn(move || emergency_cleanup(handle));
+            spawn_emergency_cleanup(handle);
         }
     }
 
@@ -1265,8 +1616,7 @@ impl BackendRegistry {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         for handle in handles {
             let tx = done_tx.clone();
-            std::thread::spawn(move || {
-                emergency_cleanup(handle);
+            spawn_emergency_cleanup_with_done(handle, move || {
                 let _ = tx.send(());
             });
         }
@@ -1311,11 +1661,75 @@ impl BackendRegistry {
     }
 }
 
+/// One enqueued emergency-cleanup control request, kept for the detached
+/// reply waiter: which step it is (for honest failure logs), its reply
+/// channel, and its cancel flag (set on timeout so a recovered worker
+/// skips it — the same contract `request_inner`'s timeout arm implements).
+type PendingEmergencyStep = (
+    EmergencyCleanupStep,
+    std::sync::mpsc::Receiver<BackendResult>,
+    Arc<AtomicBool>,
+);
+
+/// Outcome of the synchronous enqueue probe (see
+/// [`BackendInner::try_enqueue_emergency_cleanup`]).
+enum EmergencyEnqueue {
+    /// The backend was never started; there is nothing to clean up.
+    NeverStarted,
+    /// The state mutex is busy (a lazy start or teardown is in flight) or
+    /// the state machine is not Running: run the blocking cleanup on a
+    /// detached thread instead of the caller.
+    Deferred,
+    /// Both control requests are enqueued on the caller's thread; only the
+    /// reply waits remain.
+    Enqueued(Vec<PendingEmergencyStep>),
+}
+
+/// The two control requests of one emergency cleanup, in execution order.
+enum EmergencyCleanupStep {
+    MouseUp,
+    ReleaseOsGrant,
+}
+
+impl EmergencyCleanupStep {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::MouseUp => "mouse_up",
+            Self::ReleaseOsGrant => "release_os_grant",
+        }
+    }
+}
+
 /// Emergency cleanup for one handle, in the fixed order: cancel every
 /// registered action request, then unpress the physical left button, then
-/// close the persistent OS-level grant. Runs on detached threads (see
-/// [`BackendRegistry::emergency_release`]); errors are only logged with the
+/// close the persistent OS-level grant. Errors are only logged with the
 /// existing `eprintln!` convention.
+///
+/// Two ordering contracts meet here, one per review round:
+///
+/// (#897 review P2: a late cleanup could terminate apps opened under a NEW
+/// grant) When the backend is RUNNING, the sweep and both control-request
+/// enqueues happen synchronously on the caller's thread and only the reply
+/// waits stay detached. Queue position binds the cleanup to the grant
+/// being revoked: the serialized worker executes the enqueued release
+/// before anything a later re-grant of the same session can enqueue, so
+/// `release_os_grant`'s wind-down take() still sees only the revoked
+/// grant's apps. The original bare-spawn shape enqueued from the detached
+/// thread, so a scheduler delay could line its requests up behind a
+/// re-granted session's open — and the late release would take (and
+/// terminate) apps the NEW grant had opened.
+///
+/// (#897 review P2 round 2: the prelude must not wait on the startup lock)
+/// The synchronous prelude is strictly non-blocking: the state mutex is
+/// only ever taken with `try_lock` (`ensure_sender` holds it across the
+/// whole factory startup, up to BACKEND_CALL_TIMEOUT, so a blocking lock
+/// here would stall Stop/revoke — previously the detached thread absorbed
+/// that wait). When the probe cannot classify the backend (guard busy, or
+/// `StartFailed`/`Shutdown`), the whole blocking cleanup falls back to a
+/// detached thread — a busy guard means a start or teardown is in flight,
+/// so that backend cannot hold recorded open apps and the queue-position
+/// binding is not needed; a Pending backend is skipped without ever
+/// running the factory.
 ///
 /// The flag sweep comes first and is worker-free (it only flips the
 /// registered `AtomicBool`s, never touching the backend): a request whose
@@ -1325,47 +1739,85 @@ impl BackendRegistry {
 /// finding: with the sweep only reachable through the control request, a
 /// stop landing inside the first request's startup window escaped both
 /// cancel mechanisms and the injection landed after the stop returned.
-///
-/// Pending-state fast path: a handle whose backend was never started skips
-/// the mouse-up/grant-close part entirely. Nothing was ever injected (no
-/// button can be held) and no OS grant exists, so running the cleanup would
-/// only make `ensure_sender` lazily construct the full platform backend
-/// (xcap/enigo/portal, possibly OS permission work) just to issue three
-/// no-op mouse-ups — each holding the state mutex for up to
-/// BACKEND_CALL_TIMEOUT while the construction runs. The check lives at
-/// this shared funnel point (every spawn site — per-session revoke, tool
-/// Drop, global stop — routes through here), so all of them get the fast
-/// path. Both directions of the inherent race are safe: if a request starts
-/// the backend concurrently, the handle is no longer Pending by the time
-/// this reads it and the cleanup runs; if the cleanup wins the read, the
-/// request is still queued with its flag latched by the sweep above and is
-/// rejected at dequeue (and the tool layer's pre-backend re-check rejects
-/// any later action outright).
-fn emergency_cleanup(handle: BackendHandle) {
+fn spawn_emergency_cleanup(handle: BackendHandle) {
+    spawn_emergency_cleanup_with_done(handle, || {});
+}
+
+/// [`spawn_emergency_cleanup`] with a completion callback (the app-exit
+/// harvest's done signal). `done` runs once the replies resolved — or
+/// immediately when there is nothing to enqueue.
+fn spawn_emergency_cleanup_with_done(handle: BackendHandle, done: impl FnOnce() + Send + 'static) {
     handle.cancel_all_registered_flags();
-    if handle.is_never_started() {
-        return;
+    // (#897 review P2 round 3) Arm the reservation BEFORE the probe: the
+    // state mutex can be busy for ordinary requests too (ensure_sender
+    // clones the sender under it for every action), so a busy probe does
+    // NOT imply no recorded apps — the reservation, not the queue position,
+    // carries the ordering into the Deferred arm. Every arm below releases
+    // exactly its own count when its cleanup requests are enqueued (or it
+    // decides there is nothing to enqueue), bounding the worker's OpenApp
+    // parking loop; the release that reaches zero also wakes an idle
+    // worker so parked opens drain without waiting for other traffic.
+    handle.inner.acquire_cleanup_reservation();
+    match handle.try_enqueue_emergency_cleanup() {
+        EmergencyEnqueue::NeverStarted => {
+            handle.inner.release_cleanup_reservation();
+            done();
+        }
+        EmergencyEnqueue::Enqueued(steps) => {
+            // Both requests are already in the queue: release the
+            // reservation so parked opens resume BEHIND them.
+            handle.inner.release_cleanup_reservation();
+            std::thread::spawn(move || {
+                await_emergency_steps(steps);
+                done();
+            });
+        }
+        EmergencyEnqueue::Deferred => {
+            // The state mutex is busy (an action or a startup holds it) or
+            // the state machine already left Running: the whole blocking
+            // cleanup — enqueue through the blocking `ensure_sender` and
+            // the reply waits — runs on a detached thread, exactly where
+            // the pre-binding shape absorbed these waits. Ordering across
+            // the busy window is carried by the reservation set above: the
+            // worker parks any OpenApp enqueued until this fallback's
+            // release is in the queue and the flag clears.
+            std::thread::spawn(move || {
+                let enqueued = handle.enqueue_emergency_cleanup();
+                handle.inner.release_cleanup_reservation();
+                match enqueued {
+                    Ok(steps) => await_emergency_steps(steps),
+                    Err(error) => {
+                        eprintln!("[computer_use] emergency cleanup enqueue failed: {error}");
+                    }
+                }
+                done();
+            });
+        }
     }
-    // A panic on this bare detached thread must not silently strand a held
-    // button / portal grant, so the body runs inside catch_unwind and the
-    // caught payload is logged with the same input-safe summary the worker
-    // uses. (The redacting process hook covers only the worker thread name;
-    // on this thread the default hook runs first — the summary below keeps
-    // our own log line payload-free regardless.)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Err(error) = handle.emergency_mouse_up() {
-            eprintln!("[computer_use] emergency_mouse_up failed: {error}");
+}
+
+/// Await the pending emergency steps on whichever thread called this
+/// (detached in both dispatch arms), with `request_inner`'s timeout and
+/// disconnect semantics and the same logging convention.
+fn await_emergency_steps(steps: Vec<PendingEmergencyStep>) {
+    for (step, reply, cancelled) in steps {
+        let name = step.as_str();
+        match reply.recv_timeout(BACKEND_CALL_TIMEOUT) {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => eprintln!("[computer_use] emergency {name} failed: {error}"),
+            Err(RecvTimeoutError::Timeout) => {
+                cancelled.store(true, Ordering::SeqCst);
+                eprintln!(
+                    "[computer_use] emergency {name} timed out; it may still execute or has partially executed"
+                );
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                cancelled.store(true, Ordering::SeqCst);
+                eprintln!(
+                    "[computer_use] emergency {name} lost: the backend thread is not running"
+                );
+            }
         }
-        if let Err(error) = handle.release_os_grant() {
-            eprintln!("[computer_use] release_os_grant failed: {error}");
-        }
-    }));
-    if let Err(panic) = result {
-        eprintln!(
-            "[computer_use] emergency cleanup panicked: {}",
-            // Deref first — see the worker dispatch arm above.
-            panic_payload_summary(&*panic)
-        );
     }
 }
 
@@ -1834,7 +2286,9 @@ mod tests {
                 seen: seen_for_worker,
             }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         for _ in 0..2 {
             let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -1870,7 +2324,9 @@ mod tests {
         let factory: BackendFactory = Box::new(|| {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         req_tx
@@ -1906,7 +2362,9 @@ mod tests {
         let factory: BackendFactory = Box::new(|| {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        let worker = std::thread::spawn(move || {
+            worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
+        });
         assert!(startup_rx.recv().expect("startup channel alive").is_ok());
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         req_tx
@@ -2085,7 +2543,9 @@ mod tests {
             // path and prove nothing.
             let worker = std::thread::Builder::new()
                 .name(WORKER_THREAD_NAME.to_string())
-                .spawn(move || worker_loop(factory, req_rx, startup_tx))
+                .spawn(move || {
+                    worker_loop(factory, req_rx, startup_tx, Arc::new(AtomicUsize::new(0)))
+                })
                 .expect("worker spawns");
             assert!(startup_rx.recv().expect("startup channel alive").is_ok());
             let (reply_tx, reply_rx) = channel::<BackendResult>();
@@ -2341,6 +2801,109 @@ mod tests {
 
         fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
             self.state.lock().releases += 1;
+            Ok(())
+        }
+    }
+
+    /// Journals the worker's execution order ("up" per button release,
+    /// "release", "open <program>") so a test can assert which request the
+    /// serialized worker executed first.
+    struct OrderProbeBackend {
+        state: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ComputerUseBackend for OrderProbeBackend {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                screenshot: true,
+                input: true,
+                ui_tree: false,
+                notes: "order-probe".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
+            }
+        }
+
+        fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+            Ok(Capture {
+                rgba: vec![0u8; 4 * 4 * 4],
+                width: 4,
+                height: 4,
+                origin_x: 0,
+                origin_y: 0,
+                input_scale_x: 1.0,
+                input_scale_y: 1.0,
+                input_aligned: true,
+            })
+        }
+
+        fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+            Ok((0, 0))
+        }
+
+        fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn click(&mut self, _button: MouseButton, _count: u8) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_down(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+            self.state.lock().push(format!("up-{}", button.as_str()));
+            Ok(())
+        }
+
+        fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn scroll(
+            &mut self,
+            _direction: ScrollDirection,
+            _clicks: u32,
+        ) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn type_text(&mut self, _text: &str) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn key_chord(&mut self, _keys: &[Key]) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn hold_key(&mut self, _keys: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+            Err(ComputerUseError::unsupported(
+                "ui_tree",
+                "probe has no tree",
+            ))
+        }
+
+        fn element_at_point(
+            &mut self,
+            _x: i32,
+            _y: i32,
+        ) -> Result<Option<ElementInfo>, ComputerUseError> {
+            Ok(None)
+        }
+
+        fn open_app(&mut self, program: &str, _args: &[String]) -> Result<u32, ComputerUseError> {
+            self.state.lock().push(format!("open {program}"));
+            Ok(4242)
+        }
+
+        fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+            self.state.lock().push("release".to_string());
             Ok(())
         }
     }
@@ -2649,10 +3212,10 @@ mod tests {
     /// was ever injected, so there is nothing to release, and running it
     /// would only lazily construct the platform backend. The factory probe
     /// proves the factory never ran; a subsequent real request must still
-    /// start the backend normally. Called through the `emergency_cleanup`
-    /// funnel synchronously (every registry spawn site routes through it),
-    /// so the skip is observed deterministically — no detached thread, no
-    /// polling.
+    /// start the backend normally. Called through the
+    /// `spawn_emergency_cleanup` funnel synchronously (every registry
+    /// spawn site routes through it), so the skip is observed
+    /// deterministically — no detached reply wait, no polling.
     #[test]
     fn emergency_cleanup_skips_a_never_started_backend() {
         let constructed = Arc::new(AtomicUsize::new(0));
@@ -2661,7 +3224,7 @@ mod tests {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        emergency_cleanup(handle.clone());
+        spawn_emergency_cleanup(handle.clone());
         assert_eq!(
             constructed.load(Ordering::SeqCst),
             0,
@@ -2677,6 +3240,484 @@ mod tests {
             constructed.load(Ordering::SeqCst),
             1,
             "the real request must start the backend exactly once"
+        );
+    }
+
+    /// Regression (#897 review P2: a late cleanup could terminate apps
+    /// opened under a NEW grant): the cleanup's control requests must be
+    /// ENQUEUED by the time `emergency_release` returns, so a release
+    /// requested for the revoked grant executes before anything a
+    /// re-granted session enqueues after it. The journaling mock records
+    /// the worker's execution order: the release enqueued at revoke time
+    /// must precede the post-revoke open. Under the old bare-spawn shape
+    /// the enqueue happened on the detached thread, so the open issued
+    /// immediately after `emergency_release` returned routinely won the
+    /// race and executed first.
+    #[test]
+    fn emergency_release_enqueues_the_release_before_a_post_revoke_open() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let state_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: state_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Start the backend so the never-started fast path does not skip
+        // the cleanup.
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-order", handle.clone());
+        registry.emergency_release("s-order");
+        // The revoke returned; the cleanup requests are already enqueued.
+        // A re-granted session now issues its open — it must EXECUTE after
+        // the release.
+        let opened = handle.open_app("app", &[]);
+        assert!(opened.is_ok(), "the post-revoke open must succeed");
+        // Wait for the worker to execute both, then assert the order.
+        for _ in 0..500 {
+            {
+                let state = journal.lock();
+                if state.contains(&"release".to_string()) && state.contains(&"open app".to_string())
+                {
+                    let release = state.iter().position(|op| op == "release").unwrap();
+                    let open = state.iter().position(|op| op == "open app").unwrap();
+                    assert!(
+                        release < open,
+                        "the revoked grant's release must execute before the \
+                         post-revoke open; journal: {state:?}"
+                    );
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the worker never executed both the release and the open; journal: {:?}",
+            journal.lock()
+        );
+    }
+
+    /// Regression (#897 review P2 round 2): Stop/revoke must not wait on
+    /// the startup state lock. A lazy factory held mid-startup holds the
+    /// state mutex for the whole startup window (`ensure_sender` parks on
+    /// `startup_rx` while holding it); the cleanup's synchronous probe must
+    /// classify the backend as busy and fall back to the detached blocking
+    /// cleanup, so the Stop command returns promptly while the release
+    /// still reaches the backend once startup completes. The healthy-
+    /// backend order test above covers the Enqueued arm; this covers the
+    /// Deferred arm.
+    #[test]
+    fn stop_while_a_factory_is_stalled_returns_promptly_and_still_releases() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            // Simulate a stalled OS/permission initialization.
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Trigger the lazy start on a helper thread: it takes the state
+        // mutex and parks on the startup signal while the factory sleeps.
+        let starter = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.capabilities())
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while handle.inner.state.try_lock().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lazy start never took the state lock; the helper thread likely died"
+            );
+            std::thread::yield_now();
+        }
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-stall", handle.clone());
+        let started = std::time::Instant::now();
+        registry.emergency_release("s-stall");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Stop/revoke must not wait on the startup lock; took {elapsed:?}"
+        );
+        // Startup completes; the deferred cleanup must still reach the
+        // backend (bounded wait, generous against slow CI boxes).
+        let _ = starter.join().expect("starter thread");
+        for _ in 0..1000 {
+            if journal.lock().iter().any(|op| op == "release") {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the deferred cleanup never reached the backend; journal: {:?}",
+            journal.lock()
+        );
+    }
+
+    /// Regression (#897 review P2 round 3): a busy state mutex on a RUNNING
+    /// backend with recorded apps must not drop the cleanup ordering. The
+    /// test parks the state lock itself, forcing the probe down the
+    /// Deferred arm for a backend that HAS opened an app — exactly the
+    /// contended case where queue position alone cannot bind the cleanup.
+    /// The reservation parks the post-revoke open at the worker tail until
+    /// the fallback's release is enqueued, so the release still executes
+    /// first (a blocking-probe or no-reservation shape orders open first).
+    #[test]
+    fn contended_running_deferred_cleanup_still_precedes_post_revoke_open() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        // A recorded app for the grant being revoked: the worker has
+        // executed one open, so the kill list is non-empty.
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Contend: hold the state mutex so the probe's try_lock fails and
+        // the dispatch falls to Deferred while the backend is Running.
+        let state_guard = handle.inner.state.lock();
+        let registry = BackendRegistry {
+            handles: Mutex::new(HashMap::new()),
+        };
+        registry.insert("s-contend", handle.clone());
+        let started = std::time::Instant::now();
+        registry.emergency_release("s-contend");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "Stop/revoke must stay non-blocking on a contended lock; took {:?}",
+            started.elapsed()
+        );
+        // Post-revoke work proceeds while the fallback waits for the lock.
+        drop(state_guard);
+        // The post-revoke open races the fallback's enqueue, and the result
+        // of that race is legitimately either outcome (same shape as
+        // `start_in_flight_capture`): if the cleanup enqueued first, its
+        // control cancel sweep cancels the open (an "unavailable" reply);
+        // if the open queued first, the reservation parks it behind the
+        // release. The invariant under test is ordering, not success: the
+        // release must never follow the post-revoke open's execution — and
+        // a successfully-replied open must eventually execute (the parked
+        // slot must drain, not strand the re-granted session). The open
+        // runs on a helper thread with a bounded wait: a stranded park
+        // (no reply ever) must surface as a fast failure, not burn the
+        // 700s call budget turning the red into a CI timeout.
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the post-revoke open was stranded without any reply \
+                     (the parked slot never drained)"
+                )
+            });
+
+        let mut polls_since_release = None;
+        for _ in 0..1000 {
+            {
+                let state = journal.lock();
+                if let Some(release) = state.iter().position(|op| op == "release") {
+                    let wait = polls_since_release.get_or_insert(0);
+                    // The reply and the execution are two separate events;
+                    // give the parked resume a bounded window to land.
+                    if *wait > 100 {
+                        if opened.is_ok() {
+                            let second = state.iter().position(|op| op == "open second");
+                            assert!(
+                                second.is_some(),
+                                "the re-granted session's open replied success but never \
+                                 executed; journal: {state:?}"
+                            );
+                            assert!(
+                                second.unwrap() > release,
+                                "the release must execute before the post-revoke open; \
+                                 journal: {state:?}"
+                            );
+                        }
+                        return;
+                    }
+                    *wait += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the worker never executed the deferred release; journal: {:?}",
+            journal.lock()
+        );
+    }
+
+    /// Round-5 review P2: the fallback releases its reservation AFTER its
+    /// enqueue returns — by then the worker may already have dispatched the
+    /// release and looped back to an idle `recv()`, and the loop-top resume
+    /// only runs between requests. The last release must therefore WAKE the
+    /// worker explicitly (a no-op control request), or a parked open
+    /// strands until the next unrelated request arrives — possibly never.
+    #[test]
+    fn releasing_the_last_reservation_wakes_an_idle_worker_so_parked_opens_drain() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Simulate an in-flight cleanup's reservation and park an open
+        // behind it (the open's reply only arrives when the park drains).
+        handle.inner.acquire_cleanup_reservation();
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "the open must still be parked behind the reservation"
+        );
+        // Release the LAST reservation with the worker otherwise idle (no
+        // channel traffic at all): the wake must drain the parked slot.
+        handle.inner.release_cleanup_reservation();
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the parked open must drain once the last reservation releases");
+        assert!(opened.is_ok(), "the drained open must succeed: {opened:?}");
+        let state = journal.lock();
+        let first = state.iter().position(|op| op == "open first").unwrap();
+        let second = state.iter().position(|op| op == "open second").unwrap();
+        assert!(first < second, "journal: {state:?}");
+    }
+
+    /// Round-5 review P2: reservations are owned per cleanup. With a shared
+    /// bool, cleanup B's release opens the gate while cleanup A's release
+    /// is still outside the queue — the parked open runs ahead of A's
+    /// wind-down. The count must hold until EVERY reservation releases.
+    #[test]
+    fn overlapping_cleanups_hold_the_gate_until_all_reservations_release() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        assert!(handle.capabilities().is_ok(), "the backend must start");
+        assert!(handle.open_app("first", &[]).is_ok());
+
+        // Two overlapping cleanups arm the gate; the post-revoke open parks.
+        handle.inner.acquire_cleanup_reservation();
+        handle.inner.acquire_cleanup_reservation();
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let _ = opened_tx.send(handle.open_app("second", &[]));
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "the open must still be parked behind both reservations"
+        );
+        // Cleanup B finishes (its requests are in the queue): one release
+        // must NOT open the gate for A's still-pending release. A raw wake
+        // gives the worker a dequeue without touching the in-flight gate
+        // (the parked open holds it), so a bool-shaped release would resume
+        // the parked open here and fail the assert.
+        handle.inner.release_cleanup_reservation();
+        {
+            let tx = handle.inner.ensure_sender().expect("worker alive");
+            let _ = tx.send(BackendRequest {
+                kind: BackendRequestKind::Wake,
+                reply: channel::<BackendResult>().0,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                control: true,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !journal.lock().iter().any(|op| op == "open second"),
+            "one release must not open the gate while another reservation is held"
+        );
+        // A's release lands; the LAST release drains the parked slot.
+        handle.inner.release_cleanup_reservation();
+        let opened = opened_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the parked open must drain once all reservations release");
+        assert!(opened.is_ok(), "the drained open must succeed: {opened:?}");
+        let state = journal.lock();
+        let first = state.iter().position(|op| op == "open first").unwrap();
+        let second = state.iter().position(|op| op == "open second").unwrap();
+        assert!(first < second, "journal: {state:?}");
+    }
+
+    /// Regression (review P2 round 6): the reservation release runs on the
+    /// Stop/revoke caller thread, so it must not wait on the state mutex —
+    /// a first request racing the NeverStarted probe's guard release can be
+    /// mid-lazy-start right there, and `ensure_sender` holds that mutex
+    /// across the whole factory startup. The wake must come from the
+    /// spawn-time `wake_tx` stash instead: calling this while a slow
+    /// factory's startup holds the state lock must return promptly, not
+    /// block for the factory duration (mutation: the previous
+    /// state-lock/ensure_sender shape).
+    #[test]
+    fn releasing_a_reservation_never_blocks_on_a_concurrent_startup() {
+        let journal = Arc::new(Mutex::new(Vec::<String>::new()));
+        let journal_for_factory = Arc::clone(&journal);
+        let handle = BackendHandle::lazy(move || {
+            // Simulate a slow platform/permission initialization: a first
+            // request entering ensure_sender holds the state mutex across
+            // this whole sleep.
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(Box::new(OrderProbeBackend {
+                state: journal_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        // Trigger the lazy start on a helper thread: it takes the state
+        // mutex and parks on the startup signal while the factory sleeps.
+        let starter = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.capabilities())
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while handle.inner.state.try_lock().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lazy start never took the state lock; the helper thread likely died"
+            );
+            std::thread::yield_now();
+        }
+        // A cleanup's reservation is armed and released WHILE the startup
+        // holds the state mutex: the caller must not block on either the
+        // mutex or an ensure_sender call. (The worker thread already
+        // exists — spawn precedes the startup wait — so the wake sender is
+        // stashed and the Wake simply queues behind the factory.)
+        handle.inner.acquire_cleanup_reservation();
+        let started = std::time::Instant::now();
+        handle.inner.release_cleanup_reservation();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the reservation release must not wait on a concurrent startup; took {:?}",
+            started.elapsed()
+        );
+        starter.join().expect("starter thread");
+        // The session still works after the racing wake.
+        assert!(
+            handle.open_app("after", &[]).is_ok(),
+            "the backend must serve requests after the racing release"
+        );
+    }
+
+    /// Regression (review P2 round 7): the cached wake sender is stashed
+    /// BEFORE the startup wait, so it must die with the local sender in the
+    /// startup-failure arms — keeping it would hold a channel sender past
+    /// the teardown drops and silence the disconnect a worker wedged in the
+    /// factory relies on to exit once it unwinds (the round-4 thread-leak
+    /// class again). The test drives the same `Err(_)` failure arm the
+    /// 700s-abandonment timeout shares by making the factory panic on the
+    /// worker thread (startup_tx dropped before any reply), then asserts
+    /// the cached entry is gone and the handle fails sticky.
+    #[test]
+    fn startup_failure_clears_the_cached_wake_sender() {
+        struct PanickingFactoryBackend;
+        impl ComputerUseBackend for PanickingFactoryBackend {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    screenshot: false,
+                    input: false,
+                    ui_tree: false,
+                    notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
+                }
+            }
+            fn set_cancel_flag(&mut self, _flag: Option<Arc<AtomicBool>>) {}
+            fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+                Err(ComputerUseError::unsupported("capture", "test"))
+            }
+            fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+                Ok((0, 0))
+            }
+            fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("move_to", "test"))
+            }
+            fn click(&mut self, _b: MouseButton, _c: u8) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("click", "test"))
+            }
+            fn mouse_down(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_down", "test"))
+            }
+            fn mouse_up(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_up", "test"))
+            }
+            fn drag(&mut self, _f: (i32, i32), _t: (i32, i32)) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("drag", "test"))
+            }
+            fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("scroll", "test"))
+            }
+            fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("type_text", "test"))
+            }
+            fn key_chord(&mut self, _k: &[Key]) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("key_chord", "test"))
+            }
+            fn hold_key(&mut self, _k: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("hold_key", "test"))
+            }
+            fn ui_tree(&mut self, _o: &UiTreeOptions) -> Result<String, ComputerUseError> {
+                Err(ComputerUseError::unsupported("ui_tree", "test"))
+            }
+            fn element_at_point(
+                &mut self,
+                _x: i32,
+                _y: i32,
+            ) -> Result<Option<ElementInfo>, ComputerUseError> {
+                Err(ComputerUseError::unsupported("element_at_point", "test"))
+            }
+        }
+        let handle = BackendHandle::lazy(|| {
+            // Reach the worker thread, then die before any startup reply:
+            // startup_rx observes the disconnect and runs the same
+            // abandoned-startup arm as the budget timeout.
+            std::thread::sleep(Duration::from_millis(200));
+            panic!("factory exploded mid-initialization");
+        });
+        let error = handle
+            .capabilities()
+            .err()
+            .expect("the abandoned startup must fail the first request");
+        assert!(
+            error.to_string().contains("abandoned"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            handle.inner.wake_tx.lock().is_none(),
+            "the cached wake sender must be cleared when startup fails"
+        );
+        // The stale handle answers with the sticky failure (no lazy retry).
+        let again = handle.capabilities().err().expect("sticky failure");
+        assert!(
+            again.to_string().contains("not available"),
+            "unexpected error: {again}"
         );
     }
 
