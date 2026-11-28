@@ -2554,6 +2554,26 @@ pub fn try_clear_pending_rewind(ledger_root: &Path) -> bool {
 /// r53 P2（评审）：清理未决时的持久化放弃——把暂记标记为 aborted，对账
 /// 臂据此跳过重放（普通消息发送不再执行被拒绝的破坏性回退），仅清标记。
 /// 返回 false = 放弃标记本身也未能落盘（锁/IO 失败），调用方如实上抛。
+/// r53 P2（评审）：放弃哨兵——最后一级持久化通道。清理与 aborted 标记
+/// 双双落盘失败时，哨兵文件的存在本身阻断普通消息发送的重放（对账消费：
+/// 清暂记、放行快照、不执行被拒绝的回退）。
+pub fn pending_rewind_abandoned_sentinel_path(ledger_root: &Path) -> std::path::PathBuf {
+    pending_rewind_path(ledger_root).with_extension("json.abandoned")
+}
+
+pub fn mark_pending_rewind_abandoned_sentinel(ledger_root: &Path) -> bool {
+    fs::write(
+        pending_rewind_abandoned_sentinel_path(ledger_root),
+        "1
+",
+    )
+    .is_ok()
+}
+
+pub fn pending_rewind_abandoned_sentinel_present(ledger_root: &Path) -> bool {
+    pending_rewind_abandoned_sentinel_path(ledger_root).exists()
+}
+
 pub fn mark_pending_rewind_aborted(ledger_root: &Path) -> bool {
     let _lock = match lock_pending_rewind_file(ledger_root) {
         Ok(lock) => lock,
@@ -5752,10 +5772,23 @@ pub(crate) ",
             "live"
         );
 
-        // 显式同边界重试：覆盖 aborted 标记（aborted=false 的新暂记），并以
-        // **当前工作区**（v2）新拍 PreRestore——绝不复用被放弃操作的旧 P1。
+        // abort 之后的编辑（v3）：显式重试必须以**当前工作区**新拍
+        // PreRestore——绝不复用被放弃操作的旧 P1（其回滚点定格在 v2），否则
+        // 重试成功后的 undo 会把 abort 与重试之间的编辑抹掉。
+        exec.write(
+            "ok.txt", "v3
+",
+        );
+
+        // 显式同边界重试：复用判定取真实 matcher 结果（aborted ⇒ None ⇒
+        // fresh PreRestore），而非硬编码 None——否则 matcher 回归被硬编码
+        // 掩盖。
+        let reuse =
+            matching_pending_pre_restore(ledger.path(), &first.id, 1, &revision).expect("matching");
+        assert!(reuse.is_none(), "aborted 暂记不得作为重试复用候选");
         let (target_retry, undo_p2) =
-            prepare_restore(ledger.path(), exec.path(), &first.id, None).expect("retry prepare");
+            prepare_restore(ledger.path(), exec.path(), &first.id, reuse.as_deref())
+                .expect("retry prepare");
         assert_ne!(
             undo_p2.id, undo_p1.id,
             "重试必须新拍 PreRestore（复用 P1 会把 v1 旧树带回 undo）"
@@ -5767,17 +5800,17 @@ pub(crate) ",
             .expect("fresh pending");
         assert!(!fresh.aborted, "重试暂记不得继承 aborted");
 
-        // 重试执行 + undo：恢复到重试前状态（v2——其间的编辑保留），而非被
-        // 放弃操作瞄准的 v1。
+        // 重试执行 + undo：恢复到重试前状态（v3——abort 与重试之间的编辑
+        // 保留），而非被放弃操作瞄准的 v1、也不是 abort 前的 v2。
         apply_restore(ledger.path(), exec.path(), &target_retry).expect("retry apply");
         restore_checkpoint(ledger.path(), exec.path(), &undo_p2.id).expect("undo of the retry");
         assert_eq!(
             exec.read("ok.txt").as_deref(),
             Some(
-                "v2
+                "v3
 "
             ),
-            "undo 必须回到重试前状态（v2 保留其间的编辑；复用 P1 会错回 v1）"
+            "undo 必须回到重试前状态（v3 = abort 后的编辑保留；复用 P1 会错回 v1/v2）"
         );
     }
 

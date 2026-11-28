@@ -139,6 +139,17 @@ async fn reconcile_pending_rewind(
     execution: &std::path::Path,
     gates: ReconcileGates<'_>,
 ) -> bool {
+    // r53 P2（评审）：放弃哨兵消费——拒绝臂的双失败通道（清理与 aborted
+    // 标记均未落盘）留下的哨兵文件在此阻断普通重放：清暂记、放行本轮快照
+    // （被拒绝的回退视为已放弃；显式重试会重新走完整协议）。
+    if checkpoints::pending_rewind_abandoned_sentinel_present(ledger) {
+        log::warn!(
+            "[pinvou3][checkpoints] abandonment sentinel present: clearing the refused rewind without replay sid={session_id}"
+        );
+        checkpoints::clear_pending_rewind(ledger);
+        let _ = std::fs::remove_file(checkpoints::pending_rewind_abandoned_sentinel_path(ledger));
+        return true;
+    }
     let pending = match checkpoints::live_pending_rewind(ledger) {
         Ok(Some(pending)) => pending,
         Ok(None) => return true,
@@ -1273,6 +1284,14 @@ pub async fn rewind_to_turn(
             if !checkpoints::try_clear_pending_rewind(&ledger)
                 && !checkpoints::mark_pending_rewind_aborted(&ledger)
             {
+                // 最后一级持久化通道：放弃哨兵文件（对账消费，阻断普通重放）。
+                if checkpoints::mark_pending_rewind_abandoned_sentinel(&ledger) {
+                    return Err(format!(
+                        "{refusal}
+
+另：回退暂记的清理与放弃标记均未能落盘（暂记锁不可用），但放弃哨兵已持久化——普通消息发送不会执行该回退；请稍后显式重试或清理。"
+                    ));
+                }
                 return Err(format!(
                     "{refusal}
 
