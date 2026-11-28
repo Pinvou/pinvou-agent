@@ -277,11 +277,13 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       grantRequest: null,
       confirmRequest: null,
     },
-    modeState: { mode: "yolo" },
+    modeState: { mode: "auto" },
     // Per-lane (work/code) global default modes (null = the lane was never
-    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
-    // the draft-state chip display and switches: fetched at startup via
-    // get_mode_defaults, written back on draft switches via set_mode_default.
+    // explicitly chosen; tri-mode resolution: code/bound→plan, unbound
+    // plain→auto — an explicit Auto choice surfaces as "auto" via the
+    // backend's *_auto companion flags). Source of truth for the draft-state
+    // chip display and switches: fetched at startup via get_mode_defaults,
+    // written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
     // The lane the current chat page is in (work; the code page lane has its
     // own draft-control logic). The lane is a pure frontend concept, passed
@@ -474,12 +476,14 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
       toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
+      toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
+      approvalDecisionFailed: "⚠️ decide_approval failed: ",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ", modePersistFailed: "⚠️ Mode applied but NOT saved — a restart restores the previous mode: ",modeAskPersistFailed: "The switch is effective, but the ask-on-guardrail setting failed to save: ", modeSyncFailedEffective: "The switch is effective, but the live engine sync failed; toggle the mode again to repair it: ", editResendSyncPending: "The last mode switch failed its live engine sync, so the edit resend is not accepted — toggle the mode again and retry", 
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -582,12 +586,14 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
       toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
+      toolGuardrailDenied: "ガードレール拒否", toolGuardrailDeniedSessionDenied: "このセッションで拒否済みの操作です（内容が変われば再度確認）", toolGuardrailDeniedPlan: "Plan モードは読み取り専用のため拒否", toolGuardrailDeniedAskOff: "ガードレール確認がオフのため直接拒否",
+      approvalDecisionFailed: "⚠️ decide_approval に失敗: ",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ", modePersistFailed: "⚠️ モードは反映されましたが未保存です——再起動すると元に戻ります: ",modeAskPersistFailed: "モードは有効になりましたが、ask-on-guardrail 設定の保存に失敗しました: ", modeSyncFailedEffective: "モードは有効になりましたが、エンジンとの即時同期に失敗しました。再度切り替えると修復できます: ", editResendSyncPending: "前回のモード切り替えでエンジンとの同期に失敗したため、編集の再送は受理されません。もう一度モードを切り替えてから再試行してください", 
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -690,12 +696,14 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
       toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
+      toolGuardrailDenied: "守卫拦截", toolGuardrailDeniedSessionDenied: "该会话已拒绝此操作（换参数需重新请批）", toolGuardrailDeniedPlan: "Plan 模式为只读，已拒绝", toolGuardrailDeniedAskOff: "守卫询问已关闭，已直接拒绝",
+      approvalDecisionFailed: "⚠️ decide_approval 失败: ",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ", modePersistFailed: "⚠️ 模式已生效但未保存——重启后将恢复旧模式： ",modeAskPersistFailed: "模式已生效，但 ask-on-guardrail 设置未保存： ", modeSyncFailedEffective: "模式已生效，但引擎实时同步失败；重新切换一次可修复： ", editResendSyncPending: "上一次模式切换与引擎实时同步失败，编辑重发暂不受理——请重新切换一次模式后再试", 
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -1057,6 +1065,22 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
     // the reference cannot be passed in directly — a lazy-lookup hook).
     onSessionBufferPurged: function (id, reason) {
       delete modeStateEpochs[id];
+      // The interaction cluster's mode-sync side tables (switch attempts,
+      // settlement fences, unresolved-edit guards) must survive an LRU
+      // capacity eviction ("evict") and clear only on real session
+      // deletion ("delete"): an idle session whose engine hot-sync failed
+      // keeps that engine across eviction (load_session preserves it), so
+      // reopening reloads messages and the store mode without any
+      // successful mode publication — purging the unresolved guard here
+      // would let editLastTurn resend through an engine whose live posture
+      // was never confirmed. Real deletion is covered twice (the shared
+      // base's applyDeletedSession sweep and the gated call below), so the
+      // tables stay bounded. The interaction cluster is declared later in
+      // this closure — same lazy-lookup shape as modeStateEpochs, and
+      // purges only run after setup.
+      if (interactionFeature && interactionFeature.purgeModeSyncStateForSession && reason === "delete") {
+        interactionFeature.purgeModeSyncStateForSession(id);
+      }
       // The localStorage cache of scene events is the only recovery copy
       // when the sidecar save fails or we are offline
       // (savePinvouSceneEventsForSession intentionally swallows backend
@@ -1079,6 +1103,13 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }
+      // The approval-replay terminal-seq entry dies with the buffer: the
+      // seq fence only guards snapshots against a LIVE session's replay, and
+      // keeping deleted/evicted entries is the one map the purge sweep had
+      // missed (round-8 L7-3).
+      if (id && chatEventsFeature && typeof chatEventsFeature.purgeApprovalReplayTerminalSeq === "function") {
+        chatEventsFeature.purgeApprovalReplayTerminalSeq(id);
+      }
       // The streaming markdown render trailing-edge timers are recorded per
       // sid in a chat-events internal table; cancel them when the buffer is
       // evicted/deleted so a timer cannot fire after the buffer is rebuilt
@@ -1091,6 +1122,9 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
       }
     },
     runSyncOnSession, persistMessagesFor,
+    // Approval-card replay (tri-mode): on session switch, re-insert missing approval
+    // cards via get_pending_approvals (the user_input approach: never in messages.json, restored from the registry).
+    addChatItem, timeStr,
     resetPendingAssistant: function (...args) { return resetPendingAssistant(...args); },
     stopThinking: function (...args) { return stopThinking(...args); },
     rerenderFromMessages,
@@ -1211,24 +1245,42 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   function applyAuthoritativeModeState(sid, st) {
     bumpModeStateEpoch(sid);
     runSyncOnSession(sid || state.activeSessionId, function () {
-      state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+      // tri-mode (#tri-mode safety model): the authoritative modeState shape grows to
+      // { mode, multiAgent, askOnGuardrail }. A missing ask_on_guardrail defaults to on
+      // (backend default_true; older backend payloads without the key are not flipped off).
+      // A missing multi_agent (chat:mode_changed only carries mode/ask_on_guardrail) means
+      // the payload does not carry the field — keep this session's current display, never mis-set false.
+      state.modeState = {
+        // Malformed payload fallback is "auto", not "yolo": the widest mode
+        // is the worst-direction lie (the same fail-safe direction the
+        // round-2 read fallbacks adopted) — a missing mode must display as
+        // the conservative lane default, never as full-auto (round-8 L7-4).
+        mode: st.mode || "auto",
+        multiAgent: st.multi_agent === undefined
+          ? !!(state.modeState && state.modeState.multiAgent)
+          : !!st.multi_agent,
+        askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+      };
     });
   }
 
   // The draft-state (no active session) modeState: take the current lane's
-  // global default, falling back to yolo (aligned with the backend's plain
-  // default direction). Two-lane semantics (design merged into work, #428):
+  // global default. Two-lane semantics (design merged into work, #428):
   // the draft display = this lane's global default. A draft bound to a
   // workspace aligns with the code lane's safety posture: show the code
   // lane's global default, falling back to plan on first use (read-only is
-  // the safe side, same as the code page's draft fallback).
+  // the safe side, same as the code page's draft fallback). Unbound drafts
+  // fall back to auto (v3.5 reconciliation): that is what the backend
+  // resolves for a fresh unbound plain session (`resolved_default_mode`),
+  // so the chip no longer advertises Yolo for a session that will
+  // materialize in Auto.
   function currentDraftModeState() {
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always show the code lane default; unbound drafts follow the
     // current lane (design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false };
   }
 
   // The mode a chat draft WILL run once a workspace pick binds it (review
@@ -1877,6 +1929,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const discardPlan = interactionFeature.discardPlan;
   const exitPlanToYolo = interactionFeature.exitPlanToYolo;
   const setPlanModeNext = interactionFeature.setPlanModeNext;
+  // tri-mode M1: draft-state three-mode switches uniformly write the lane global default (called directly by ChatView's draft branch)
+  const setDraftMode = interactionFeature.setDraftMode;
   const setModeLane = interactionFeature.setModeLane;
   const refreshModeDefaults = interactionFeature.refreshModeDefaults;
   const getCodePermissionPrefs = interactionFeature.getCodePermissionPrefs;
@@ -1884,6 +1938,12 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setMultiAgentMode = interactionFeature.setMultiAgentMode;
   const planStuckReplan = interactionFeature.planStuckReplan;
   const planStuckGo = interactionFeature.planStuckGo;
+  // tri-mode safety model (plan/auto/yolo + per-session guardrail ask + approval cards)
+  const planStuckGoAuto = interactionFeature.planStuckGoAuto;
+  const setSessionMode = interactionFeature.setSessionMode;
+  const setAskOnGuardrail = interactionFeature.setAskOnGuardrail;
+  const decideApproval = interactionFeature.decideApproval;
+  const getPendingApprovals = interactionFeature.getPendingApprovals;
   const submitUserInput = interactionFeature.submitUserInput;
   const cancelUserInput = interactionFeature.cancelUserInput;
   const editLastTurn = interactionFeature.editLastTurn;
@@ -2307,6 +2367,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     discardPlan,
     exitPlanToYolo,
     setPlanModeNext,
+    // tri-mode M1: draft-state three-mode switches uniformly go through the lane global default (ChatView draft branch)
+    setDraftMode,
     setModeLane,
       // One-shot YOLO confirmation gate for bound-workspace sessions (same
       // source of truth as the code mode)
@@ -2315,6 +2377,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     setMultiAgentMode,
     planStuckReplan,
     planStuckGo,
+    planStuckGoAuto,
+    setSessionMode,
+    setAskOnGuardrail,
+    decideApproval,
+    getPendingApprovals,
     // 用户交互
     submitUserInput,
     cancelUserInput,

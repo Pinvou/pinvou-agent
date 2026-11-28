@@ -79,6 +79,11 @@ const protocolSources = {
   multiAgent: ['bridge/multiagent.js'],
   projects: ['bridge/projects.js'],
   computerUse: ['bridge/computer_use.js'],
+  // Round-11 review: the web lane's wire surface had no hash at all (the
+  // per-domain hashes above cover only tauri-lane files + the shared base),
+  // so a web invoke/listen span change would not redden any contract. One
+  // whole-file entry pins the web bridge's full invoke/listen surface.
+  webWireSurface: ['../web/bridge.js'],
 };
 
 const expectedProtocolHashes = {
@@ -278,7 +283,7 @@ const expectedProtocolHashes = {
   // recomputations are combined below. Re-verified on the usage-meter
   // occupancy fix rebased on top: the per-request context_input_tokens
   // consumption rides in the shared payload body, so no lane signature moved.
-  chat: 'ff28e11c9e8a17c95a5425ab18b992517e13411a0553f4577f49dd0e2d2b4705',
+  chat: '135a1c4da09988899d0ed7c7510185b13f8fef5a6687db5b8f5f5fdd51f9075a',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -293,7 +298,7 @@ const expectedProtocolHashes = {
   // moved verbatim into bridge-shared-helpers.js, taking their
   // discard_plan / get_mode_state / exit_plan_to_yolo invoke texts with them
   // (now hashed under the shared base). Same command surface.
-  interaction: '89d53712e66ea8577052281a37915a092a58b1763765d4ebccd55ee800920440',
+  interaction: '0ec1d46858c21ee6e63ca819ad1d4e3cc8d5d22b9cac21ce06058560b2369da1',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -369,7 +374,7 @@ const expectedProtocolHashes = {
   // main's sidecar-helper wave (#596), aux-session surface and the
   // #713/#735/#701 lane merges; the pin below is the extractor's output on
   // the merged bridge/sessions.js (rebase onto main @ 88bff8582).
-  sessions: 'acee7f6975f19302026d6619618aadf8619e51684b271d024aa705e6c1efcd17',
+  sessions: 'a75050c236a16c3100b76e3e51b3444be4c0a0704c2c9d620a3eb686119f004f',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -423,7 +428,27 @@ const expectedProtocolHashes = {
   // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
   // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',};
+  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',
+  // Round-11 review: first registration — the web lane's invoke/listen
+  // surface (whole web/bridge.js file, see webWireSurface above). A span
+  // change in the web bridge now reddens this pin like the tauri domains.
+  // Recomputed for the rebase onto the post-#887 main: the merged web
+  // bridge carries main's own web-side evolution (the kb_model_cancel
+  // facade entry and the streaming htmlSource provenance fields) alongside
+  // the tri-mode admission/guardrail surface; this branch adds no web
+  // change of its own in the window — no new command or event surface.
+  // Recomputed for the rebase onto the #894-era main: main's usage-meter
+  // occupancy fix (#892) rewrote the chat:usage listener body (the
+  // per-request context_input_tokens reading is consumed ahead of the
+  // cumulative-input dirty guard); the extracted call set is unchanged
+  // (98 invoke/listen entries both sides) — no new command or event
+  // surface.
+  // Recomputed for the round-32 review fix wave: the flushQueued entry-arm
+  // throw-safety try/catch, the turn-scoped guardrail notice dedup (per-sid
+  // key registry cleared at the terminal bump), and the web-local per-sid
+  // table sweep on applyDeletedSession — string/closure edits only, the
+  // invoke/listen call surface is unchanged (no new command or event).
+  webWireSurface: '1ae3c087b480d2a590c62809f1969408188ff8abffbe78c8e0a1db1f2db9cc1d',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
@@ -488,7 +513,7 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // wave rebased on top: the probeEndpointModels shared facade joined the
 // settings cluster of the shared base (invoke-only; the usage-meter
 // occupancy fix's per-request consumption carries no signatures).
-const expectedSharedBaseHash = '0f07e50533c4249489dafc58df1dadb5f1c82a589a07b5bb3b746c81f4727851';
+const expectedSharedBaseHash = 'c46da23d2f9ee5826e6a4d36bf9128434544d0dad9ceac17c75ebd537a472447';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

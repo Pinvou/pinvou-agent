@@ -371,10 +371,14 @@ test('scene-events localStorage key cleaned only on real session deletion (tauri
   assert.equal(sceneRemoves.length, 1, 'the tauri bridge must have exactly one scene-key cleanup (inside the hook)');
   const hookBody = tauriBridge.slice(
     tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)'),
-    tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)') + 1600);
-  const hookTail = hookBody.slice(hookBody.indexOf('reason === "delete"'));
-  assert.match(hookTail, /removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX/,
+    tauriBridge.indexOf('onSessionBufferPurged: function (id, reason)') + 2200);
+  // The scene-key cleanup must sit inside the delete-only localStorage gate
+  // (matched directly on the gate's shape, so comment growth in the hook
+  // cannot push it out of a positional window).
+  assert.match(hookBody, /if \(id && reason === "delete" && window\.localStorage\) \{[\s\S]{0,120}?removeItem\(PINVOU_SCENE_EVENTS_STORAGE_PREFIX/,
     'the scene-key cleanup must be gated on reason === "delete"');
+  assert.match(hookBody, /purgeModeSyncStateForSession && reason === "delete"\)/,
+    'the mode-sync fence purge must also be gated on real deletion (eviction preserves the unresolved guard)');
 
   // Web bridge: neither LRU eviction loop may clean the scene key; cleanup
   // exists only in purgeSessionBuffer.

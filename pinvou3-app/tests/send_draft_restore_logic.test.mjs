@@ -135,7 +135,16 @@ function createWebBridge() {
       canInvoke: () => canInvokeResult,
     },
     __TAURI__: {
-      core: { invoke: (...args) => invokeResponse(...args) },
+      core: { invoke: async (...args) => {
+        const result = await invokeResponse(...args);
+        // 姿态读默认值（review fail-closed 门）：未建模姿态读的场景默认给
+        // 非 Auto 可执行姿态，受理面正常过门；场景仍可通过 setInvokeResponse
+        // 显式建模未知/Auto 姿态（返回非 null 即直通）。
+        if (args[0] === 'get_mode_state' && (result === null || result === undefined)) {
+          return { mode: 'yolo', post_accept_mode: null };
+        }
+        return result;
+      } },
       event: { listen: async () => () => {} },
       dialog: { open: async () => null },
     },

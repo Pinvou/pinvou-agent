@@ -3376,6 +3376,44 @@ fn settings_transaction_commands_join_off_the_runtime() {
     );
 }
 
+/// The draft-default switch must PROPAGATE the persistence failure to the
+/// wire (review JensenChen28 5780647695 + zhuowp 5780927743 second finding):
+/// the log-only tolerance answered `Ok(stale defaults)`, so both IPC
+/// bridges filed the old default while the frontend drew the draft chip as
+/// the target — the switch was never durable and a session materialized
+/// afterwards ran the OLD posture. The store-level behavior lives in
+/// sessions tests (`set_mode_default_persist_failure_propagates_and_keeps_mirror`);
+/// this pins the command-layer wiring — the `?` on the store call inside
+/// the join closure, comment-stripped, from a file that cannot match its
+/// own needle (same rules as the settings-transaction join pin above).
+/// Mutation (red): dropping the `?` (log-only form) fails the assert.
+#[test]
+fn set_mode_default_command_propagates_persist_failure() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let interaction = code(include_str!("interaction.rs"));
+    let join = interaction
+        .find("join_blocking(\"set_mode_default\"")
+        .expect("the set_mode_default command must join its settings transaction");
+    // Round-5 review：窗口裁到本命令体结束（下一个命令项）——无界尾扫会让
+    // 后续其他命令里出现第二个 set_mode_default 写点也满足本断言（假绿）。
+    let body_raw = &interaction[join..];
+    let body = &body_raw[..body_raw
+        .find("\n#[tauri::command]")
+        .unwrap_or(body_raw.len())];
+    assert!(
+        body.contains("store.set_mode_default(lane, mode)?;"),
+        "set_mode_default must propagate the persist failure with `?` (no Ok(stale defaults) answer)"
+    );
+}
+
 /// The set_global_shortcut_config committed-persist arm must compose the
 /// wire result from the PERSISTED prefs, not the apply outcome (review
 /// round 3, both lanes): a disabled save's outcome carries no accelerator,
@@ -3468,5 +3506,528 @@ fn global_shortcut_persist_writes_and_lazy_parse_stay_pinned() {
             "Err(message) if enabled => return Ok(GlobalShortcutApplyResult::invalid(message))"
         ),
         "an unparsable accelerator must fail the request only when enabling"
+    );
+}
+
+// ── Tri-mode: mode 写命令的目标会话门（ensure_mode_target_session） ──────
+
+/// `set_session_mode` / `set_ask_on_guardrail` 的目标会话门：id 形状 + 会话
+/// 存在两道校验（`set_multi_agent_mode` 同款，无 aux 限制）。校验失败必须
+/// Err，且**不得**铸造 mode 条目或写 `_ask_on_guardrail.json` sidecar——
+/// 命令层在任何写动作之前调本门，这里钉住门本身的行为与无副作用。
+#[test]
+fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
+    crate::platform::test_support::with_temp_home("mode-target-gate", || {
+        let store = SessionStore::boot().expect("boot");
+        let sidecar = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
+        // Round-5 review：无副作用面改读持久铸点——mode 写命令铸造落
+        // `_session_mode_states.json`（共享表），ask 覆写落
+        // `_ask_on_guardrail.json`。原断言读的 `mode_states` 内存镜是 aux
+        // 专用表，模式命令不写它，断言不可失败。
+        let mode_map = store.shared_mode_map_file();
+        let mode_map_before = std::fs::read_to_string(&mode_map).ok();
+
+        // 非法 id 形状（路径逃逸字符）。报错文本内嵌了会话 id，不得回显进
+        // panic 文案（CodeQL cleartext-logging；裸 assert! 自带条件文本，
+        // 诊断信息已足够）。
+        let error = ensure_mode_target_session("set_session_mode", "../escape", &store)
+            .expect_err("a bad id shape must be rejected");
+        assert!(error.contains("Invalid session id"));
+
+        // 合法形状但不存在的会话。
+        let error = ensure_mode_target_session("set_ask_on_guardrail", "ghost-session", &store)
+            .expect_err("a nonexistent session must be rejected");
+        assert!(error.contains("会话不存在"));
+
+        // round-32 评审 m1b：discard_plan 是第五条模式写命令，同样过存在性门
+        // （此前是唯一漏门的面——IPC 直调任意 id 可铸幻影条目）。
+        let error = ensure_mode_target_session("discard_plan", "ghost-session", &store)
+            .expect_err("a nonexistent session must be rejected");
+        assert!(error.contains("会话不存在"));
+
+        // 以上失败都不得留下持久化痕迹。
+        let mode_map_after = std::fs::read_to_string(&mode_map).ok();
+        assert_eq!(
+            mode_map_before, mode_map_after,
+            "a rejected id must not write the shared mode map"
+        );
+        assert!(
+            !sidecar.exists(),
+            "a rejected id must not write the ask_on_guardrail sidecar"
+        );
+
+        // 真实存在的会话通过（plain 会话即合法目标，无 aux 限制）。
+        let chat = store
+            .create_new("mode-target-real".to_string(), None, std::env::temp_dir())
+            .expect("create chat session");
+        ensure_mode_target_session("set_session_mode", &chat.metadata.id, &store)
+            .expect("a real session passes the gate");
+    });
+}
+
+// ── Tri-mode: mode 持久化失败必须可报告（round-r8 评审 P2） ─────────────
+
+/// `set_mode_reported`（三条显式切换命令的写入通道）在落盘失败时必须返回
+/// `Err`，而内存切换已经生效——`Err` 的语义是「已生效、未保存」，不是「未
+/// 生效」。侧车目录只读（Unix 语义）注入失败：读方据此在 UI 呈现「重启后
+/// 恢复旧模式」，而 lenient 的 `set_mode` 仍返回 `Ok`（既有 GUI 语义不变，
+/// 只是命令层不再把失败吞成完全成功）。恢复目录权限后再退出，避免污染
+/// temp home 清理。chmod 语义仅 Unix，其余平台无条件跳过（#154 同款门）。
+#[test]
+#[cfg(unix)]
+fn set_mode_reported_surfaces_persist_failure_while_memory_switch_lands() {
+    use std::os::unix::fs::PermissionsExt;
+    crate::platform::test_support::with_temp_home("mode-persist-reported", || {
+        let store = SessionStore::boot().expect("boot");
+        let chat = store
+            .create_new(
+                "mode-persist-durability".to_string(),
+                None,
+                std::env::temp_dir(),
+            )
+            .expect("create chat session");
+        let sid = chat.metadata.id;
+
+        // 基线：正常落盘成功。
+        store
+            .set_mode_reported(&sid, SerializableMode::Plan)
+            .expect("the baseline persist lands");
+        assert_eq!(store.mode_state(&sid).mode, SerializableMode::Plan);
+        assert_eq!(
+            store.mode_state(&sid).mode,
+            store.mode_state(&sid).mode,
+            "baseline read is stable"
+        );
+
+        // 注入：共享 mode 表所在目录只读，原子 RMW 的临时写无法创建。
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let before = std::fs::metadata(&sessions_dir)
+            .expect("stat sessions dir")
+            .permissions();
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod sessions dir read-only");
+        // 权限必须恢复（with_temp_home 的清理写不回来）。
+        struct Restore<'a>(&'a std::path::Path, std::fs::Permissions);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, self.1.clone());
+            }
+        }
+        let _restore = Restore(&sessions_dir, before);
+
+        // 报告道：Err 且内存已生效（Plan 已切）。
+        let error = store
+            .set_mode_reported(&sid, SerializableMode::Yolo)
+            .expect_err("a failed persist must be reported");
+        assert!(!error.is_empty(), "the reported error carries the cause");
+        assert_eq!(
+            store.mode_state(&sid).mode,
+            SerializableMode::Yolo,
+            "the in-memory switch landed even though the persist failed"
+        );
+
+        // lenient 道语义不变：吞掉失败返回 Ok。
+        store
+            .set_mode(&sid, SerializableMode::Auto)
+            .expect("the lenient lane stays infallible");
+        assert_eq!(store.mode_state(&sid).mode, SerializableMode::Auto);
+    });
+}
+
+// ── Tri-mode: 会话 mode 写路径的统一发布序列（publish_session_mode_change）──
+
+/// mode 写命令的发布序列收敛：`set_plan_mode_next` / `exit_plan_to_yolo` 的
+/// 写库后必须走 `publish_session_mode_change`（此前只写 store：无引擎姿态
+/// 热同步、无 `chat:mode_changed`，多端模式芯片不收敛），`accept_plan` 在
+/// commit 之后也走同一序列（Plan 的 pending mode 在 claim 处才变成会话
+/// mode）。命令体无法在单测构造（State/AppHandle/EnginePool 均需运行时），
+/// 按 repo 惯例钉装配：门/写库/发布/commit 的相对顺序 + 旧的内联序列不再
+/// 出现在这两个 chip 命令里。
+#[test]
+fn session_mode_write_paths_publish_through_the_shared_sequence() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("interaction.rs"));
+
+    // 每条命令的写库动作之后立即是统一发布调用。
+    for (signature, label) in [
+        (
+            "pub async fn set_plan_mode_next(",
+            "set_plan_mode_next must publish through the shared sequence",
+        ),
+        (
+            "pub async fn exit_plan_to_yolo(",
+            "exit_plan_to_yolo must publish through the shared sequence",
+        ),
+        (
+            "pub async fn set_session_mode(",
+            "set_session_mode must publish through the shared sequence",
+        ),
+        (
+            "pub async fn set_ask_on_guardrail(",
+            "set_ask_on_guardrail must publish through the shared sequence",
+        ),
+    ] {
+        let body = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: command body missing"));
+        // The three explicit switches use the reported lane
+        // (`.set_mode_reported(`, review round-r8 P2: a persist failure
+        // must ride the response, not vanish); the ask command keeps its
+        // own write.
+        let write_at = body
+            .find(".set_mode_reported(")
+            .or_else(|| body.find(".set_mode("))
+            .or_else(|| body.find(".set_ask_on_guardrail("))
+            .unwrap_or_else(|| panic!("{label}: store write missing"));
+        // The outcome wrapper must carry the durability signal for the
+        // three switches (reverting the response shape back to the bare
+        // state would silently drop the persist outcome again).
+        if signature != "pub async fn set_ask_on_guardrail(" {
+            assert!(
+                body.contains("SessionModeSwitchOutcome"),
+                "{label}: response must be SessionModeSwitchOutcome (persist failures ride the response)"
+            );
+        }
+        let publish_at = body
+            .find("publish_session_mode_change(")
+            .unwrap_or_else(|| panic!("{label}: publish call missing"));
+        assert!(write_at < publish_at, "{label}: write must precede publish");
+    }
+
+    // review P2（receipt-equals-effective）：ask 半边失败随 outcome 走——
+    // publish 之后再 return Err 会让 UI 报「切换失败」，而模式已生效且
+    // 广播已把各面收敛到新模式（回执与生效状态相矛盾的字面反例）。
+    let session_body = source
+        .split("pub async fn set_session_mode(")
+        .nth(1)
+        .expect("set_session_mode body missing")
+        .split("pub async fn set_ask_on_guardrail(")
+        .next()
+        .expect("set_session_mode body terminator missing");
+    assert!(
+        session_body.contains("ask_error,"),
+        "set_session_mode: the ask half must ride the SessionModeSwitchOutcome (ask_error field)"
+    );
+    assert!(
+        !session_body.contains("if let Some(error) = ask_error"),
+        "set_session_mode: the ask failure must not be re-lifted into the Err lane after the publish"
+    );
+
+    // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo /
+    // set_session_mode / set_ask_on_guardrail 过同一目标会话存在性门，且门
+    // 在写库之前——这些命令远程可达，缺门即可为任意 id 铸 mode 条目 +
+    // sidecar（round-10 评审：行为测试直调门本身，钉不住接线；本源码循环
+    // 的签名清单此前漏了后两条，删门全绿）。
+    // 各命令自己的持久化写锚点：set_ask_on_guardrail 写 ask 侧车而非 mode
+    // 条目（round-10 评审扩展本循环时按命令族取锚）。
+    for (signature, write_anchor) in [
+        ("pub async fn set_plan_mode_next(", ".set_mode_reported("),
+        ("pub async fn exit_plan_to_yolo(", ".set_mode_reported("),
+        ("pub async fn set_session_mode(", ".set_mode_reported("),
+        (
+            "pub async fn set_ask_on_guardrail(",
+            ".set_ask_on_guardrail(",
+        ),
+    ] {
+        let body = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{signature}: command body missing"));
+        let gate_at = body
+            .find("ensure_mode_target_session(")
+            .unwrap_or_else(|| panic!("{signature}: target-session gate missing"));
+        let write_at = body
+            .find(write_anchor)
+            .unwrap_or_else(|| panic!("{signature}: store write missing"));
+        assert!(
+            gate_at < write_at,
+            "{signature}: gate must precede the store write"
+        );
+    }
+
+    // accept_plan：发布必须紧跟 commit（claimed mode 在那里才最终落定），
+    // 且失败只记日志不打断已提交的 turn。
+    let body = source
+        .split("pub async fn accept_plan(")
+        .nth(1)
+        .expect("accept_plan body");
+    let commit_at = body
+        .find("spawn_blocking(move || plan_claim.commit())")
+        .expect("accept_plan commit join missing");
+    let publish_at = body
+        .find("publish_session_mode_change(")
+        .expect("accept_plan must publish the claimed mode");
+    assert!(
+        commit_at < publish_at,
+        "accept_plan must publish only after the claim commit"
+    );
+
+    // 发布序列内部顺序：引擎姿态热同步（无引擎则跳过）→ 解析新状态 → 广播。
+    let publish_raw = source
+        .split("async fn publish_session_mode_change(")
+        .nth(1)
+        .expect("publish_session_mode_change body");
+    // Round-5 review：窗口裁到发布函数结束（下一个 fn 项）——旧的无界尾扫
+    // 会把文件后续任意函数里的 eprintln 误判为 log-and-succeed 回潮（假红）。
+    let publish_end = ["\nasync fn ", "\nfn ", "\npub async fn ", "\npub fn "]
+        .iter()
+        .filter_map(|marker| publish_raw.find(marker))
+        .min()
+        .unwrap_or(publish_raw.len());
+    let publish = &publish_raw[..publish_end];
+    let sync_at = publish
+        .find("sync_engine_safety_posture(")
+        .expect("the posture sync must come first");
+    let state_at = publish
+        .find("store.mode_state(")
+        .expect("the refreshed state read must follow the sync");
+    let emit_at = publish
+        .find("emit_mode_changed(")
+        .expect("the mode_changed broadcast must follow");
+    assert!(
+        sync_at < state_at && state_at < emit_at,
+        "ordering: posture sync → refreshed state → chat:mode_changed"
+    );
+    let guard = source
+        .split("async fn sync_engine_safety_posture(")
+        .nth(1)
+        .expect("sync_engine_safety_posture body");
+    assert!(
+        guard.contains("if pool.handle_for(session_id).await.is_some()"),
+        "the posture sync must stay gated on a live engine (no engine = no \
+         emission trigger, next spawn arms the persisted posture)"
+    );
+    // zhuowp round-4 P2（翻转 v3.5 minor-8 的取舍）：live 同步失败必须上抛——
+    // 旧的 log-and-succeed 让 UI 报告新模式而 live engine 仍持旧 ruleset，且
+    // 普通发送不带 ruleset 替换、无法自愈。store 写已落库，因此错误以可见
+    // 失败浮出（用户重试切换即对已持久化模式重跑同步、治愈引擎）；广播只在
+    // 同步成功后发出，任何 surface 都不会在引擎仍持旧 ruleset 时被告知新模式。
+    assert!(
+        publish.contains("sync_engine_safety_posture(session_id, pool).await?"),
+        "a failed posture sync must propagate: reporting success while the \
+         live engine holds the previous ruleset silently desyncs enforcement \
+         (ordinary sends carry no ruleset replacement)"
+    );
+    assert!(
+        !publish.contains("eprintln!"),
+        "the log-and-succeed shape must stay deleted (a failed sync must not \
+         broadcast or report success)"
+    );
+}
+
+/// v3.5（评审 minor-1/minor-2）：`decide_approval` 的副作用次序 —— decision
+/// 校验先于登记摘除（摘除不可逆，非法值必须原样 Err 不留任何痕迹），授予/
+/// 拒绝缓存在 engine 调用成功之后写入（失败的点击不得替用户放行/拒绝后续
+/// 同族调用）。命令体无法单测构造（EnginePool 句柄需运行时），按 repo 惯例
+/// 钉装配次序。
+#[test]
+fn decide_approval_side_effect_ordering_is_pinned() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("interaction.rs"));
+    let body = source
+        .split("pub async fn decide_approval(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub async fn get_pending_approvals(").next())
+        .expect("decide_approval body");
+    let validate_at = body
+        .find("invalid decision")
+        .unwrap_or_else(|| panic!("decision validation missing"));
+    let remove_at = body
+        .find("pending_approvals::remove_fenced(")
+        .unwrap_or_else(|| panic!("registry removal missing"));
+    let approve_at = body
+        .find("approve_tool_call(")
+        .unwrap_or_else(|| panic!("engine approve call missing"));
+    let grant_at = body
+        .find("remember_grant(")
+        .unwrap_or_else(|| panic!("grant cache write missing"));
+    let deny_at = body
+        .find("deny_tool_call(")
+        .unwrap_or_else(|| panic!("engine deny call missing"));
+    let denial_at = body
+        .find("remember_denial(")
+        .unwrap_or_else(|| panic!("denial cache write missing"));
+    assert!(
+        validate_at < remove_at,
+        "decision must be validated before the irreversible registry removal"
+    );
+    assert!(
+        approve_at < grant_at && deny_at < denial_at,
+        "grant/denial caches must be written only after the engine call succeeded"
+    );
+    // The failure-arm restore must be fenced (reviewer P2): a registry
+    // mutation racing the await (turn-terminal sweep, session purge, a
+    // concurrent decision) or an engine eviction/rebuild must cancel the
+    // restore instead of recreating a closed approval lifecycle's entry.
+    // The compare-and-restore must share one registry critical section —
+    // the previous read-generation-then-record pair left a window where a
+    // sweep could advance the generation between the comparison and the
+    // insertion (review round 7).
+    let restore_at = body
+        .find("pending_approvals::restore_if_generation_is(")
+        .unwrap_or_else(|| panic!("fenced compare-and-restore missing"));
+    assert!(
+        body.find("pending_approvals::generation() == registry_generation")
+            .is_none(),
+        "the two-step read-generation-then-record fence is racy; use restore_if_generation_is"
+    );
+    assert!(
+        body.find("pending_approvals::record(").is_none(),
+        "the failure arm must restore through the fenced CAS, not a bare record"
+    );
+    assert!(
+        body.find("remove_fenced(")
+            .is_some_and(|at| at < restore_at),
+        "the restore consumes the remove_fenced generation snapshot"
+    );
+    assert!(
+        body.find("engine_incarnation(&session_id).await == Some(incarnation)")
+            .is_some(),
+        "the send-failure restore must be gated on the engine incarnation fence"
+    );
+    // The engine's ack/settle contract splits Err into a determinate refusal
+    // (decision provably not applied → the card stays a live pending request,
+    // restore keeps it retryable) and an UNKNOWN outcome (both ack windows
+    // expired → the decision may still be late-committed and executed, and a
+    // late commit has no host reconciliation event and cannot establish the
+    // promised session grant/denial memory). Restoring active decision
+    // controls for an unknown outcome promises a fresh decision on a possibly
+    // consumed approval (review P2): the restore must sit inside the
+    // determinate arm — the unknown-outcome classifier must gate it, and the
+    // unknown arm must not re-register the entry by any other means.
+    let classifier_at = body
+        .find("pending_approvals::approval_outcome_is_unknown(&error)")
+        .unwrap_or_else(|| panic!("unknown-outcome classifier missing"));
+    let restore_at2 = body
+        .rfind("pending_approvals::restore_if_generation_is(")
+        .unwrap_or_else(|| panic!("failure-arm restore missing"));
+    assert!(
+        classifier_at < restore_at2,
+        "the restore must be gated on the unknown-outcome classification"
+    );
+    // Mounted-surface disposition broadcasts (reviewer P2 second pass +
+    // round-18 detached-worker eviction residue): the registry restore fence
+    // only covers remounts, while the mounted cards (chat lane / codex
+    // native lane) keep their active decision controls unless told
+    // otherwise. Two failure shapes must tell them, both through the
+    // resolved-shaped channel via the single payload constructor with
+    // decision "unknown" (emit + remote forward), BEFORE the command
+    // returns its Err:
+    //   (a) UNKNOWN outcome (both ack windows expired) - a fresh click may
+    //       hit a consumed approval;
+    //   (b) determinate refusal whose engine incarnation moved on - the
+    //       entry cannot be restored (a rebuilt engine never answers the old
+    //       id) and every next click can only fail "approval not found".
+    // A determinate refusal on a STILL-LIVE engine must NOT broadcast: the
+    // restored card stays a live retryable pending request.
+    let err_return_at = body
+        .rfind("decide_approval({decision}): {error:#}")
+        .unwrap_or_else(|| panic!("failure-arm Err return missing"));
+    assert!(
+        classifier_at < err_return_at,
+        "the unknown-outcome classifier must precede the failure-arm return"
+    );
+    let failure_slice = &body[classifier_at..err_return_at];
+    let payload_sites: Vec<usize> = failure_slice
+        .match_indices("approval_resolved_payload(")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        payload_sites.len(),
+        3,
+        "exactly three failure-arm dispositions: the fence-cancelled restore sub-arm, the incarnation-mismatch determinate sub-arm, and the unknown arm (round-20 review: a fence-cancelled restore must notify the mounted faces too, not strand them clickable)"
+    );
+    let (cancelled_payload_at, mismatch_payload_at, unknown_payload_at) =
+        (payload_sites[0], payload_sites[1], payload_sites[2]);
+    let incarnation_at = failure_slice
+        .find("engine_still_live")
+        .unwrap_or_else(|| panic!("determinate-arm incarnation fence missing"));
+    assert!(
+        incarnation_at < cancelled_payload_at,
+        "the fence-cancelled disposition broadcasts after the incarnation fence, inside the still-live sub-arm"
+    );
+    let cancelled_gap = &failure_slice[incarnation_at..cancelled_payload_at];
+    assert!(
+        cancelled_gap.contains("restore_if_generation_is(")
+            && cancelled_gap.contains("if !pending_approvals::restore_if_generation_is("),
+        "the still-live sub-arm must keep the fenced restore and broadcast only when the fence cancelled it"
+    );
+    assert!(
+        cancelled_payload_at < mismatch_payload_at,
+        "the incarnation-mismatch broadcast follows the fence-cancelled one"
+    );
+    let mismatch_gap = &failure_slice[cancelled_payload_at..mismatch_payload_at];
+    assert!(
+        mismatch_gap.contains("} else {"),
+        "the mismatch broadcast must sit in the else-arm (a cancelled-restore broadcast never reaches it)"
+    );
+    for site in [
+        cancelled_payload_at,
+        mismatch_payload_at,
+        unknown_payload_at,
+    ] {
+        let emit_at = failure_slice[site..]
+            .find(r#"app.emit("chat:approval_resolved""#)
+            .unwrap_or_else(|| panic!("disposition emit missing"));
+        let forward_at = failure_slice[site..]
+            .find("forward_app_event(")
+            .unwrap_or_else(|| panic!("disposition remote forward missing"));
+        assert!(
+            emit_at < forward_at,
+            "the disposition must emit before the remote forward"
+        );
+        assert!(
+            failure_slice[site..site + 160].contains("\"unknown\""),
+            "the disposition payload must carry the unknown decision value"
+        );
+    }
+    assert!(
+        classifier_at + unknown_payload_at < err_return_at,
+        "the unknown disposition must broadcast before the command returns its error"
+    );
+}
+
+/// `chat:mode_changed` 的 payload 契约：mode 为 snake_case 序列化值，
+/// ask_on_guardrail 为会话解析值——远程端/前端按字段名收敛，形状漂移即红。
+#[test]
+fn mode_changed_payload_contract_is_pinned() {
+    let payload = mode_changed_payload("s-conv", SerializableMode::Yolo, false);
+    assert_eq!(payload["session_id"], "s-conv");
+    assert_eq!(payload["mode"], "yolo");
+    assert_eq!(payload["ask_on_guardrail"], false);
+    let payload = mode_changed_payload("s-conv", SerializableMode::Auto, true);
+    assert_eq!(payload["mode"], "auto");
+    assert_eq!(payload["ask_on_guardrail"], true);
+    // Round-11: key-set parity with the approval payloads' exact pins — value
+    // drift was already caught above, but adding an extraneous key stayed
+    // green. The wire contract is exactly these three fields.
+    let mut keys: Vec<&str> = payload
+        .as_object()
+        .expect("mode_changed payload must be an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["ask_on_guardrail", "mode", "session_id"],
+        "the mode_changed payload key set is the contract: no extra fields"
     );
 }

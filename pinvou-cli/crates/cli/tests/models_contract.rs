@@ -422,8 +422,36 @@ fn settings_set_rejects_bad_values_naming_valid_ones() {
         message.contains("true") && message.contains("false"),
         "{message}"
     );
-    let message = usage_error(&["pinvou", "settings", "set", "mode_defaults.work", "auto"]);
-    assert!(message.contains("plan") && message.contains("yolo") && message.contains("none"));
+    // `auto` became a valid setter marker with tri-mode (it rides the
+    // `*_auto` companion flag), so the rejection fixture must use a value
+    // that is genuinely invalid for the mode family, and the acceptance
+    // fixture must prove `auto` is accepted (review: the old leg asserted
+    // auto as rejected while production accepts it, failing cli-test).
+    let message = usage_error(&["pinvou", "settings", "set", "mode_defaults.work", "bogus"]);
+    assert!(
+        message.contains("plan")
+            && message.contains("yolo")
+            && message.contains("auto")
+            && message.contains("none"),
+        "{message}"
+    );
+    {
+        let _env = env_lock();
+        let _home = sandbox_home("settings-set-auto-marker");
+        run_ok(&["pinvou", "settings", "set", "mode_defaults.work", "auto"]);
+        let prefs = load_prefs();
+        assert!(
+            prefs.mode_defaults.work_auto && prefs.mode_defaults.work.is_none(),
+            "auto must persist as the companion flag with a None legacy value"
+        );
+        run_ok(&["pinvou", "settings", "set", "mode_defaults.work", "plan"]);
+        let prefs = load_prefs();
+        assert!(
+            !prefs.mode_defaults.work_auto
+                && prefs.mode_defaults.work == Some(SerializableMode::Plan),
+            "a legacy value must clear the companion flag"
+        );
+    }
     let message = usage_error(&["pinvou", "settings", "set", "advanced.allow_shell", "maybe"]);
     assert!(
         message.contains("true") && message.contains("none"),

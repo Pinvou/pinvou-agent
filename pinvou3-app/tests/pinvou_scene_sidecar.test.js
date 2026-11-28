@@ -183,7 +183,9 @@ function createFeature(options = {}) {
       }
       return Promise.resolve(null);
     },
-    notify() {},
+    notify() {
+      if (options.throwNotify) throw new Error('subscriber boom');
+    },
     TAURI: { event: { emit() {} } },
     sessionStates,
     turnUsageDirty: {},
@@ -473,6 +475,22 @@ function rec(name, pass, detail = '') {
       webNormalizeSceneRegexSource.includes('design:ppt') &&
       /Some\(scene @ \("design:poster" \| "design:data-visualization" \| "design:ppt"\)\)/.test(sessionsRustSource),
     'normalize allowlist must register design:ppt across tauri bridge, web bridge and Rust backend');
+
+  {
+    // Entry 臂抛错安全（review JensenChen28 2026-11-28 P2，与 web lane 的
+    // round-32 修复对称）：notify() 按契约重抛订阅者异常——队头已 shift，
+    // 此处抛出不得丢消息：回队队首并重抛，什么都不派发。
+    const { feature, state, invokes } = createFeature({ throwNotify: true });
+    state.queued.push({ id: 7, text: 'payload 7', displayText: '第七条', attachments: [], meta: null, restrictTools: false });
+    let escaped = null;
+    try { feature.flushQueued('s1'); } catch (error) { escaped = error; }
+    const chatInvokes = invokes.filter(item => item.command === 'chat');
+    rec('入队臂 notify 抛错：队头回队并重抛，消息不静默丢失（tauri lane 对称修复）',
+      !!escaped && escaped.message === 'subscriber boom' &&
+        state.queued.length === 1 && state.queued[0].id === 7 &&
+        chatInvokes.length === 0,
+      JSON.stringify({ escaped: escaped && escaped.message, queued: state.queued, chatInvokes: chatInvokes.length }));
+  }
 
   const failed = results.filter(item => !item.pass);
   if (failed.length) {

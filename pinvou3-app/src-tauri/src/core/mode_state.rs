@@ -1,9 +1,11 @@
 //! 会话 mode 的跨层协议类型。
 //!
-//! pinvou3 UI 继续以 `Plan / Yolo` 二态呈现；CodeWhale v0.9.12 的底座
-//! 类型是 `AppMode::Plan / Agent`，序列化层把兼容名 Yolo 映射到 Agent。
-//! Plan 流程的交接(出方案→accept→执行)复用底座原生闭环,app 不再自建
-//! phase 状态机。
+//! The pinvou3 UI presents three states, `Plan / Auto / Yolo` (tri-mode safety model);
+//! CodeWhale's base type is `AppMode::Plan / Agent`, and the serialization layer maps the compatibility
+//! name Yolo onto Agent. The approval stance is not part of the mode: Auto = Suggest + no auto-approval
+//! (guardrail hits raise a card or deny per the toggle), YOLO = Bypass + auto-approval + `ask_on_guardrail`
+//! (baseline guardrail hits raise a card or hard-deny per the toggle). The Plan flow's handoff
+//! (propose → accept → back to the pre-Plan mode) reuses the base's native closed loop; the app does not build its own phase state machine.
 //!
 //! 这里只保留跨层流通的协议类型(`SerializableMode`/`ModeLane`/
 //! `ModeDefaultsView`);session 域聚合(`SessionModeState`/`ActiveSkillBinding`/
@@ -14,10 +16,25 @@ use serde::{Deserialize, Serialize};
 
 /// `AppMode` 不是 Serialize，pinvou3 这层用一个序列化友好的镜像 enum，
 /// 跟前端 / settings.json 流通用，发给 engine 时 `to_app_mode()` 转回。
+///
+/// History: there used to be only two states, `Plan / Yolo` (the work lane defaulted to Yolo, i.e. full
+/// auto-approval). `Auto` is the later-added middle tier (aligned with the mainstream shape of Claude Code
+/// `acceptEdits`/`default`): ordinary promptable tools ask each time, and in-workspace file writes go through
+/// the base's carve-out without a card. `"plan"/"yolo"` in older sidecar files still deserialize as before.
+/// Compatibility discipline (same rule for both lanes): the settings.json lane default never writes the literal
+/// `"auto"` — an explicit Auto choice goes through the `*_auto` companion flag (see `platform::prefs`); the
+/// per-session `_session_mode_states.json` likewise keeps only the pre-tri-mode vocabulary —
+/// `apply_session_mode_mutation_locked` folds Auto into `"plan"` in the shared table,
+/// and the explicit choice is recorded as a `true` flag in the `_session_auto_modes.json` companion table. A
+/// pre-tri-mode binary sharing PINVOU3_HOME can therefore strict-deserialize the whole table successfully:
+/// downgrade no longer quarantines the whole table or rebuilds other sessions' choices from an empty table on
+/// the next write (review P2 data-compatibility requirement); Auto sessions conservatively downgrade to Plan in their view.
+/// Semantics and the downgrade recovery boundary: see `docs/safety-modes.md` §3.1/§6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerializableMode {
     Plan,
+    Auto,
     Yolo,
 }
 
@@ -25,7 +42,25 @@ impl SerializableMode {
     pub fn to_app_mode(self) -> AppMode {
         match self {
             Self::Plan => AppMode::Plan,
-            Self::Yolo => AppMode::Agent,
+            Self::Auto | Self::Yolo => AppMode::Agent,
+        }
+    }
+
+    /// Tri-mode approval-stance mapping (auto_approve, approval_mode) — the per-turn fields sent to the engine
+    /// in `Op::SendMessage`.
+    ///
+    /// - Plan `(false, Suggest)`: read-only is normalized by the base Plan fallback (shell disabled, read-only
+    ///   sandbox); the stance value matches the base `base_policy_for_mode`.
+    /// - Auto `(false, Suggest)`: ordinary promptable tools get an approval card each time; in-workspace file
+    ///   writes go through the base carve-out without a card (#5185), and read-only commands via the readonly classification without a card.
+    ///   Aligned with the mainstream shape of Claude Code `default`/`acceptEdits`.
+    /// - Yolo `(true, Bypass)`: auto-approval (the historical Yolo behavior). Whether a baseline guardrail hit
+    ///   raises a card or hard-denies is decided by `ask_on_guardrail` (the engine-side arming mapping).
+    pub fn approval_params(self) -> (bool, deepseek_tui::ApprovalMode) {
+        use deepseek_tui::ApprovalMode;
+        match self {
+            Self::Plan | Self::Auto => (false, ApprovalMode::Suggest),
+            Self::Yolo => (true, ApprovalMode::Bypass),
         }
     }
 }
@@ -56,9 +91,12 @@ impl ModeLane {
     }
 }
 
-/// Return view of `get_mode_defaults`: the global default mode per lane
-/// (None = the lane was never explicitly chosen; the frontend resolves
-/// defaults as code→plan, work→yolo).
+/// Return view of `get_mode_defaults`: the global default mode per lane.
+/// None = the lane was never explicitly chosen; resolution then falls to
+/// the session kind (code/bound → Plan, unbound plain → Auto — tri-mode).
+/// An explicit Auto choice is surfaced as `Some(Auto)` here: the disk
+/// representation lives in dedicated `*_auto` companion flags, so the
+/// legacy settings.json vocabulary stays parseable by pre-tri-mode binaries.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ModeDefaultsView {
     pub work: Option<SerializableMode>,

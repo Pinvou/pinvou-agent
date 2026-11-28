@@ -432,22 +432,27 @@ fn resolve_created_title(
     }
 }
 
-/// Round-38 (behavioral coverage): the work-lane Plan-default carve-out,
+/// Round-38 (behavioral coverage): the work-lane default application,
 /// extracted from [`PoolCreator::create`] — the panel's materialization
 /// mirror applies the work-lane default only to UNBOUND sessions (a bound
 /// session resolves via the code lane's last mode, round-7 D); best-effort:
 /// a failed application logs and leaves the session's created mode
 /// (disclosed).
+/// Tri-mode reconciliation (review P2): every EXPLICIT work-lane default
+/// applies — the frontend materialization branches apply plan/yolo/auto
+/// via `set_session_mode`, but this mirror stayed at the pre-tri-mode
+/// Plan-only carve-out, so an explicit Work-Yolo default produced an Auto
+/// session here. A never-chosen lane (None) still resolves through the
+/// unbound-plain Auto default downstream.
 fn apply_work_lane_mode_default(store: &SessionStore, id: &str, binding: Option<&std::path::Path>) {
-    use crate::core::mode_state::SerializableMode;
     if binding.is_some() {
         return;
     }
     let work_default = store.mode_defaults().work;
-    if matches!(work_default, Some(SerializableMode::Plan)) {
-        if let Err(error) = store.set_mode(id, SerializableMode::Plan) {
+    if let Some(mode) = work_default {
+        if let Err(error) = store.set_mode(id, mode) {
             log::warn!(
-                "[session-creation] applying the work-lane Plan default to {id} failed: {error:#}"
+                "[session-creation] applying the work-lane default to {id} failed: {error:#}"
             );
         }
     }
@@ -2768,17 +2773,31 @@ mod tests {
     /// Round-38 behavioral coverage: the Plan-default carve-out executes —
     /// the work-lane Plan default applies to an UNBOUND created session and
     /// is withheld from a workspace-BOUND one (round-7 D's panel parity).
+    /// Tri-mode reconciliation (review P2): an explicit Work-Yolo default
+    /// applies the same way — the pre-tri-mode Plan-only carve-out left a
+    /// tool-created session resolving to Auto under Work-Yolo.
     #[test]
     fn work_lane_plan_default_carve_out_executes() {
         use crate::core::mode_state::{ModeLane, SerializableMode};
         let _home = TempHome::new();
         let store = store_with_requester();
-        store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+        store
+            .set_mode_default(ModeLane::Work, SerializableMode::Plan)
+            .expect("persist lane default");
         apply_work_lane_mode_default(&store, "reqsrc01", None);
         assert_eq!(
             store.mode_state("reqsrc01").mode,
             SerializableMode::Plan,
             "unbound: the work-lane Plan default applies"
+        );
+        store
+            .set_mode_default(ModeLane::Work, SerializableMode::Yolo)
+            .expect("persist lane default");
+        apply_work_lane_mode_default(&store, "reqsrc02", None);
+        assert_eq!(
+            store.mode_state("reqsrc02").mode,
+            SerializableMode::Yolo,
+            "unbound: the explicit work-lane Yolo default applies (not the Auto fallback)"
         );
         store.set_mode("reqsrc01", SerializableMode::Yolo).unwrap();
         apply_work_lane_mode_default(&store, "reqsrc01", Some(std::path::Path::new("/bound-ws")));

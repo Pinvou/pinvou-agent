@@ -381,7 +381,10 @@ test("web: outcome_unknown keeps the first-turn retry association, explicit reje
       throw Object.assign(new Error(code), { code });
     };
     const start = source.indexOf("  async function runFirstTurnSubmission(submission) {");
-    const end = source.indexOf("  function submitFirstWebTurn(", start);
+    // Round-9: the fast-path entry functions (submitFirstWebTurn et al.)
+    // were removed with the create_and_chat dispatch; the slice now ends at
+    // the retry entry that follows runFirstTurnSubmission.
+    const end = source.indexOf("  function retryFirstTurn(", start);
     assert.ok(start >= 0 && end > start, "web runFirstTurnSubmission must exist");
     vm.runInContext(`${source.slice(start, end)}\nthis.runFirstTurnSubmission = runFirstTurnSubmission;`, sandbox);
     const submission = { voiceOperationId: `first-turn-${code}`, clientMessageId: "first-turn" };

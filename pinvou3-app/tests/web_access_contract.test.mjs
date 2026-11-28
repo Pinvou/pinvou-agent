@@ -699,7 +699,7 @@ assert.match(commands, /pub struct AuxSessionBinding \{\s*pub id: String,?\s*\}/
   'the aux session command must return an id-only projection');
 assert.match(commands, /fn get_or_create_aux_session\([\s\S]{0,300}?-> Result<AuxSessionBinding, String>/,
   'get_or_create_aux_session must not return raw SessionMetadata across the Web boundary');
-assert.match(commands, /get_or_create_aux_session\(&session_id\)[\s\S]{0,200}?AuxSessionBinding \{ id: metadata\.id \}/,
+assert.match(commands, /get_or_create_aux_session\(&sid\)[\s\S]{0,240}?AuxSessionBinding \{ id: metadata\.id \}/,
   'the aux session projection must be built from the store metadata without exposing it');
 assert.match(commands, /fn reset_aux_session\([\s\S]{0,400}?-> Result<AuxSessionBinding, String>/,
   'reset_aux_session must not return raw SessionMetadata across the Web boundary');
@@ -1276,9 +1276,12 @@ const webListenerNames = literalListeners(webBridge);
 // file's round-15 M2 precedent of converging to an exact count (a floor
 // tolerates deleting most of the guards while staying green). Switched to an
 // exact census; adding/removing a listener must update this count.
-assert.equal(webListenerNames.size, 26,
+// Rebased census: main's 26 plus the tri-mode lane's three session-posture
+// listeners (chat:approval_required / chat:guardrail_denied /
+// chat:mode_changed) = 29 on the merged web bridge.
+assert.equal(webListenerNames.size, 29,
   'webBridge listener extraction must resolve the full literal-listener \
-   census (26 at round-27); an empty set means the listen( wrapper \
+   census (29 on the tri-mode rebase; 26 at round-27); an empty set means the listen( wrapper \
    drifted off the regex and the desktop-coverage cross-check below is \
    vacuous, a smaller set means listeners were removed and the census \
    must be updated in the same commit');

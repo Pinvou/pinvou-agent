@@ -224,13 +224,18 @@ const EXPECTED_SURFACE = {
   // cronWsTrim (#900 review P3 round 2: the Unicode White_Space trim the
   // fence's key/value/EXPR parsing needs) is pure as well and resolves as
   // a base-local declaration inside the same fence — count only.
-  // scenePayloadSplitter (model-facing text kept out of the user's bubbles:
-  // history replay inverts the scene routing wrapper) reads only the
-  // window.__PINVOU_SCENE_PAYLOAD__ features global, like the
-  // window.PinvouBridgeMessages readers above; its sole caller
-  // rerenderFromMessagesCore resolves it as a base-local declaration —
-  // count only.
-  sharedFnCount: 330,
+  // handleModeSwitchFailure / editResendSyncBlocked / markModeSwitchSettled
+  // (#809 review P2, receipt-equals-effective) read invoke / bt /
+  // addSystemItemFor / applyAuthoritativeModeState / state — every dep the
+  // consuming clusters (web, tauriInteraction) already pass for
+  // setPlanModeNext; no cluster literal gains a dep — count only.
+  // bumpModeSyncAttempt (review P2 ordering fence) is a base-local helper
+  // over the same closure Maps — pure, count only.
+  sharedFnCount: 335,
+  // Rebase reconciliation (+9 vs the pre-rebase pin): main moved
+  // discardPlan / exitPlanToYolo into the shared base (lane shells), and
+  // the shared exitPlanToYolo now carries the tri-mode settlement
+  // machinery; the exported names join the surfaces the shells consume.
 };
 
 assert.equal(
@@ -462,8 +467,18 @@ const EXPECTED_CLUSTER_KEYS = {
     'MAX_EVICTED_SESSION_DRAFT_CHARS',
     'MAX_SCHEDULED_RUN_SESSION_OWNERS',
     'addSystemItem',
+    // round-16 review: the materialization arms now run the shared switch
+    // machinery (attempt/settlement fences + failure convergence), which
+    // needs the lane's applyAuthoritativeModeState/runSyncOnSession.
+    'applyAuthoritativeModeState',
     'basename',
     'bt',
+    // round-4: shared leaveSessionView now overrides the fresh-buffer Yolo
+    // chip with the lane-resolved draft default after delete/archive, so the
+    // tauriSessions literal must forward the lane's currentDraftModeState
+    // (each lane passes its own; a missing key binds undefined in the shared
+    // body and crashes the delete/archive draft landing).
+    'currentDraftModeState',
     'currentStreamId',
     'currentStreamText',
     'enterDraft',
@@ -486,6 +501,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'reportSidecarReadFailure',
     'restoreEvictedSessionDraft',
     'restoreSteeredWorkingSet',
+    'runSyncOnSession',
     'saveSteeredWorkingSet',
     'scheduledRunOpenInFlight',
     'scheduledRunOwnerTouchClock',
