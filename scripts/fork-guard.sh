@@ -78,6 +78,10 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|宽松 schema 投影独立工具选择       |CodeWhale/crates/tui/src/core/engine/tool_catalog.rs|ToolSchemaPolicy::Relaxed =>"
+  "T2|宽松 schema 不改工具选择回归       |CodeWhale/crates/tui/src/core/engine/tests.rs|tool_schema_policy_controls_strict_projection_without_changing_tool_choice"
+  "T2|Moonshot Chat 保留注册目录回归     |CodeWhale/crates/tui/src/client.rs|relaxed_schema_policy_preserves_registry_catalog_on_moonshot_chat_wire"
+  "T2|子代理小工具面保持精简目录回归     |CodeWhale/crates/tui/src/tools/subagent/tests.rs|small_surface_starts_with_only_pi_head_and_search"
   "T2|Test metadata summary loss requests recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_run_tests_metadata_summary_cut_requests_recovery"
   "T2|Child report artifact retains exact bytes and ids|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_report_artifact_keeps_exact_bytes"
   "T2|Deferred subagent report names explicit activation fallback|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn stamp_subagent_summary_truncates_when_over_budget"
@@ -324,6 +328,8 @@ fingerprints=(
   "APP|Unavailable browser external-process boundary|pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md|不启动外部 Chrome 或切换到截图流"
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
+  "APP|宽松 schema 独立于自动工具选择   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|tool_schema_policy: ToolSchemaPolicy::Relaxed,"
+  "APP|宽松 schema 保留自动工具选择回归 |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_relaxed_tool_schema_preserves_automatic_tool_choice()"
   "APP|宿主申报输出事实抵达钢丝回归        |pinvou3-app/src-tauri/src/features/assistant/route_wire_cap_tests.rs|fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies"
   "APP|审查线材预算与主对话同链钉        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn main_wire_max_output_tokens_matches_engine_budget_for_k3"
   "APP|审查思考永不关闭档位表钉        |pinvou3-app/src-tauri/src/features/review/mod.rs|fn review_thinking_controls_pick_lowest_tier_never_off"
@@ -480,6 +486,23 @@ run_pinned_todo_schema_tests() {
   done
 }
 run_pinned_todo_schema_tests || fail=1
+
+run_pinned_tool_schema_policy_tests() {
+  local test output
+  for test in \
+    tool_schema_policy_controls_strict_projection_without_changing_tool_choice \
+    relaxed_schema_policy_preserves_registry_catalog_on_moonshot_chat_wire \
+    small_surface_starts_with_only_pi_head_and_search; do
+    output=$( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked \
+      "$test" -- --test-threads=1 2>&1 ) || { printf '%s\n' "$output"; return 1; }
+    if ! grep -q '1 passed' <<<"$output"; then
+      printf '%s\n' "$output"
+      red "❌ pinned test $test did not run (renamed or deleted?)"
+      return 1
+    fi
+  done
+}
+run_pinned_tool_schema_policy_tests || fail=1
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
