@@ -67,6 +67,39 @@ const normalizeBaseUrlKey = baseUrl => {
   // different endpoint for dedup purposes).
   let text = String(baseUrl || '').trim();
   while (text.endsWith('/')) text = text.slice(0, -1);
+  // Mirror the Rust persistence normalization (strip_chat_completions_suffix,
+  // src-tauri/src/platform/prefs/model.rs): upsert_model rewrites a
+  // /chat/completions-suffixed URL to its base before the record is ever
+  // listed, so the dedup key must fold the same suffix or a booking made from
+  // the raw form URL can never match its own canonical listed record — the
+  // false already-exists guard would then survive the record's deletion for
+  // the whole session (review P2: full-URL → canonical list → delete →
+  // re-add). The suffix matches case-insensitively on a folded copy with the
+  // prefix case preserved, then the whole text lowercases as before — the
+  // same single strip, not a loop, byte-identical to the Rust arm.
+  if (text.toLowerCase().endsWith('/chat/completions')) {
+    text = text.slice(0, -'/chat/completions'.length);
+  }
+  // Mirror the Rust persistence migration (migrated_minimax_base_url,
+  // src-tauri/src/platform/prefs/model.rs): the deprecated api.minimax.chat
+  // origin is rewritten to api.minimaxi.com at save AND load, so a
+  // legacy-origin form URL and its migrated listed record are ONE endpoint
+  // in the persisted identity space — without this fold the second
+  // legacy-form save passes the guard and lands a duplicate pair (review
+  // P2: a legacy endpoint and its replacement compare as different
+  // identities here while the native writer normalizes both to the same
+  // endpoint and inserts by record id). Byte-identical swap: exact-origin
+  // match, or legacy prefix with a following '/', remainder case preserved
+  // (the Rust comparison also ASCII-lowercases; the trailing lowercase
+  // below folds the key either way).
+  const minimaxLegacyOrigin = 'https://api.minimax.chat';
+  if (text.length >= minimaxLegacyOrigin.length) {
+    const probe = text.slice(0, minimaxLegacyOrigin.length).toLowerCase();
+    if (probe === minimaxLegacyOrigin
+      && (text.length === minimaxLegacyOrigin.length || text.charAt(minimaxLegacyOrigin.length) === '/')) {
+      text = 'https://api.minimaxi.com' + text.slice(minimaxLegacyOrigin.length);
+    }
+  }
   return text.toLowerCase();
 };
 
@@ -75,6 +108,12 @@ const normalizeBaseUrlKey = baseUrl => {
  * the id AND on the URL, trailing-slash-insensitive on the URL (spec §2.6
  * batch dedup rule; ids already fold via toLowerCase, the URL folds here).
  * '\n' separates the parts so an id can never collide across base URLs.
+ *
+ * URL canonical fold (review P2): a /chat/completions suffix is stripped
+ * exactly like the Rust persistence arm (normalize_provider_metadata), so a
+ * raw-form key and the canonical listed record share one key — dedup,
+ * in-flight bookings, and the settled-book retirement all compare the same
+ * identity space Rust persists.
  *
  * Ollama fold (round-2 review minor-17): the Rust enrichment matcher resolves
  * a bare name to its canonical `{name}:latest` (ollama_canonical_name), so a

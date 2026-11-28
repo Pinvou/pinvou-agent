@@ -49,10 +49,44 @@ import { StatusChip } from './StatusChip.jsx';
 import EndpointModelPicker from './endpoint-model-picker.jsx';
 import {
   ADD_ALL_BATCH_LIMIT,
+  modelDuplicationKey,
   normalizeDiscoveredRows,
   savedModelKeys,
   splitBatchAdd,
 } from './endpoint-model-picker-logic.js';
+
+// 在途的模型创建身份(modelDuplicationKey 字符串,模块级)。模块级是有意的:
+// 各入口的 ref/local state 都活在当前 ModelFormModal 实例上,关闭设置重开
+// (或弹窗重挂)会把它们清零——而保存 IPC 仍在飞,旧列表按未刷新的已保存集
+// 把同一身份显示成可添加,每个入口都能再落一次(复审 P2×2)。身份在派发
+// 保存前入册,落定(成功或失败)后出册;成功侧随 models 刷新自然移交
+// savedKeys 守卫。所有创建入口共用这一册:doSave(表单保存)、本地候选行
+// (handleLocalModelAdd)、端点单行(handleEndpointModelPick)、批量确认
+// (confirmAddAllEndpointModels);查册的入口彼此互斥,弹窗重开不丢。
+const inFlightModelCreates = new Set();
+// settled-but-maybe-unlisted 簿(复审 P2 r5):挂在既有 Set 的实例属性上而非
+// 新顶层绑定——本文件任何顶层绑定的增删都会改变 rollup 的 chunk 拆分边界,
+// 实测让某个 lazy view chunk 模块求值顺序翻转入 TDZ(Cannot access 'br'
+// before initialization)。跨弹窗实例/设置重开存活。
+// 非 deferred 簿键的缺席退休标记(复审 P2×2,晚到完成):链尾裁定 ok/failed
+// 时与 committed 同步置位——成功列表缺席这类键即记录已删(保存链自身刷新
+// 是 upsert 后的读取,序号后发者胜,此后任何成功列表都反映 ≥ upsert 的
+// 世界);deferred 簿键(批量跳过刷新尾)无这层地板,只认 present。
+inFlightModelCreates.committed = new Set();
+inFlightModelCreates.absentRetirable = new Set();
+inFlightModelCreates.listed = new Set();
+// superseded 簿键的受理请求序号(复审 P2 r13:迟到删除释放):作废裁定携带
+// requestedSeq——此后任何**受理**发布的代际 > 该序号 ⇒ 该观察起读于 upsert
+// 之后(与链尾活体升级同一不变量),缺席即已删,可退休 present-only 簿键。
+// 与 absentRetirable 的差异:那层地板在入簿时即授予;这层把信任推迟到
+// 「观察到更新的受理发布」的时点——保存链收尾时删除还在飞、其发布晚于
+// 裁定的交错(r11 对 stale 窗口镜像的否决在此不复发:代际 ≤ requestedSeq
+// 的观察仍不退休)。
+inFlightModelCreates.requestSeqByKey = new Map();
+// 表单弹窗代数(复审 P2 r13:完成的保存关闭新弹窗):每次挂载自增,提交时
+// 捕获,完成时比对——被作废/取消的保存链的迟到成功不得关闭**当前**弹窗
+// (模块计数跨实例存活,实例级 ref做不到)。
+let modelFormEpoch = 0;
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -128,6 +162,32 @@ function hasStoredCredential(record) {
   const state = (record && record.credential_state) || ((record && record.has_secret) ? 'configured' : 'missing');
   return !!(record && record.has_secret) || state === 'configured' || state === 'env_override';
 }
+
+// One local-detect candidate row. The add click routes through the onAdd
+// prop (EndpointModelPicker's onPick pattern): the parent's sync in-flight
+// latch is touched only inside the parent's event handler, so this row stays
+// free of ref access in render (react-hooks/refs) and keeps a stable
+// module-scope component identity.
+const LocalModelRow = ({ row, saved, busyAny, settingsCopy, actionClass, mutedText, onAdd }) => (
+  <div className="min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]">
+    <ProviderIcon preset="local_vllm" compact />
+    <span className="min-w-0 flex-1">
+      <span className="flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]">
+        <span className="truncate">{row.model}</span>
+        {row.loaded === false && (
+          <span className="shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]">{settingsCopy.modelNotLoadedTag}</span>
+        )}
+      </span>
+      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
+        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
+      </span>
+    </span>
+    <button type="button" data-testid="local-model-row-add"
+      onClick={() => onAdd(row)}
+      disabled={!!busyAny || saved}
+      className={actionClass}>{saved ? settingsCopy.modelAlreadySaved : settingsCopy.add}</button>
+  </div>
+);
 
     const SSegmented = ({ options, value, onChange }) => (
       <div data-testid="settings-segmented" className={`p-1 rounded-full flex flex-wrap justify-end gap-1 max-w-full max-sm:w-full max-sm:flex-nowrap bg-[#E1E5EA] dark:bg-[#131314]`}>
@@ -406,8 +466,34 @@ function hasStoredCredential(record) {
 
     // 添加/编辑模型模态弹窗。
       // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = EMPTY_MODELS, onSaveCommitted, onInFlightRelease }) => {
       const settingsCopy = t.uiSettingsDetail;
+      // 复审 P2×2(晚到完成):按保存链尾裁定入簿。ok 且列表缺席 = 记录在
+      // 刷新尾窗内被删——不入簿,簿键永无成功列表可确认,只会把合法同身份
+      // 重加永久拦死到重载。ok/failed(链跑过刷新尾)= 簿键带缺席退休地板
+      // (链内 loadModels 是 upsert 后的读取,序号后发者胜);deferred(批量
+      // 跳过刷新尾)与旧桥无裁定 = 照旧入簿只认 present。四个创建入口共用:
+      // 表单保存、本地行、端点单行、批量循环。
+      const bookSaveOutcome = (key, outcome) => {
+        if (outcome && outcome.refresh === 'ok' && outcome.models
+          && !savedModelKeys(outcome.models).has(key)) return;
+        onSaveCommitted(key, {
+          // 缺席地板只给裁定 ok/failed(链跑过刷新尾);superseded(r10 复审
+          // P2)与 deferred/旧桥一样 present-only——**地板授予 superseded 被
+          // 活体证伪**:被作废窗口内镜像本身就是 upsert 前的旧世界,booking
+          // 后的首次 effect pass 就会拿「缺席+地板」把新鲜预订自我退休
+          // (⑦.9h 首跑即红,独立探针实证),present-only 的保护缺口只余
+          // 「预订期间被真删」一种交错,其代价与评审「未知证据保留保护」
+          // 的处方一致,由应用重载兜底。
+          absentRetirable: !!(outcome && (outcome.refresh === 'ok' || outcome.refresh === 'failed')),
+          // superseded 链携带自己的受理请求序号(r13 复审 P2:迟到删除释放)
+          // ——此后任何代际更新的**受理**发布缺席该键即可退休(镜像 effect
+          // 按代际判;deferred/旧桥无序号,维持 present-only)。
+          requestSeq: outcome && outcome.refresh === 'superseded' && outcome.requestedSeq != null
+            ? outcome.requestedSeq
+            : null,
+        });
+      };
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
       const initialProvider = modelScope === 'cloud' ? findCloudProviderForModel(initial) : null;
@@ -454,8 +540,37 @@ function hasStoredCredential(record) {
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
+      // 测试结果随生效输入失效(r13 复审 P3):resolve 时刻守卫(复审 M5)
+      // 只盯 base URL——同 URL 下 key / 免鉴权声明 / 凭据动作的变化同样
+      // 让已显示的结果不再描述当前输入,清掉避免误读。
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 失效清空是这条 effect 的全部目的;依赖即输入本身,不构成级联循环
+      useEffect(() => { setTestResult(null); }, [apiKey, noAuth, keyAction]);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // In-flight row key (row.key) for local candidate row adds: drives the
+      // per-row disabled visual. The authoritative re-entrancy guard is
+      // localAddInFlightRef below — a state commit cannot beat a physical
+      // double-click on this tree (round-3 M3 lesson, mirrored from
+      // pickInFlightRef; review r2 live-proved two clicks 80 ms apart both
+      // landing onSave with the state-only guard).
+      const [localAddBusyKey, setLocalAddBusyKey] = useState(null);
+      // Sync in-flight latch for local row adds: set/cleared synchronously in
+      // handleLocalModelAdd so same-task or fast successive dispatches can
+      // never run two onSave calls for one identity. Also consulted by doSave
+      // so a slow row add cannot interleave with a form save.
+      const localAddInFlightRef = useRef(false);
+      // 提交弹窗代数(复审 P2 r13):挂载时领取,成功路径只在「本弹窗仍是
+      // 当前弹窗」时才调 onCancel——被取消的保存链的迟到成功不得清掉
+      // 用户已打开的另一个模型编辑器(草稿会被无痕丢弃)。useState 惰性
+      // 初始化只跑一次——useRef(++counter) 的实参每次渲染都会执行,会把
+      // 模块计数器按渲染次数推高,让所有已领取的代数失效(对话框永不在
+      // 保存成功后关闭)。
+      const [formEpoch] = useState(() => ++modelFormEpoch);
+      // Failure of the last local row add, surfaced on THIS picker view:
+      // saveError's only renderer sits in the form body, which the
+      // initial.__new && pickerOpen early return never reaches, so a
+      // picker-surface state is required for the failure to be visible.
+      const [localAddError, setLocalAddError] = useState('');
       // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
       const [localPortDraft, setLocalPortDraft] = useState('');
       // Inline validation message for the custom port. Kept separate from
@@ -488,6 +603,11 @@ function hasStoredCredential(record) {
       // 「全部添加」挂起批次(应用内 ConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
       const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
+      // 确认弹窗 OK 的同步闩(r4 复审 MINOR):addingAllModels 是 state,同 tick
+      // 的第二次派发读不到;两个交错循环虽被注册表挡住重复落库,added 计数
+      // 仍会拆分、收尾提示互相覆盖。与 pickInFlightRef/localAddInFlightRef
+      // 同款:同步置位挡住同一 tick 的第二次点击。
+      const addAllInFlightRef = useRef(false);
       // 最新表单字段镜像(复审 M6):「测试连接」是异步探测,resolve 时空字段
       // 判定必须看当时的输入值,而不是点击瞬间捕获的旧值——否则探测期间用户
       // 手输的 context/max_output 会被过期的「空」判定清掉。每次渲染同步。
@@ -496,6 +616,10 @@ function hasStoredCredential(record) {
       // base URL 同款镜像(复审 M5):探测在飞时改 URL,resolve 后的旧端点结果
       // 必须作废,不允许在 URL B 的表单头/落库 payload 下展示 URL A 的列表。
       const baseUrlRef = useRef(baseUrl);
+      // 测试连接的生效输入镜像(r14 P3):resolve 时刻栅栏比对的现值来源——
+      // 运行中的 handleTest 闭包持有旧渲染的 state,直接读会永远等于快照。
+      const testInputsRef = useRef({ key: apiKey, noAuth, keyAction });
+      testInputsRef.current = { key: apiKey, noAuth, keyAction }; // eslint-disable-line react-hooks/refs -- synchronously mirror the live test inputs so the resolve-time fence compares the probe snapshot against the CURRENT field values (round-14 review P3)
       baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
       // wire 模型 ID 同款镜像(复审 M2):端点事实按模型探得,测试在飞时换了模型
       // (目录切换/手输 ID/候选行填充),旧模型的数字不得填进新模型的空字段。
@@ -731,13 +855,19 @@ function hasStoredCredential(record) {
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         // resolve 时刻守卫(复审 M5):点击瞬间快照 base URL,resolve 时发现
         // 表单已改走就整份丢弃——结果(含失败结果)属于旧端点,静默丢弃,
-        // 不打扰用户。
+        // 不打扰用户。同 URL 的生效输入(r14 P3:pending 测试不得在凭据变化
+        // 后重绘过期状态)一并快照比对——key/免鉴权/凭据动作任一变化,迟到
+        // 的响应整份丢弃(输入变化时 G2 effect 已清掉已显示结果,此处补上
+        // 「不回填」的另一半)。
         const probedBaseUrl = baseUrl.trim();
+        const probedInputs = { key: apiKey.trim(), noAuth, keyAction };
         try {
           // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
           // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          const liveInputs = testInputsRef.current;
+          if (liveInputs.key.trim() !== probedInputs.key || liveInputs.noAuth !== probedInputs.noAuth || liveInputs.keyAction !== probedInputs.keyAction) return;
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
           // round-3 审 M2:端点事实按**已保存记录**的 model 字段探得并匹配
           // (后端经 fact_model 回带这个名字),编辑表单里未保存的 model-ID
@@ -749,6 +879,8 @@ function hasStoredCredential(record) {
           if (!factModel || modelRef.current.trim() === factModel) applyProbedFacts(result);
         } catch (e) {
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          const liveInputsCatch = testInputsRef.current;
+          if (liveInputsCatch.key.trim() !== probedInputs.key || liveInputsCatch.noAuth !== probedInputs.noAuth || liveInputsCatch.keyAction !== probedInputs.keyAction) return;
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setTesting(false); }
@@ -757,7 +889,7 @@ function hasStoredCredential(record) {
       // settings_ui_smoke 源码守卫钉住);凭据阶梯与 handleTest 一致——表单新填
       // key 优先。列表只写入 state 打开 picker,不落库。
       async function handleFetchModels() {
-        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
+        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels || savingModel) return;
         const probedBaseUrl = baseUrl.trim();
         if (!probedBaseUrl) return;
         const probedAuth = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
@@ -849,18 +981,35 @@ function hasStoredCredential(record) {
         // 批量确认弹窗挂着时同样禁入——挂起批次是「添加前」的旧快照,单行
         // 若在其窗口内落库,确认后的批量保存会把它当未保存行再落一次。
         if (pickInFlightRef.current || savingModel || addingAllModels || addAllModelsConfirm) return;
+        // 与本地行/表单保存互斥(复审 P2×2):本地保存待定时经正常界面操作
+        // 切到端点行,同一 (model, base_url) 不得再落一次;注册表跨弹窗重开
+        // 存活,重开后同样拒发。
+        const pickIdentity = modelDuplicationKey(row.id, baseUrl.trim());
+        if (inFlightModelCreates.has(pickIdentity)) return;
+        // Write-side mirror of the row's savedKeys (review P2 r7): the
+        // frozen confirmed identities block the add too, so a stale or
+        // programmatic dispatch cannot mint a second id behind the
+        // disabled row. A real deletion thaws the mirror via its own
+        // successful refresh and the identity becomes addable again.
+        if (inFlightModelCreates.listed.has(pickIdentity)) return;
         pickInFlightRef.current = true;
         setPickSavingModel(true);
+        inFlightModelCreates.add(pickIdentity);
         try {
-          await onSave(buildEndpointModelPayload(row));
+          const outcome = await onSave(buildEndpointModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支);链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(pickIdentity, outcome);
           setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
         } catch (e) {
           // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
           setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
         finally {
+          inFlightModelCreates.delete(pickIdentity);
           pickInFlightRef.current = false;
           setPickSavingModel(false);
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
@@ -872,7 +1021,23 @@ function hasStoredCredential(record) {
         // 同 tick、pickSavingModel/savingModel 盖保存 IPC+刷新窗口)禁入——
         // 此刻的去重快照会把正在保存的那一行当成未保存,确认后重复落库。
         if (addingAllModels || pickInFlightRef.current || pickSavingModel || savingModel || !endpointListing) return;
-        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
+        // 快照同样剔除在途身份(复审 P2×2):本地行/表单保存待定时打开批量
+        // 确认,挂起批次不得把在途行当成未保存——确认后循环会再查一次册,
+        // 这里先摘一行是一行。
+        const batchSavedKeys = new Set(endpointSavedKeys);
+        for (const key of inFlightModelCreates) batchSavedKeys.add(key);
+        // 已落库但列表未确认的身份(刷新失败分支,r3 lane G)同样不入批。
+        // 活册同样入快照(r5 复审补线):确认弹窗挂起期间另一入口落库的身份,
+        // 即使刷新失败(.listed 与冻结快照都看不见)也绝不进批。
+        for (const key of inFlightModelCreates.committed) batchSavedKeys.add(key);
+        for (const key of pendingSavedKeys) batchSavedKeys.add(key);
+        // The frozen mirror joins the snapshot too (review P2): on a failed
+        // read endpointSavedKeys is empty while .listed holds the last
+        // successful read — a confirmed identity must not show up as
+        // addable in the confirm dialog (the loop's own book check would
+        // skip it, but the dialog's addable count has to agree).
+        for (const key of inFlightModelCreates.listed) batchSavedKeys.add(key);
+        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), batchSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
         // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
         // 以在批量保存循环进行中改 URL(URL 变更清扫只摘弹窗,已开跑的循环
@@ -886,16 +1051,34 @@ function hasStoredCredential(record) {
       // 关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。老桌面/web 桥
       // 没有 reloadSavedModels 时回退旧行为(逐行全量刷新,不加 options)。
       async function confirmAddAllEndpointModels() {
-        if (!addAllModelsConfirm || addingAllModels) return;
+        if (!addAllModelsConfirm || addingAllModels || addAllInFlightRef.current) return;
+        addAllInFlightRef.current = true;
         const { addable, baseUrl: confirmBaseUrl, preset: confirmPreset } = addAllModelsConfirm;
         const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
         setAddingAllModels(true);
         let added = 0;
+        // 循环内逐行查册+入册(复审 P2×2):确认弹窗挂着期间,另一入口(本地
+        // 行/表单保存)可能已把快照里的某行落库——命中在途或已保存身份的行
+        // 跳过,不重复落库;批量互查与单行入口共用同一册。
+        const batchIdentities = [];
         try {
           for (const row of addable) {
             // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
             // 本批行永远落在确认时刻的端点上。
-            await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            const rowIdentity = modelDuplicationKey(row.id, confirmBaseUrl);
+            // 复审 P2 r5:实时镜像(模块级 live listed set)是本行的权威——
+            // 闭包三源停在首次 await 前,重开弹窗在本行等待期间落库的同一
+            // 身份只出现在实时镜像里。
+            if (inFlightModelCreates.has(rowIdentity) || inFlightModelCreates.listed.has(rowIdentity)
+              || inFlightModelCreates.committed.has(rowIdentity)
+              || endpointSavedKeys.has(rowIdentity) || pendingSavedKeys.has(rowIdentity)) continue;
+            inFlightModelCreates.add(rowIdentity);
+            batchIdentities.push(rowIdentity);
+            const outcome = await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            // 已落库:进父层「已提交未确认」簿——若收尾的统一刷新失败,身份仍被拦。
+            // deferred 簿键无缺席地板只认 present;回退路径(老桥无统一刷新)
+            // 跑全链,裁定照常生效(复审 P2×2,见 bookSaveOutcome)。
+            bookSaveOutcome(rowIdentity, outcome);
             added += 1;
           }
           if (batchReloadAvailable) await bridge.models.reloadSavedModels();
@@ -909,7 +1092,12 @@ function hasStoredCredential(record) {
           // (表单状态行在遮罩下方不可见,复审 M4)。
           setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
-        finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
+        finally {
+          for (const rowIdentity of batchIdentities) inFlightModelCreates.delete(rowIdentity);
+          addAllInFlightRef.current = false;
+          setAddingAllModels(false); setAddAllModelsConfirm(null);
+          if (onInFlightRelease) onInFlightRelease();
+        }
       }
       // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
       // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
@@ -923,7 +1111,15 @@ function hasStoredCredential(record) {
         const onPickerKeyDown = e => {
           if (e.key !== 'Escape' || isImeComposing(e)) return;
           if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
-          else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
+          // r3 复审(写入在飞禁关层):批量执行中/单行保存中/本地行添加挂起时
+          // Escape 也不再关层——查册已把去重闸补齐,但关层仍会让在飞写入失去
+          // 可见性(批量继续在后台隐身落库)。批量态在 React 18 离散事件里同步
+          // 提交(下一个按键任务之前必然可见);pick/local 用同步 ref 直读,
+          // 无需进依赖数组。
+          else if (endpointPickerOpen && !addingAllModels
+            && !pickInFlightRef.current && !localAddInFlightRef.current) {
+            setEndpointPickerOpen(false); setEndpointAddResult(null);
+          }
         };
         window.addEventListener('keydown', onPickerKeyDown);
         return () => window.removeEventListener('keydown', onPickerKeyDown);
@@ -1031,7 +1227,15 @@ function hasStoredCredential(record) {
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
-        if (!canSave || savingModel) return;
+        // localAddInFlightRef: a local row add still pending across a picker →
+        // form navigation must not interleave with this save (two mints for
+        // one identity — the contract this guard family enforces).
+        if (!canSave || savingModel || duplicateSaved || localAddInFlightRef.current) return;
+        // 在途身份互斥(复审 P2×2):端点单行/批量或本地行添加在飞且身份相同
+        // 时,本入口直接拒发——弹窗重开后 ref 全部清零,只有模块级注册表还
+        // 记得这笔在途创建。
+        const formIdentity = modelDuplicationKey(model.trim(), baseUrl.trim());
+        if (inFlightModelCreates.has(formIdentity)) return;
         const id = initial.__new ? makeModelId() : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
@@ -1046,8 +1250,9 @@ function hasStoredCredential(record) {
           : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
         setSavingModel(true);
         setSaveError('');
+        inFlightModelCreates.add(formIdentity);
         try {
-          await onSave({
+          const outcome = await onSave({
             id, name: saveName, preset,
             alias: showAliasField ? (alias.trim() || null) : null,
             context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
@@ -1067,12 +1272,25 @@ function hasStoredCredential(record) {
             image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
           });
-          onCancel();
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支)——桥内刷新链
+          // 若吞掉 list_models 失败,身份仍被拦,直到列表真正确认它;链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(formIdentity, outcome);
+          // 关闭绑定到提交弹窗(复审 P2 r13):保存链可以比弹窗活得长(用户
+          // 可在在飞窗口取消/重开另一个模型)——只有本弹窗仍是当前弹窗时
+          // 才收起;迟到的成功不得清掉当前编辑器的草稿。簿记(bookSaveOutcome)
+          // 是模块级的,照常执行。
+          if (formEpoch === modelFormEpoch) onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
           setSaveError(String(e && e.message ? e.message : e));
         } finally {
+          inFlightModelCreates.delete(formIdentity);
           setSavingModel(false);
+          // 释放可见性(r13 复审 P3):提交实例可能已卸载(在飞窗口取消),
+          // setSavingModel 是死实例上的空操作——模块簿的释放必须借父层
+          // 渲染驱动刷给**重开的**同身份表单,否则其 Save 按钮永久禁用。
+          if (onInFlightRelease) onInFlightRelease();
         }
       }
       // 视觉模型选择:一律识图探测(无表内加速)——识别出测试图(supported)
@@ -1157,6 +1375,47 @@ function hasStoredCredential(record) {
           api_key: '',
           credential_action: 'keep_existing',
         };
+      }
+      // Local candidate row adds join the same (model id + base_url) identity
+      // contract as the form save (spec §2.6): a row add always mints a fresh
+      // id, so an already-saved identity — including the record being edited,
+      // which this picker already lists since it only renders in add mode —
+      // disables the row with the Saved label, else detect → re-add or a
+      // double-click would land one identity under two new ids (same dedup
+      // semantics as the endpoint per-row adds).
+      async function handleLocalModelAdd(row) {
+        // The sync ref leads the guard (mirror of handleEndpointModelPick's
+        // round-3 M3 fix): a busy-key STATE check alone cannot stop a
+        // double-click, because the commit loses the race against a second
+        // dispatch on this heavy tree. The sibling in-flight latches join the
+        // same mutex so a row add can never interleave with a form save, an
+        // endpoint row add, or the add-all batch.
+        if (localAddInFlightRef.current || savingModel || pickInFlightRef.current || addingAllModels || addAllModelsConfirm) return;
+        // 同一身份的创建已在途(端点单行/批量/表单保存,或弹窗重开前的旧
+        // 入口)时拒发——模块级注册表跨重开存活(复审 P2×2)。
+        const rowIdentity = modelDuplicationKey(row.model, row.base_url);
+        if (inFlightModelCreates.has(rowIdentity)) return;
+        localAddInFlightRef.current = true;
+        inFlightModelCreates.add(rowIdentity);
+        setLocalAddBusyKey(row.key);
+        setLocalAddError('');
+        try {
+          const outcome = await onSave(buildLocalModelPayload(row));
+          // 已落库:进父层「已提交未确认」簿(r3 复审刷新失败分支);链尾裁定
+          // 说身份已被删(刷新尾窗内)则不入簿(复审 P2×2,见 bookSaveOutcome)。
+          bookSaveOutcome(rowIdentity, outcome);
+        } catch (error) {
+          // Same shape as doSave (keep the modal open, drop nothing), but the
+          // message goes to THIS picker view: saveError renders only in the
+          // form body, which the initial.__new && pickerOpen early return
+          // never reaches — writing it there would hide the failure.
+          setLocalAddError(String(error && error.message ? error.message : error));
+        } finally {
+          localAddInFlightRef.current = false;
+          inFlightModelCreates.delete(rowIdentity);
+          setLocalAddBusyKey(null);
+          if (onInFlightRelease) onInFlightRelease();
+        }
       }
       // 本机模型检测（本地选择页「检测」按钮）：只列出候选行，绝不自动填充表单——
       // Ollama/LM Studio 的列表接口返回全部已下载模型，JIT 机制下加载未运行模型可能
@@ -1484,24 +1743,31 @@ function hasStoredCredential(record) {
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
                   <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
-                {rows.map(row => (
-                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
-                    <ProviderIcon preset="local_vllm" compact />
-                    <span className="min-w-0 flex-1">
-                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                        <span className="truncate">{row.model}</span>
-                        {row.loaded === false && (
-                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>{settingsCopy.modelNotLoadedTag}</span>
-                        )}
-                      </span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
-                        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
-                      </span>
-                    </span>
-                    <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
-                      className={actionClass}>{settingsCopy.add}</button>
-                  </div>
-                ))}
+                {rows.map(row => {
+                  // Same (model id + base_url) identity contract as the form
+                  // save (spec §2.6): a candidate row whose identity is saved
+                  // — including the record being edited — disables with the
+                  // Saved label so detect → re-add / double-click cannot land
+                  // one identity under two new ids. Like endpointSavedKeys,
+                  // deliberately not memoized (React Compiler early-return
+                  // structure constraint; rebuilding the key set is
+                  // sub-millisecond).
+                  const rowKey = modelDuplicationKey(row.model, row.base_url);
+                  // 在途身份(任一入口,跨弹窗重开)与已保存同等禁行(复审 P2×2):
+                  // 保存待定时旧列表不得把同一身份显示成可添加。
+                  const rowSaved = endpointSavedKeys.has(rowKey) || inFlightModelCreates.has(rowKey) || pendingSavedKeys.has(rowKey)
+                    || (inFlightModelCreates.listed && inFlightModelCreates.listed.has(rowKey));
+                  return (
+                    <LocalModelRow key={row.key} row={row} saved={rowSaved} busyAny={localAddBusyKey}
+                      settingsCopy={settingsCopy} actionClass={actionClass} mutedText={mutedText}
+                      onAdd={handleLocalModelAdd} />
+                  );
+                })}
+                {localAddError && (
+                  // Failure of the last row add, on the view where it happened
+                  // (role=alert: an async failure announced without focus).
+                  <div data-testid="local-model-add-error" role="alert" className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{settingsCopy.imageCapabilitySaveFailed(localAddError)}</div>
+                )}
               </div>
             </section>
             <section>
@@ -1536,6 +1802,57 @@ function hasStoredCredential(record) {
       // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
       // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
       const endpointSavedKeys = savedModelKeys(models);
+      // Committed-but-unlisted identities (parent-owned, r3 review): folds
+      // into every saved-key check below so the dedup contract survives the
+      // refresh-failure branch — the in-flight registry (module-level) holds
+      // identities until settle; this holds them until the list confirms.
+      // Not memoized, same as endpointSavedKeys (React Compiler constraint;
+      // sub-millisecond rebuild).
+      // r5 复审补线(P2-2 收口):派生源改为模块簿 .committed(每渲染由上层
+      // effect 出册已列身份)。旧实现读只增不减的 justSavedKeys,列表确认后
+      // 用户删除身份,过滤器把旧键复活成 pending——同身份从此加不回,提示还
+      // 谎称"已存在"(活体复现见 ⑦.8)。模块簿在确认时出册,删除后无从复活。
+      const pendingSavedKeys = new Set([...inFlightModelCreates.committed].filter(key => !endpointSavedKeys.has(key)));
+      // The save button joins the same identity contract (spec §2.6: model id
+      // + base_url). The endpoint list's per-row and add-all adds already
+      // dedupe by it; the form save was the one path that never checked —
+      // after a probe landed the endpoint row (carrying the real length
+      // facts, the authoritative record), clicking Save would land the same
+      // identity a second time under a fresh id. On a hit, save is disabled
+      // with an inline hint. Edit mode excludes the record itself; any other
+      // hit there means a duplicate twin is already on disk (legacy pairs
+      // from the 1.0.2 bug), so the hint switches to the edit-mode copy
+      // (dedupe first, then edit). Local candidate row adds run the same
+      // contract via handleLocalModelAdd.
+      // Not memoized, same as endpointSavedKeys (React Compiler constraint;
+      // rebuilding the key set is sub-millisecond).
+      const formSavedKeys = savedModelKeys((models || []).filter(saved => saved && saved.id !== initial.id));
+      const formIdentityKey = modelDuplicationKey(model.trim(), baseUrl.trim());
+      // Read-failure freeze (review P2): the empty list must not retract
+      // confirmed identities — the effect above skips the mirror refresh,
+      // and this form-level check folds the frozen mirror in so the same
+      // identity cannot land a second new id inside the failed-read window.
+      // Edit mode excludes the edited record's own identity key (the direct
+      // part excludes by id; the frozen mirror only carries keys, so the
+      // exclusion uses initial's identity key). Create mode has no
+      // initial.id, so nothing is excluded.
+      const editingSavedKey = initial && initial.id ? modelDuplicationKey(initial.model, initial.base_url) : null;
+      const frozenListed = inFlightModelCreates.listed;
+      // Identity-unchanged edits are exempt from the saved-key arm (review
+      // P2: a legacy duplicate pair blocked in-place edits): when the form
+      // identity equals the edited record's own stored key — credential
+      // rotation, name/alias touch-ups — the edit cannot change the
+      // duplicate topology (the native writer updates the selected record
+      // id in place), so a pre-existing twin must not force the dedupe
+      // hint. Identity-CHANGING edits on a twin still hit the arm (the
+      // resulting key would join the twin's slot = a new duplicate).
+      const editIdentityUnchanged = !!editingSavedKey && formIdentityKey === editingSavedKey;
+      const duplicateSaved = (!editIdentityUnchanged && formSavedKeys.has(formIdentityKey)) || pendingSavedKeys.has(formIdentityKey)
+        || (formIdentityKey !== editingSavedKey && !!frozenListed && frozenListed.has(formIdentityKey));
+      // 按钮态与 doSave 的守卫同口径(r4 复审 MINOR):同身份在途(注册表,
+      // 跨弹窗重开存活)或本地行添加挂起时守卫会静默吞掉点击——按钮不得在
+      // 这些窗口里看起来可点。
+      const saveBlockedInFlight = inFlightModelCreates.has(formIdentityKey) || !!localAddBusyKey;
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
@@ -1894,7 +2211,7 @@ function hasStoredCredential(record) {
                       {/* 获取模型列表:仅显式点击触发探测(规格 §2.6);bridge 方法未
                           就绪(老桌面/白名单未放行)时探活禁用并以 title 提示。 */}
                       <button type="button" data-testid="settings-model-fetch-lists" onClick={handleFetchModels}
-                        disabled={fetchingModels || !baseUrl.trim() || !probeEndpointModelsAvailable}
+                        disabled={fetchingModels || savingModel || !baseUrl.trim() || !probeEndpointModelsAvailable}
                         title={probeEndpointModelsAvailable ? undefined : settingsCopy.fetchUnavailable}
                         className={actionPillClass}>
                         {fetchingModels ? settingsCopy.fetchingModelList : settingsCopy.fetchModelList}
@@ -1923,9 +2240,21 @@ function hasStoredCredential(record) {
                 </div>
               </div>
             )}
+            {/* (model id + base_url) already saved: disable save and show the
+                inline hint (spec §2.6 identity contract; the endpoint-probed
+                row carries the real length facts, so the duplicate catalog
+                row must not land a second time). Edit mode swaps in the
+                dedicated copy (a duplicate twin is already on disk — dedupe
+                first). Hidden while savingModel so the mid-save models
+                refresh cannot flash a misleading "already exists". */}
+            {duplicateSaved && !savingModel && (
+              <div data-testid="model-form-duplicate-hint" role="status" className={`px-5 pt-3 border-t ${formDivider}`}>
+                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{initial.__new ? settingsCopy.modelDuplicateExists : settingsCopy.modelDuplicateExistsEdit}</div>
+              </div>
+            )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
-              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
+              <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel || duplicateSaved || saveBlockedInFlight}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
                 {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>
@@ -1943,9 +2272,22 @@ function hasStoredCredential(record) {
             onPick={handleEndpointModelPick}
             onAddAll={handleAddAllEndpointModels}
             baseUrl={baseUrl.trim()}
-            savedKeys={endpointSavedKeys}
+            savedKeys={(() => {
+              const keys = new Set(endpointSavedKeys);
+              for (const k of inFlightModelCreates) keys.add(k);
+              // 已提交未确认(刷新失败分支,r3 复审)同样按已保存展示。
+              for (const k of pendingSavedKeys) keys.add(k);
+              // Frozen confirmed identities join the same view (review P2
+              // r7, both reviewers, Edge-reproduced): a failed read empties
+              // endpointSavedKeys while the module mirror correctly keeps
+              // the confirmed set — the picker rows must not show a
+              // confirmed identity as addable until a successful read
+              // thaws it.
+              for (const k of inFlightModelCreates.listed) keys.add(k);
+              return keys;
+            })()}
             addNotice={endpointAddResult}
-            pickBusy={pickSavingModel || savingModel}
+            pickBusy={pickSavingModel || savingModel || !!localAddBusyKey}
             t={t}
           />
           {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与
@@ -3035,6 +3377,121 @@ function hasStoredCredential(record) {
       };
       // filter already returns a fresh array; no extra spread needed.
       const userModels = (savedModels || []).filter(model => model && model.id);
+      // 已保存身份的**实时镜像**+committed 簿清理(复审 P2 r5,zhuowp「检查
+      // 与提交共享实时身份状态」):两者都必须活在 **SettingsView 层**——
+      // modal 内的 effect 随弹窗实例死亡;旧批次的闭包正是旧实例,新弹窗
+      // 在其等待期间落库的身份只有这一层能同时记账与出簿。Set 突变,
+      // 无 setState——本组件渲染链实测脆弱(不做 setState-in-effect)。
+      // While the models-list read is failed (the shared loadModels catch
+      // sets bs.modelsListLoadFailed and empties the list) the empty list
+      // is NOT an authoritative result: freeze the last successfully read
+      // mirror and skip the confirmed-book retirement too — otherwise a
+      // confirmed identity gets retracted and the same identity can land a
+      // second new id (review P2, Edge-reproduced). The frozen source is
+      // the shared bs.lastConfirmedModels snapshot, not merely whatever this
+      // mirror already holds: a failure landing BEFORE the first mount of
+      // this component starts from a never-populated (empty) mirror, and
+      // seeding from the shared last-successful read is what keeps the
+      // first-open guards intact there too (review P2, pre-mount boundary,
+      // two independent reviewer reproductions). The next successful
+      // read — including a real deletion's refresh — thaws and refreshes
+      // the snapshot.
+      // (model id + base_url) identity keys of saves that COMMITTED but are
+      // not yet confirmed by the models list. Complements the module-level
+      // in-flight registry: the registry holds identities until the save
+      // settles, and on success the bridge's refresh chain normally hands
+      // the identity over to the saved-keys guard — but loadModels swallows
+      // a list_models failure by clearing the list, and then the settled
+      // identity would be re-addable again (refresh-failure branch, review
+      // r3 lane G). Keys clear derivatively on a successful list — when it
+      // contains the identity (confirmation, r3) or, for keys carrying the
+      // absence floor, when it lacks it (the record was deleted, review P2×2
+      // late-completion; see the mirror effect above). Nothing is registered
+      // on a thrown save, so retries stay possible.
+      // 渲染驱动专用:值无人读取(pendingSavedKeys 读模块簿),setState 只为
+      // 把落库后的禁用态刷进同一次提交。
+      const [, setJustSavedKeys] = useState(() => new Set());
+      // 模块簿释放的渲染驱动(r13 复审 P3):提交实例卸载后 setSavingModel
+      // 落在死实例上,重开的同身份表单必须借这次重渲重读模块簿。
+      const [, setInFlightRegistryVersion] = useState(0);
+      const bumpInFlightRegistryVersion = () => setInFlightRegistryVersion(v => v + 1);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖清单人工审阅:effect 消费 bs/userModels 派生 listed,并在有键退休时补一次渲染驱动(有界:退休后不再 setState,链路终止);补全依赖会造成渲染循环
+      useEffect(() => {
+        const failed = !!(bs && bs.modelsListLoadFailed);
+        const source = failed
+          ? ((bs && bs.lastConfirmedModels) || []).filter(model => model && model.id)
+          : userModels;
+        const listed = savedModelKeys(source);
+        inFlightModelCreates.listed = listed;
+        if (failed) return;
+        let retired = false;
+        for (const key of [...inFlightModelCreates.committed]) {
+          // Two exits on a successful list (review P2×2): present retires as
+          // before (the list confirmed the identity); absent also retires a
+          // key carrying the absence floor — the save chain's own refresh is
+          // a post-upsert read under last-write-wins, so any successful list
+          // after that chain reflects a world at or after the upsert, and the
+          // identity missing there means the record was deleted. Without the
+          // absent exit a reservation stranded by a deletion could never be
+          // cleared and the ordinary same-identity re-add stays blocked until
+          // reload. Keys without the floor (deferred batch bookings) keep the
+          // present-only rule: before the batch's closing reload, a read that
+          // started before the upsert can still be the newest seq and a
+          // successful list may legitimately not know the record yet.
+          // Generation release (review r13 P2: a successful deletion refresh
+          // arriving after a superseded booking): a key booked present-only
+          // from a superseded chain still carries its accepted REQUEST seq —
+          // when the successful list that just landed was published by a read
+          // with a GREATER seq, it started after this chain's upsert (the
+          // same post-upsert invariant the chain-end upgrade uses), so its
+          // absence is a confirmed deletion and the reservation releases.
+          // Observations at or below the booked seq stay without evidence —
+          // the r11 stale-window objection does not recur.
+          if (!listed.has(key) && !inFlightModelCreates.absentRetirable.has(key)) {
+            const bookedSeq = inFlightModelCreates.requestSeqByKey.get(key);
+            // 活体证据从 bridge facade 读(bs.models 是状态切片,不含函数);
+            // bridge 与 saveModel 的裁定同源(共享闭包),读到的就是链尾升级
+            // 用的同一发布序号。
+            const liveEvidence = typeof bridge.models?.readPublishedModelsEvidence === 'function'
+              ? bridge.models.readPublishedModelsEvidence()
+              : null;
+            if (!(liveEvidence && bookedSeq != null && liveEvidence.seq > bookedSeq)) continue;
+          }
+          inFlightModelCreates.committed.delete(key);
+          inFlightModelCreates.absentRetirable.delete(key);
+          inFlightModelCreates.requestSeqByKey.delete(key);
+          retired = true;
+        }
+        // 退休本身发生在本次提交的 effect 里——本次渲染派生的
+        // pendingSavedKeys 还带着退休前的簿,不清一次渲染驱动,消费行会
+        // 永久停在禁用态(absent+floor 路径首次触达即红,r10 诊断实证;
+        // present 路径此前总能搭上 notify 渲染,故未暴露)。值不被读取,
+        // 只求一次重渲。
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 有界退休冲刷:本次提交派生的 pendingSavedKeys 仍带退休前的簿,确有键退休时补一次重渲;后续 pass 不再退休,链路终止
+        if (retired) setJustSavedKeys(prev => new Set(prev));
+      });
+
+      const markSaveCommitted = (key, opts) => {
+        // 模块簿是唯一活源(r5 复审补线,commit-only 版):批量循环逐行直读
+        // committed——刷新失败(loadModels 吞错清列表)时实时镜像与冻结快照
+        // 里都没有该身份,这里不记,循环就会对同一身份再落一个 id。
+        inFlightModelCreates.committed.add(key);
+        // 缺席退休地板只给链跑过刷新尾的簿键(裁定 ok/failed);deferred
+        // 批量簿键无地板,只认 present(见镜像 effect 注释)。
+        if (opts && opts.absentRetirable) inFlightModelCreates.absentRetirable.add(key);
+        // superseded 簿键的受理请求序号(r13 迟到删除释放):有就覆盖(同一
+        // 键的新链以新链为准),没有就清掉(同键从带序号链换到 deferred 链
+        // 时不得沿用旧序号)。
+        if (opts && opts.requestSeq != null) inFlightModelCreates.requestSeqByKey.set(key, opts.requestSeq);
+        else inFlightModelCreates.requestSeqByKey.delete(key);
+        // state Set 从此只作渲染驱动(pendingSavedKeys 改读模块簿):落库后
+        // 用一次重渲把禁用态刷出来;值本身不再被读取。
+        setJustSavedKeys(prev => {
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
+      };
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
         { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
@@ -3786,7 +4243,9 @@ function hasStoredCredential(record) {
             <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
-              onSave={onSaveModel} />
+              onSave={onSaveModel}
+              onSaveCommitted={markSaveCommitted}
+              onInFlightRelease={bumpInFlightRegistryVersion} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}

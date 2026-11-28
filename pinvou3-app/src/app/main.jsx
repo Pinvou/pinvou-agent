@@ -4477,7 +4477,14 @@ const App = () => {
                   setSearchApiKey={handleSetSearchApiKey}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
-                  onSaveModel={(m, options) => bridge.available && bridge.models.saveModel(m, options)}
+                  // 桥不可用时必须 reject:`await onSave(...)` 对 false 一视同仁,
+                  // 四个创建入口会把「从未落库」当成功——关弹窗、记 committed 簿、
+                  // 批量 added 计数全错(r4 复审 MINOR)。抛错走各入口现有的
+                  // catch 分支:表单保持打开并显示行内错误,picker 原地提示。
+                  onSaveModel={(m, options) => {
+                    if (!bridge.available) throw new Error('bridge unavailable');
+                    return bridge.models.saveModel(m, options);
+                  }}
                   onDeleteModel={(m) => { if (bridge.available) bridge.models.deleteModel(m.id); }}
                   onSetActiveModel={(id) => bridge.available && bridge.models.setActiveModel(id)}
                   onSaveSearchConfig={handleSaveSearchConfig}

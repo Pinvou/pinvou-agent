@@ -404,11 +404,18 @@ impl From<SavedModel> for ModelListItem {
 pub struct ModelsView {
     pub models: Vec<ModelListItem>,
     pub active_model_id: Option<String>,
+    /// 读取降级标记(r13 复审 P2):settings.json 存在但读不出(非 NotFound
+    /// 错误)或内容不可解析时,list_models 仍以成功响应回退安全默认值——
+    /// 该(空)列表不是权威观察。前端按失败等价处理(冻结守卫、缺席不算
+    /// 删除证据),存储恢复前的重复保存不会落第二个记录 id。正常读取恒为
+    /// false(含全新安装的干净空态)。
+    pub fallback: bool,
 }
 
 #[tauri::command]
 pub async fn list_models() -> Result<ModelsView, String> {
-    let prefs = refresh_safe_prefs(UserPrefs::load());
+    let (prefs, read_degraded) = UserPrefs::load_with_read_provenance();
+    let prefs = refresh_safe_prefs(prefs);
     Ok(ModelsView {
         models: prefs
             .advanced
@@ -418,6 +425,7 @@ pub async fn list_models() -> Result<ModelsView, String> {
             .map(ModelListItem::from)
             .collect(),
         active_model_id: prefs.advanced.active_model_id.clone(),
+        fallback: read_degraded,
     })
 }
 

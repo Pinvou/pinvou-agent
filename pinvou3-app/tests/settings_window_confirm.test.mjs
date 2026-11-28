@@ -308,10 +308,13 @@ test('the settings picker stack closes confirm-first (r4 review)', () => {
   // stacked over the endpoint picker, one Escape press must close exactly the
   // visual top (the confirm) — the r4 review found this branch order pinned
   // on the ACP side (source pin + ⑥.18e–g) but not here, so an order flip
-  // (picker closing first) survived every suite.
+  // (picker closing first) survived every suite. The r5 wave added the
+  // write-in-flight guards to the picker branch plus an explanatory comment
+  // between the branches; the pin tolerates them (bounded gap) but a flip —
+  // picker branch ahead of the confirm branch — still cannot match.
   assert.match(
     SETTINGS_VIEW,
-    /if \(addAllModelsConfirm && !addingAllModels\) setAddAllModelsConfirm\(null\);\s*else if \(endpointPickerOpen\)/,
+    /if \(addAllModelsConfirm && !addingAllModels\) setAddAllModelsConfirm\(null\);[\s\S]{0,400}else if \(endpointPickerOpen && !addingAllModels/,
     'the stacked confirm branch must stay ahead of the picker branch (confirm-first)',
   );
 });

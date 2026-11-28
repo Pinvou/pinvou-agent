@@ -93,6 +93,7 @@ async function getImageInputCapability(...args) { return pinvouSharedtauriSettin
   // overwrite a newer one (audit b). The last request sequence wins.
   let modelsLoadSeq = 0;
 async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
+function readPublishedModelsEvidence() { return pinvouSharedtauriSettings().readPublishedModelsEvidence(); }
   // model 对象字段须与 Rust 侧 SavedModel 的 serde 契约逐字段一致(snake_case):
   // 字段清单以 src-tauri/src/platform/prefs/mod.rs 的 SavedModel 定义为准,此处
   // 不逐一列举以免两处漂移。
@@ -103,10 +104,58 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
    // loop finishes. Default (no options) keeps the save-then-refresh chain
    // every single-row caller relies on.
    await invoke("save_model", { model });
-   if (options && options.deferRefresh) return;
-   await loadModels();
+   if (options && options.deferRefresh) return { refresh: 'deferred' };
+   // Chain-end verdict (review P2, late compound-save completion): loadModels
+   // starts AFTER the upsert resolves, so an ACCEPTED response is a confirmed
+   // post-upsert observation. A successful accepted list that lacks the
+   // saved identity means the record was deleted inside the refresh tail —
+   // the caller must not book that identity into its settled-but-unlisted
+   // registry, because no later successful list can ever contain it and the
+   // reservation would block a legitimate re-add until reload. A failed
+   // accepted read keeps the caller booking (protect the genuinely committed
+   // but unlisted save, r3 lane G) while granting the absence floor: any
+   // later accepted successful list reflects a read that started after this
+   // chain's loadModels started, i.e. after the upsert, so an absent
+   // identity there is a deleted one.
+   // A SUPERSEDED read (review round 10 P2: a concurrent newer loadModels
+   // started before ours resolved — last-write-wins discards our response
+   // without publishing anything) publishes nothing — but the chain-end
+   // state may meanwhile have been republished by that newer request's own
+   // accepted response (review round 11 P2: N+1 lands [B,A], the user then
+   // deletes A whose newer refresh lands [B], and only then does our tail
+   // finish — the published world is a confirmed post-upsert post-delete
+   // observation, and treating our superseded read as "no evidence" would
+   // strand the reservation for a record the accepted list already proves
+   // deleted). Classify by published generation: when the last accepted
+   // publication used a seq GREATER than our own request's seq, it started
+   // after our chain handed its seq — i.e. after the upsert completed — so
+   // it is a confirmed post-upsert observation and its absence IS deletion;
+   // otherwise the published world predates our read (still the pre-upsert
+   // accepted write) and absence there is not evidence. A failed published
+   // read stays without evidence too.
+   // The superseded classification must read LIVE evidence (review round 12
+   // P2): the discarded return's published* fields are a snapshot captured
+   // when loadModels returned — publications accepted DURING the remaining
+   // refresh below (that newer chain's own accepted read, the user's delete
+   // of the just-saved record) are invisible to it, so the original schedule
+   // (N returns discarded first; N+1 and the delete publish while get_settings
+   // is still pending) still stranded the reservation. Read the shared
+   // closure's current accepted state at chain completion instead: no extra
+   // read is issued and the request sequence stays fixed; the publication
+   // counter is monotonic, so the live values never lag the snapshot.
+   const tail = await loadModels();
+   const superseded = !tail || !tail.accepted;
+   const listFailed = !superseded && tail.failed === true;
    await loadSettings();
    await loadEffectiveModelConfig();
+   if (superseded) {
+     const live = readPublishedModelsEvidence();
+     if (live.seq > tail.requestedSeq && !live.failed) {
+       return { refresh: 'ok', models: live.models };
+     }
+     return { refresh: 'superseded', requestedSeq: tail.requestedSeq };
+   }
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // exactly the three loaders the save chain runs, executed once for the whole
@@ -248,6 +297,7 @@ async function probeEndpointModels(request) { return pinvouSharedtauriSettings()
       discoverLocalVllm,
       getImageInputCapability,
       loadModels,
+      readPublishedModelsEvidence,
       saveModel,
       reloadSavedModels,
       revealModelApiKey,

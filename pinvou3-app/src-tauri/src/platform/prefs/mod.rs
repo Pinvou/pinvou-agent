@@ -1107,6 +1107,10 @@ pub struct UserPrefs {
 struct ParsedSettings {
     prefs: UserPrefs,
     allow_normalization_persist: bool,
+    /// 读取降级(r13 复审 P2):文件存在但不可解析——settings.json 损坏时
+    /// 回退默认值,但这次「成功读取」不是权威观察。由 load 的 provenance
+    /// 向上传递,list_models 据此给前端打 fallback 标记。
+    degraded: bool,
     /// Set when `color_scheme` was just derived from `theme` because the old
     /// settings lacked the key (see the parse comment). Counted into the
     /// normalization persist gate so the derived value lands on disk at the
@@ -1150,6 +1154,16 @@ impl UserPrefs {
         Self::load_unlocked_with_migration(true).0
     }
 
+    /// 读取降级探针(r13 复审 P2):list_models 专用——「成功读取」必须区分
+    /// 权威内容与降级默认值。settings.json 存在但读不出(非 NotFound 错误)
+    /// 或内容不可解析时,第二位为 true:该响应里的(空)模型列表不是权威
+    /// 观察,前端按失败等价处理(冻结守卫、缺席不算删除证据)。
+    pub fn load_with_read_provenance() -> (Self, bool) {
+        let _guard = lock_user_prefs();
+        let (prefs, _migration, read_degraded) = Self::load_unlocked_with_migration(true);
+        (prefs, read_degraded)
+    }
+
     fn defaults_for_system_locale(locale: Option<&str>) -> Self {
         Self {
             language: Language::from_system_locale(locale),
@@ -1166,10 +1180,13 @@ impl UserPrefs {
 
     fn parse_settings_with_state(raw: Option<&str>, system_locale: Option<&str>) -> ParsedSettings {
         let Some(raw) = raw else {
+            // 文件缺失(全新安装)= 干净的权威空态,不是降级;读取型失败
+            // (EIO 等)在 load_unlocked_with_migration 里按错误类别补标。
             return ParsedSettings {
                 prefs: Self::defaults_for_system_locale(system_locale),
                 allow_normalization_persist: false,
                 color_scheme_derived: false,
+                degraded: false,
             };
         };
         let value: serde_json::Value = match serde_json::from_str(raw) {
@@ -1182,6 +1199,7 @@ impl UserPrefs {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
                     color_scheme_derived: false,
+                    degraded: true,
                 };
             }
         };
@@ -1208,6 +1226,7 @@ impl UserPrefs {
                     prefs: Self::defaults_for_system_locale(system_locale),
                     allow_normalization_persist: false,
                     color_scheme_derived: false,
+                    degraded: true,
                 };
             }
         };
@@ -1226,6 +1245,7 @@ impl UserPrefs {
             prefs,
             allow_normalization_persist: true,
             color_scheme_derived,
+            degraded: false,
         }
     }
 
@@ -1241,13 +1261,24 @@ impl UserPrefs {
     /// settings.json without it — erasing the credential from its only
     /// durable location. Callers that persist must refuse first (same gate
     /// as the GUI's `prepare_prefs_for_save`).
-    fn load_unlocked_with_migration(persist_normalized: bool) -> (Self, CredentialMigrationResult) {
+    /// 第三位 = 读取降级(r13 复审 P2):settings.json 存在但读不出来
+    /// (EIO/权限等非 NotFound 错误)或内容不可解析——这次加载回退了默认
+    /// 值,不是权威观察。缺失文件(全新安装)不算降级。
+    fn load_unlocked_with_migration(
+        persist_normalized: bool,
+    ) -> (Self, CredentialMigrationResult, bool) {
         let path = super::paths::settings_path();
-        let raw = std::fs::read_to_string(&path).ok();
+        let read_result = std::fs::read_to_string(&path);
+        let read_degraded = match &read_result {
+            Ok(_) => false,
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        };
+        let raw = read_result.ok();
         let system_locale = crate::platform::os::current_system_locale();
         let mut parsed = Self::parse_settings_with_state(raw.as_deref(), system_locale.as_deref());
         let allow_normalization_persist = parsed.allow_normalization_persist;
         let color_scheme_derived = parsed.color_scheme_derived;
+        let read_degraded = read_degraded || parsed.degraded;
         let prefs = &mut parsed.prefs;
         // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
         // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
@@ -1384,7 +1415,7 @@ impl UserPrefs {
             }
         }
         prefs.sanitize_plaintext_api_keys();
-        (parsed.prefs, migration)
+        (parsed.prefs, migration, read_degraded)
     }
 
     fn save_unlocked(&self) -> std::io::Result<()> {
@@ -1470,7 +1501,7 @@ impl UserPrefs {
         let _guard = lock_user_prefs();
         let _file_lock = lock_settings_file()
             .map_err(|error| format!("acquire settings lock failed: {error}"))?;
-        let (mut prefs, migration) = Self::load_unlocked_with_migration(false);
+        let (mut prefs, migration, _read_degraded) = Self::load_unlocked_with_migration(false);
         // round-41 review M1：迁移失败时明文 key 只存在于内存，而 save_unlocked
         // 无条件 sanitize 后整文档落盘——凭据会从它唯一的持久位置被抹掉，写入方
         // 还报成功。与 GUI `prepare_prefs_for_save` 同一闸门：拒绝整个事务，

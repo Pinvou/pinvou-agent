@@ -1198,6 +1198,8 @@ Object.assign(dictZh.uiSettingsDetail, {
   factSourceEndpoint:'端点', factSourceCatalog:'模型目录',
   filledFromEndpoint:'已从端点探测填入',
   modelAlreadySaved:'已保存',
+  modelDuplicateExists:'已存在相同模型 ID 和服务地址的模型，无需重复保存',
+  modelDuplicateExistsEdit:'已存在相同模型 ID 和服务地址的其他条目，删除重复项或修改本条目后才能保存',
   fetchUnavailable:'当前版本暂不支持获取模型列表',
   modelListFilterEmpty:'没有符合筛选条件的模型',
   modelListTruncated:'端点响应或上下文查询提前停止，结果可能不完整',

@@ -4634,6 +4634,7 @@ async function getImageInputCapability(...args) { return pinvouSharedweb().getIm
   // （审计 b）。请求序号后发者胜（与 tauri settings 侧一致）。
   let modelsLoadSeq = 0;
 async function loadModels() { return pinvouSharedweb().loadModels(); }
+function readPublishedModelsEvidence() { return pinvouSharedweb().readPublishedModelsEvidence(); }
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,reasoning_effort,model,base_url,api_key,credential_action,provider_kind,vendor,endpoint_mode,auth_mode,image_capability_override,vision_model_id,alias}
   // （round-7 review：这 17 个是保存载荷的字段集——credential_ref /
@@ -4644,9 +4645,41 @@ async function loadModels() { return pinvouSharedweb().loadModels(); }
    // caller refreshes once via reloadSavedModels(). Default keeps the
    // save-then-refresh chain single-row callers rely on.
    await invoke("save_model", { model });
-   if (options && options.deferRefresh) return;
-   await loadModels();
+   if (options && options.deferRefresh) return { refresh: 'deferred' };
+   // Chain-end verdict, same contract as the tauri lane (review P2, late
+   // compound-save completion): an ACCEPTED reload-tail response is a
+   // confirmed post-upsert observation — a successful accepted list lacking
+   // the saved identity means the record was deleted inside the refresh tail
+   // and the caller must not book it; a failed accepted read still books
+   // (r3 lane G) with the absence floor (later accepted successful lists
+   // reflect reads that started after this chain's loadModels, i.e. after
+   // the upsert). A SUPERSEDED read (round 10 P2: a concurrent newer
+   // loadModels started before ours resolved and last-write-wins discarded
+   // our response without publishing) publishes nothing — chain-end state
+   // can still be the pre-upsert accepted write, so absence there is NOT
+   // deletion: the verdict degrades to 'superseded' and the caller books
+   // present-only. The reload tail runs in full either way. The superseded
+   // classification reads LIVE evidence at chain completion (review round 12
+   // P2, same as the tauri lane): the discarded return's published* fields
+   // are a snapshot from loadModels' return — publications accepted during
+   // the remaining refresh below are invisible to it, and the original
+   // schedule (N returns discarded first; N+1 and the delete publish while
+   // the effective-config read is still pending) still stranded the
+   // reservation. The shared closure's current accepted state, read here,
+   // covers those: no extra read is issued, the request sequence stays
+   // fixed, and the monotonic publication counter never lags the snapshot.
+   const tail = await loadModels();
+   const superseded = !tail || !tail.accepted;
+   const listFailed = !superseded && tail.failed === true;
    await loadEffectiveModelConfig();
+   if (superseded) {
+     const live = readPublishedModelsEvidence();
+     if (live.seq > tail.requestedSeq && !live.failed) {
+       return { refresh: 'ok', models: live.models };
+     }
+     return { refresh: 'superseded', requestedSeq: tail.requestedSeq };
+   }
+   return listFailed ? { refresh: 'failed' } : { refresh: 'ok', models: tail.models };
  }
 // Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
 // the web save chain reloads models + effective config, so the batch refresh
@@ -6355,6 +6388,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     saveSearchSettings,
     submitFeedback,
    saveModel,
+   readPublishedModelsEvidence,
    reloadSavedModels,
    revealModelApiKey,
    deleteModel,

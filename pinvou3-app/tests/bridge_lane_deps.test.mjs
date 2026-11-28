@@ -230,7 +230,12 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages readers above; its sole caller
   // rerenderFromMessagesCore resolves it as a base-local declaration —
   // count only.
-  sharedFnCount: 330,
+  // readPublishedModelsEvidence (r12 review P2: the superseded verdict's
+  // live-evidence getter) reads only the shared closure's publishedModelsSeq
+  // and state — no invoke, no cluster-visible dependency. The consuming
+  // clusters (web + tauriSettings, already loadModels consumers) pass state
+  // in their literals, so none gains a dep — count only.
+  sharedFnCount: 331,
 };
 
 assert.equal(
