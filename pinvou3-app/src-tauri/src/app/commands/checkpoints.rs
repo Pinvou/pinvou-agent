@@ -142,10 +142,6 @@ async fn reconcile_pending_rewind(
     // r53 P2（评审）：放弃哨兵消费——拒绝臂的双失败通道（清理与 aborted
     // 标记均未落盘）留下的哨兵文件在此阻断普通重放：清暂记、放行本轮快照
     // （被拒绝的回退视为已放弃；显式重试会重新走完整协议）。
-    eprintln!(
-        "[r53debug] reconcile entry sentinel={}",
-        checkpoints::pending_rewind_abandoned_sentinel_present(ledger)
-    );
     if checkpoints::pending_rewind_abandoned_sentinel_present(ledger) {
         log::warn!(
             "[pinvou3][checkpoints] abandonment sentinel present: clearing the refused rewind without replay sid={session_id}"
@@ -4112,7 +4108,7 @@ fn ",
     }
 
     /// r53-P2 故障注入回归（评审 00:45 跟进）：确定性制造「清理失败」——
-    /// 测试自持 pending flock，使拒绝臂双失败残留（活暂记 + 放弃哨兵）下
+    /// 确定性故障注入：锁文件路径替换为目录，使拒绝臂双失败残留（活暂记 + 放弃哨兵）下
     /// 第一次发送被 fail-closed 阻断（快照跳过、暂记与哨兵原样保留、工作
     /// 区不动）；解除故障后第二次发送安全清理并照常登记，且**不重放**。
     #[tokio::test]
@@ -4183,7 +4179,7 @@ fn ",
         )
         .expect("plant the abandonment sentinel");
 
-        // 故障注入：自持 pending flock——try_clear / mark_aborted 的锁获取
+        // 故障注入：锁文件路径替换为目录——try_clear / mark_aborted 的锁获取
         // 都会失败（与生产锁不可用同型）。
         // 故障注入（确定性、跨平台）：把锁文件路径替换为目录——
         // 对锁文件 open 必败，清暂记与 aborted 标记双双失败，哨兵成为唯
@@ -4205,7 +4201,10 @@ fn ",
             ReconcileGates::default(),
         )
         .await;
-        assert!(blocked.is_none(), "清理失败 ⇒ 本轮快照 fail-closed 阻断");
+        assert!(
+            blocked.is_none(),
+            "清理失败 ⇒ 本轮快照准备 fail-closed 阻断"
+        );
         assert!(
             ledger.join("pending_rewind.json").exists(),
             "清理失败 ⇒ 活暂记保留"

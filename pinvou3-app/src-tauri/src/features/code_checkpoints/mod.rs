@@ -2313,7 +2313,7 @@ impl PendingRewind {
 /// 的孪生）——`write_pending_rewind`/`clear_pending_rewind` 的窗口此前在
 /// 一切围栏与跨进程锁之外：GUI undo 的 clear 可以删掉在飞 CLI rewind 刚
 /// 写下的 pending（P1 孤儿）。阻塞式，与推入侧的等待语义一致。
-pub(crate) fn lock_pending_rewind_file(ledger_root: &Path) -> Result<std::fs::File> {
+fn lock_pending_rewind_file(ledger_root: &Path) -> Result<std::fs::File> {
     let path = pending_rewind_path(ledger_root).with_extension("json.lock");
     let file = crate::platform::filesystem::open_lock_file_with_dirs(&path)
         .with_context(|| format!("打开回退暂记锁失败: {}", path.display()))?;
