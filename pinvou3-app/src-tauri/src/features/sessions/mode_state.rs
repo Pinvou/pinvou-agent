@@ -120,6 +120,9 @@ pub struct SessionModeState {
     /// "only sessions with a mode entry have an independent switch" is pre-PR semantics, superseded by
     /// the current behavior pinned by `ask_on_guardrail_toggle_persists_for_entry_less_sessions`
     /// (round-8 L2-4 documentation fix).
+    // Dead attribute today (this struct only derives Serialize); kept so a
+    // future Deserialize impl inherits the true default instead of bool's
+    // implicit false.
     #[serde(default = "default_true")]
     pub ask_on_guardrail: bool,
     /// The mode to return to after accept_plan (the mode from before entering Plan). Memory-only: after a restart
@@ -212,22 +215,22 @@ impl SessionModeState {
         }
     }
 
-    /// A fresh mode-state entry for a session being materialized NOW (the
-    /// `mode_state` fallback, `mode_state_entry`, and every `or_insert_with`
-    /// mint site). Identical to [`Default::default`] except the per-session
-    /// ask-on-guardrail toggle seeds from [`Self::ask_on_guardrail_seed`]
-    /// (explicit override first, then the global
-    /// `code_permission.ask_on_guardrail_default` preference; tri-mode):
+    /// Fresh-entry base seeding ask-on-guardrail from the caller-passed
+    /// global `code_permission.ask_on_guardrail_default` preference (tri-mode:
     /// sessions absent from `_ask_on_guardrail.json` follow that global
-    /// default — hardcoding `true` here ignored the user's "silent
-    /// hard-deny" opt-out until the session got an explicit toggle write.
-    /// Explicit per-session overrides keep winning, and an
-    /// already-materialized entry is never re-seeded by this ctor.
+    /// default — hardcoding `true` ignored the user's "silent hard-deny"
+    /// opt-out). This is NOT the general mint path: the runtime mint sites
+    /// (the `mode_state` fallback, `mode_state_entry`, every
+    /// `or_insert_with`) seed through [`Self::ask_on_guardrail_seed`]
+    /// (explicit override first, then the pref), so a pref change has one
+    /// runtime seeding contract to update.
     ///
-    /// The ask-on-guardrail seeding point for fresh entries lives in
-    /// [`Self::ask_on_guardrail_seed`] (explicit override first, then the
-    /// pref); the runtime mint sites route through that helper, so a pref
-    /// change only has one production seeding contract to update.
+    /// This ctor has exactly one production caller — the boot mint in
+    /// `load_session_mode_states` — which deliberately uses the raw pref
+    /// because the `_ask_on_guardrail.json` override mirror loads only
+    /// afterward (`load_ask_on_guardrail_overrides` applies explicit
+    /// choices to the entries minted here). Explicit per-session overrides
+    /// keep winning, and an already-materialized entry is never re-seeded.
     /// (`Default::default()` stays for serde round-trips and field-spread
     /// bases only.)
     fn default_for_new_session(ask_on_guardrail_default: bool) -> Self {
@@ -810,9 +813,15 @@ impl SessionStore {
     }
 
     pub(crate) fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
-        let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = self.mode_state_entry(&mut states, id, default_mode);
+        // Bail BEFORE minting (same round-16 class as claim_pending_plan):
+        // mode_state_entry inserts a resolved-default entry on first touch,
+        // so a restore against a bogus/deleted id used to leave a phantom
+        // entry behind despite the conflict bail. A legitimate restore always
+        // finds an existing entry: the claim it rolls back ran against one.
+        let Some(entry) = states.get_mut(id) else {
+            bail!("restore plan claim conflict");
+        };
         let claimed_mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
         if entry.mode != claimed_mode
             || entry.pending_plan_id.is_some()
@@ -827,9 +836,16 @@ impl SessionStore {
     }
 
     pub(crate) fn discard_pending_plan(&self, id: &str, plan_id: &str) -> Result<SessionModeState> {
-        let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = self.mode_state_entry(&mut states, id, default_mode);
+        // Bail BEFORE minting (same round-16 class as claim_pending_plan):
+        // mode_state_entry inserts a resolved-default entry on first touch,
+        // so a discard against a bogus id used to leave a phantom entry
+        // behind despite the plan_not_active error. A legitimate discard
+        // always finds an existing entry: entering Plan minted it and the
+        // plan snapshot ticketed it.
+        let Some(entry) = states.get_mut(id) else {
+            bail!("plan_not_active");
+        };
         if entry.mode != SerializableMode::Plan
             || entry.pending_plan_id.as_deref() != Some(plan_id)
             || entry.plan_claim_in_flight.is_some()

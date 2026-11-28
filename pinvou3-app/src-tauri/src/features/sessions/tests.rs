@@ -4292,6 +4292,50 @@ fn claim_on_unknown_id_bails_before_minting_an_entry() {
     );
 }
 
+/// 对不存在 id 的 discard 不得铸造幻影条目（claim 同款，round-16 评审类）：
+/// discard 曾先经 `mode_state_entry` 铸 resolved 默认条目再
+/// `bail!("plan_not_active")`，错误返回后内存里留下一个从不属于任何
+/// 生命周期的条目；先存在性判定再动条目。
+#[test]
+fn discard_on_unknown_id_bails_before_minting_an_entry() {
+    let (store, _g) = isolated_store();
+    let bogus = "no-such-session";
+    let error = match store.discard_pending_plan(bogus, "ghost-plan") {
+        Err(error) => error,
+        Ok(_) => panic!("a discard without an entry must fail"),
+    };
+    assert!(
+        error.to_string().contains("plan_not_active"),
+        "the failure must be the plan-not-active rejection, got: {error}"
+    );
+    assert!(
+        !store.mode_states.read().contains_key(bogus),
+        "the rejected discard must not mint a phantom mode entry"
+    );
+}
+
+/// 对不存在 id 的 restore 同样不得铸造幻影条目（claim/discard 同款）：restore
+/// 到达冲突检查需要条目内有 in-flight claim 标记，而无条目时存在性 bail 先于
+/// 一切触发——错误串与真实回滚冲突一致（"restore plan claim conflict"），
+/// 但绝不能在内存里留下物化条目。
+#[test]
+fn restore_on_unknown_id_bails_before_minting_an_entry() {
+    let (store, _g) = isolated_store();
+    let bogus = "no-such-session";
+    let error = match store.restore_pending_plan_claim(bogus, "ghost-plan") {
+        Err(error) => error,
+        Ok(_) => panic!("a restore without an entry must fail"),
+    };
+    assert!(
+        error.to_string().contains("restore plan claim conflict"),
+        "the failure must be the restore-conflict rejection, got: {error}"
+    );
+    assert!(
+        !store.mode_states.read().contains_key(bogus),
+        "the rejected restore must not mint a phantom mode entry"
+    );
+}
+
 /// Tri-mode v3.5 回归钉（评审 B2）：首次模式写入是 Plan 的未物化会话，
 /// accept 必须落 resolved 默认（Auto），不得落铸造哨兵 Yolo——「批准方案
 /// ≠批准全自动」在其最常见的 GUI 路径（芯片 Plan → 批准）上成立。显式
