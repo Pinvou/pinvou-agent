@@ -23,6 +23,17 @@
   // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
+  // Mode-switch fence state — ONE owner at module scope (review P2,
+  // cross-surface coordinator): every base instance created by this script
+  // load (tauriSessions, tauriInteraction, web, …) shares these Maps, so a
+  // switch dispatched through one factory is fenced against switches and
+  // edit-resend guards dispatched through another. The per-instance begin/
+  // settle/failure functions close over this state.
+  const modeSyncUnresolvedSids = new Set();
+  const modeSyncAttempt = new Map();
+  const modeSyncSettled = new Map();
+  const modeSyncUnresolvedArmedBy = new Map();
+
   // 12 个依赖在 web lane 以 get 单元格传入、tauri lane 以普通值传入；合并后的函数体统一按 .value 读取。
   // ensureCells 只在这 12 个名字上补齐单元格：已是单元格（对象且含 value 属性）原样透传，
   // 普通值包一层只读单元格 —— lane 侧 deps 字面量保持零改动。
@@ -4363,23 +4374,26 @@
   // tracks the effective mode, and the mark makes an edit resend refuse
   // until a successful switch re-publishes (the re-read sees the store, not
   // the engine's live posture — only a fresh publish can clear the mark).
-  // Closure state on this per-lane base instance.
-  const modeSyncUnresolvedSids = new Set();
-  // Dispatch-sequence fence (review P2, delayed-response ordering): the
-  // attempt identity is allocated when the command is DISPATCHED, not when
-  // its response arrives. Each per-sid sequence number strictly increases
-  // per dispatched switch, and `modeSyncSettled` records the sequence of
-  // the last result that actually settled. A settlement (success or
-  // failure) whose dispatch sequence predates an already-settled result is
-  // stale — dropped wholesale, so a late rejection can neither re-arm a
-  // newer switch's repaired session nor clear a newer failure's marker,
-  // and a late success can neither retract a newer failure's recovery.
-  const modeSyncAttempt = new Map();
-  const modeSyncSettled = new Map();
-  // Which failure armed the guard (review P2, pre-write rejection): the
-  // rejection arm may legitimately RELEASE the marker it armed itself, but
-  // must never release an older failure's still-unresolved guard.
-  const modeSyncUnresolvedArmedBy = new Map();
+  // The fence state itself lives at module scope (see below): one owner
+  // shared by every base instance in this script load, so a switch
+  // dispatched through one factory is fenced against switches dispatched
+  // through another.
+  // Dispatch-sequence fence state (review P2, delayed-response ordering):
+  // the attempt identity is allocated when the command is DISPATCHED, not
+  // when its response arrives. Each per-sid sequence number strictly
+  // increases per dispatched switch, and `modeSyncSettled` records the
+  // sequence of the last result that actually settled. A settlement
+  // (success or failure) whose dispatch sequence predates an
+  // already-settled result is stale — dropped wholesale, so a late
+  // rejection can neither re-arm a newer switch's repaired session nor
+  // clear a newer failure's marker, and a late success can neither retract
+  // a newer failure's recovery. Module scope on purpose: the desktop lane
+  // materializes a session's lane default through its own factory instance
+  // while chip switches and edit-resend run through the interaction
+  // instance — closure-per-instance Maps would make the fence blind across
+  // those surfaces, so one owner is shared by every instance of this
+  // script load (the state itself lives at the top of this script; the
+  // begin/settle/failure functions below close over it).
   function beginModeSwitchAttempt(sid) {
     const next = (modeSyncAttempt.get(sid) || 0) + 1;
     modeSyncAttempt.set(sid, next);

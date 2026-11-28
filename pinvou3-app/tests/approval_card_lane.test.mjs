@@ -1566,6 +1566,54 @@ try {
       assert.equal(shared.editResendSyncBlocked('s5'), true,
         '未钉请求目标的切换面在等值回读上同样保守保留守卫');
     }
+    // (i) 跨实例栅栏（review P2, shared coordinator）：桌面 lane 的会话物化
+    // 走 tauriSessions 工厂实例,芯片切换与编辑重发走 tauriInteraction 实例
+    // ——两套 create() 闭包若各持 Maps,派发序栅栏对跨面切换全盲（两实例
+    // attempt 各自从 1 起算,迟到物化结算照常通过并覆盖用户较新的芯片切
+    // 换；物化失败武装的守卫也只存在于 sessions 实例,interaction 的
+    // editResendSyncBlocked 读不到）。栅栏状态因此在模块级单例共享。
+    {
+      const sharedRoot2 = {};
+      vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js'), {
+        window: sharedRoot2, globalThis: sharedRoot2, setTimeout, clearTimeout,
+      }, { filename: 'shared-helpers-harness-2.js' });
+      const depsFor = (theme) => ({
+        state: { activeSessionId: 'm1', chatItems: [] },
+        invoke: cmd => (cmd === 'get_mode_state' ? modeReadGate2() : Promise.resolve({})),
+        notify: () => {}, bt: key => key,
+        addSystemItem: text => notes2.push(text), addSystemItemFor: (sid, text) => notes2.push(text),
+        setDraftMode: async () => {}, applyAuthoritativeModeState: () => {},
+        runSyncOnSession: (sid, fn) => fn(), runOnSession: (sid, fn) => fn(),
+        patchItemById: () => {}, patchItemByIdFor: () => {}, addChatItem: () => {},
+        theme,
+      });
+      const notes2 = [];
+      let modeReadGate2 = () => Promise.resolve({ mode: 'plan' });
+      const inter = sharedRoot2.PinvouBridgeShared.create('tauriInteraction', depsFor('tauriInteraction'));
+      const sess = sharedRoot2.PinvouBridgeShared.create('tauriSessions', depsFor('tauriSessions'));
+      // 场景一：物化切换（sessions 实例派发,attempt=1）在飞；用户对已激活
+      // 会话完成较新的芯片切换（interaction 实例派发并结算,attempt=2）。
+      // 迟到的物化结算必须被跨实例栅栏拒绝（调用方据此放弃投影）。
+      const stagedAttempt = sess.beginModeSwitchAttempt('m1');
+      const chipAttempt = inter.beginModeSwitchAttempt('m1');
+      assert.equal(chipAttempt, stagedAttempt + 1,
+        '跨实例派发必须共享同一递增序列（栅栏可比）');
+      assert.equal(inter.settleModeSwitchSuccess('m1', chipAttempt), true,
+        '较新的芯片切换先完成并正常受理');
+      assert.equal(sess.settleModeSwitchSuccess('m1', stagedAttempt), false,
+        '迟到的物化结算不得通过（较新的芯片切换已接管该会话）');
+      // 场景二：物化切换失败（sessions 实例恢复,回读=生效-未同步）武装
+      // 守卫；interaction 实例的 editResendSyncBlocked 必须看到同一守卫。
+      modeReadGate2 = () => Promise.resolve({ mode: 'yolo' });
+      const failAttempt = sess.beginModeSwitchAttempt('m2');
+      await sess.handleModeSwitchFailure('m2', new Error('staged sync boom'), 'switchModeFailed: ', failAttempt, 'plan', 'yolo');
+      assert.equal(inter.editResendSyncBlocked('m2'), true,
+        'sessions 面武装的守卫对 interaction 面的编辑重发同样生效');
+      // 跨实例的成功切换解除守卫（同一次成功重新发布）。
+      assert.equal(inter.settleModeSwitchSuccess('m2', inter.beginModeSwitchAttempt('m2')), true);
+      assert.equal(inter.editResendSyncBlocked('m2'), false,
+        '跨实例成功切换解除守卫（一次成功发布即收敛）');
+    }
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；
     // 列表非空 ⇒ 有 turn 在等审批,用 markRemoteTurn 复原 busy 面让停止键
