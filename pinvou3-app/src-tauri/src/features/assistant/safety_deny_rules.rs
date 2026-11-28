@@ -2079,7 +2079,11 @@ fn safety_rules_for_profile_with_home(
     // root or Windows prefix): duplicate rule strings would double-count in
     // the pinned snapshot and double-scan at check time. A no-op on dev/CI
     // hosts (the snapshot test pins the deduped composition). Applied to
-    // both profiles so neither can carry duplicates.
+    // both profiles so neither can carry duplicates. The `command`-only
+    // key is safe while every rule here is a typed Deny exec_shell product
+    // of `deny_cmd` (identical shape, so same-command rules are
+    // field-for-field equal and first-wins loses nothing); revisit if
+    // other tools, actions, or scoped rules ever join.
     rules.sort_by(|a, b| a.command.cmp(&b.command));
     rules.dedup_by(|a, b| a.command == b.command);
     rules
@@ -2095,6 +2099,17 @@ fn safety_rules_for_profile_with_home(
 /// whole Windows-native destroy family ([`win_native_rules`], emitted on
 /// every host — inert on POSIX, keeps the pinned count host-independent),
 /// and the resolved real-home Windows family ([`win_real_home_rules`]).
+///
+/// Deliberate Floor asymmetry (pinned both sides by
+/// `forkguard_ruleset_profile_floor_keeps_floor_drops_sensitive`): this
+/// profile keeps the WHOLE [`win_native_rules`] family — including the
+/// per-credential Windows destroy spellings like
+/// `del * %userprofile%\.ssh\id_rsa` — while the POSIX per-credential twins
+/// (`rm * ~/.ssh/id_rsa`, [`destroy_credential_rules`]) are Sensitive-only.
+/// That is the "never narrower than the live hook" direction at family
+/// granularity (the former hook hard-denied the Windows destroy face); the
+/// same tension on the upload side is documented at the
+/// [`win_real_home_rules`] note.
 ///
 /// Deliberately NOT here: the sudo command-word block — the sudo product
 /// stance is a Sensitive face (Full only), so the Floor/Yolo composition
@@ -2558,22 +2573,75 @@ mod tests {
     }
 
     /// Tri-mode profile seam: the Full profile IS the pre-profile
-    /// composition, byte-for-byte (same family bodies, only the selection
-    /// differs). Any drift here means the profile split changed a rule
-    /// string or dropped/duplicated a family — fix the split, not this pin.
+    /// composition. The expected side is composed INDEPENDENTLY from the
+    /// raw family constructors — the exact family list, in the exact
+    /// order, that [`safety_rules_for_profile_with_home`] assembles for
+    /// Full (floor families, then the sensitive ones; no Windows real-home
+    /// family under the `None` prefix), closed with the same exact-dedup —
+    /// so a future family-list drift in the profile assembly (a dropped,
+    /// added, reordered, or swapped family) turns this red even when every
+    /// family body is unchanged. This is the composition-shape pin; the
+    /// 8,763 census in `rule_snapshot_is_stable` stays authoritative for
+    /// the total.
     #[test]
     fn forkguard_ruleset_profile_full_is_the_pinned_composition() {
-        // The composition embeds the real-home spelling family; parallel
-        // tests mutate HOME under ENV_LOCK (boot-env-guard), so these
-        // string pins must serialize against them (reproduced flake under
-        // plain parallel `cargo test --lib`).
+        // The composition embeds the real-home spelling family (the raw
+        // destroy/exfil root constructors read HOME); parallel tests
+        // mutate HOME under ENV_LOCK (boot-env-guard), so these string
+        // pins must serialize against them (reproduced flake under plain
+        // parallel `cargo test --lib`).
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let mut expected = destroy_root_rules();
+        expected.extend(dd_overwrite_rules());
+        expected.extend(catastrophic_rules());
+        expected.extend(sudoers_persistence_rules());
+        expected.extend(exfil_root_upload_rules());
+        expected.extend(win_native_rules());
+        expected.extend(win_exfil_root_upload_rules());
+        expected.extend(destroy_credential_rules());
+        expected.extend(persistence_injection_rules());
+        expected.extend(exfil_credential_upload_rules());
+        expected.extend(win_exfil_credential_upload_rules());
+        expected.extend(sudo_block_rules_for(false));
+        expected.sort_by(|a, b| a.command.cmp(&b.command));
+        expected.dedup_by(|a, b| a.command == b.command);
         assert_eq!(
             safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None),
-            safety_deny_rules_with_home(false, None),
-            "Full profile must compose the exact pre-profile ruleset"
+            expected,
+            "Full profile must compose exactly these families in this order"
+        );
+    }
+
+    /// Tri-mode profile seam, Floor twin of the Full composition pin: the
+    /// Floor face composed independently from the raw floor-family
+    /// constructors (same families, same order, same exact-dedup) must
+    /// equal the profile function's Floor output. The pinned count test
+    /// below is length-only — a floor family swapped for an equal-size one
+    /// would stay green there — while this pin catches the
+    /// composition-shape drift itself.
+    #[test]
+    fn forkguard_ruleset_profile_floor_is_the_floor_families() {
+        // ENV_LOCK discipline, same as the Full composition pin above: the
+        // raw floor constructors (destroy/exfil root targets) read the
+        // real HOME family and must not race parallel HOME-mutating tests.
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut expected = destroy_root_rules();
+        expected.extend(dd_overwrite_rules());
+        expected.extend(catastrophic_rules());
+        expected.extend(sudoers_persistence_rules());
+        expected.extend(exfil_root_upload_rules());
+        expected.extend(win_native_rules());
+        expected.extend(win_exfil_root_upload_rules());
+        expected.sort_by(|a, b| a.command.cmp(&b.command));
+        expected.dedup_by(|a, b| a.command == b.command);
+        assert_eq!(
+            safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None),
+            expected,
+            "Floor profile must compose exactly the floor families"
         );
     }
 
