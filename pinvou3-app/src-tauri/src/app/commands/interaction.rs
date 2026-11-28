@@ -170,7 +170,9 @@ pub async fn set_plan_mode_next(
     })
     .await
     .err();
-    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app)
+        .await
+        .map_err(|sync_error| fold_persist_error(sync_error, &persist_error))?;
     Ok(SessionModeSwitchOutcome {
         state,
         persist_error,
@@ -207,7 +209,9 @@ pub async fn exit_plan_to_yolo(
     })
     .await
     .err();
-    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app)
+        .await
+        .map_err(|sync_error| fold_persist_error(sync_error, &persist_error))?;
     Ok(SessionModeSwitchOutcome {
         state,
         persist_error,
@@ -487,6 +491,7 @@ pub async fn set_super_permission(
 /// 用户点 plan_card [🚪 算了]：放弃这个方案,但**留在当前模式**(Plan 不踢回 Yolo)。
 /// "算了"= 这个方案不要了,不等于退出规划态;要换模式用户自己点 chip。
 /// 与 accept_plan(切 Yolo 执行) / exit_plan_to_yolo(切 Yolo 直接干) 区别:discard 只关卡片、不动 mode。
+/// 目标会话先过存在性门(`ensure_mode_target_session`,同 `set_session_mode`):防止 IPC 直调给不存在的 id 触发副作用。
 #[tauri::command]
 pub async fn discard_plan(
     session_id: String,
@@ -494,6 +499,7 @@ pub async fn discard_plan(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
+    ensure_mode_target_session("discard_plan", &session_id, &store)?;
     // 不动 mode——放弃方案 ≠ 退出 Plan;仅回传当前状态供前端刷新卡片。
     let mode_state = store
         .discard_pending_plan(&session_id, &plan_id)
@@ -628,6 +634,11 @@ pub async fn decide_approval(
             "decide_approval: invalid decision \"{decision}\" (expected allow | allow_for_session | deny)"
         ));
     }
+    // Deliberate residual, stated honestly (decide-time posture): this path trusts the card raised at
+    // approval time and does NOT re-verify the session's mode posture here — the raise-time ladder
+    // (`approval_surface_decision`) is the enforcement point, so a card raised before a switch to Plan
+    // can still be allowed at decide time. The engine-side Plan read-only normalization is the backstop:
+    // the residual direction is at most one extra silent grant, never a wider posture.
     // Then remove the registration: this retrieves the approval_key / grouping_key for the cache writes; if the
     // engine-side call fails (approval already timed out / turn already interrupted), the removed registration
     // goes back as-is — the card stays pending, this surface can retry, and clicks on other surfaces can still
@@ -796,7 +807,10 @@ pub async fn decide_approval(
     // click's grant silently carries into the new lifecycle via the None==Null comparison (not the "one extra
     // re-approval" an earlier comment claimed — the purge already cleared the generation entry and nothing clears this cache afterwards). Both writes share the same gate: the denial cache is directionally safe, but leaving memory in a dead session is the same kind of leak.
     let session_live = !store.durable_session_record_is_absent(&session_id);
-    if outcome.is_ok() && decision == "allow_for_session" && session_live {
+    // `outcome` is always Ok by this point (the match above returns Err on its
+    // error arm), so the cache writes and the broadcast below need no is_ok()
+    // guard.
+    if decision == "allow_for_session" && session_live {
         // The grant is recorded on the lossy grouping_key: covers later flag variants (v0.8.37 semantics).
         // It carries the registered card's origin workspace generation: an old success arm resumed after a rebind
         // advanced the generation is refused here in-lock on mismatch, never writing the old directory's decision into new-generation memory (review 5764675531).
@@ -817,7 +831,7 @@ pub async fn decide_approval(
             );
         }
     }
-    if outcome.is_ok() && decision == "deny" && session_live {
+    if decision == "deny" && session_live {
         // The denial is recorded on the exact approval_key: changed arguments require asking again (#1617 semantics).
         // Generation validation matches remember_grant; a refused write is logged for the same reason.
         if !pending_approvals::remember_denial(
@@ -832,12 +846,10 @@ pub async fn decide_approval(
     }
     // The convergence broadcast happens after the engine call succeeds (same order as the cache writes): on
     // failure nothing is broadcast — other surfaces' cards stay pending and the originator gets the error; the removed registration went back as-is, so retries can still settle.
-    if outcome.is_ok() {
-        let payload =
-            pending_approvals::approval_resolved_payload(&session_id, &approval_id, &decision);
-        let _ = app.emit("chat:approval_resolved", payload.clone());
-        crate::features::remote_control::forward_app_event(&app, "chat:approval_resolved", payload);
-    }
+    let payload =
+        pending_approvals::approval_resolved_payload(&session_id, &approval_id, &decision);
+    let _ = app.emit("chat:approval_resolved", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "chat:approval_resolved", payload);
     outcome
 }
 
@@ -917,7 +929,9 @@ pub async fn set_session_mode(
             ask_error = Some(format!("set_session_mode({sid}): {error}"));
         }
     }
-    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app)
+        .await
+        .map_err(|sync_error| fold_persist_error(sync_error, &mode_persist_error))?;
     // The ask-half failure rides the outcome instead of the Err lane (review
     // P2, receipt-equals-effective): returning Err after the broadcast made
     // the UI report "switch failed" while the mode was already effective and
@@ -999,6 +1013,9 @@ pub(super) fn ensure_mode_target_session(
 /// an already-persisted switch: the user can retry the toggle, and the retry re-runs the sync against the
 /// persisted mode and heals the engine. The broadcast fires only after the sync succeeded, so no surface
 /// is told the new mode while the engine still holds the old ruleset.
+/// When the mode write itself also failed to persist, the switch commands
+/// fold that `persist_error` into the surfaced error ([`fold_persist_error`])
+/// instead of dropping it — a double failure must not report only one half.
 async fn publish_session_mode_change(
     session_id: &str,
     store: &SessionStore,
@@ -1009,6 +1026,22 @@ async fn publish_session_mode_change(
     let state = store.mode_state(session_id);
     emit_mode_changed(app, session_id, state.mode, state.ask_on_guardrail);
     Ok(state)
+}
+
+/// Folds an already-computed persist failure into a publication (sync)
+/// failure instead of dropping it (review: the bare `?` on
+/// `publish_session_mode_change` discarded `persist_error` exactly when both
+/// halves broke). Both halves ran, so the caller must see the full state:
+/// the sync error leads, the persist error rides as the suffix — the mode is
+/// effective (the in-memory switch landed; the next send assembles from it)
+/// but neither persisted nor synced.
+fn fold_persist_error(sync_error: String, persist_error: &Option<String>) -> String {
+    match persist_error {
+        Some(persist_error) => {
+            format!("{sync_error}; mode is effective but not persisted: {persist_error}")
+        }
+        None => sync_error,
+    }
 }
 
 /// When the session engine is live, hot-syncs the new safety posture into the base (`Op::ChangeMode`); when

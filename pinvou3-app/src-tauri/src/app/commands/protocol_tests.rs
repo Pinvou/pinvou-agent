@@ -1056,7 +1056,10 @@ fn decide_approval_gates_memory_writes_on_session_liveness() {
         .expect("decide_approval must sample session liveness before the cache writes");
     // interaction.rs 同样携带多字节注释，盲切字节会 panic 在 char boundary
     // 上（同文件 session_purged_hook 钉的 round-13 教训）：按字符边界取窗。
-    let window_end = body.len().min(start + 1600);
+    // 窗口 1800：容纳 round-32 在 liveness 采样与授权写之间插入的 outcome
+    // 恒真不变式注释（三个字节级别：注释 +约150B，齿不变——两次缓存写仍须
+    // 各自带 session_live 门）。
+    let window_end = body.len().min(start + 1800);
     let window_end = body
         .char_indices()
         .map(|(i, _)| i)

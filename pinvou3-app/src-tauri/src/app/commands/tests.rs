@@ -3539,7 +3539,13 @@ fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
             .expect_err("a nonexistent session must be rejected");
         assert!(error.contains("会话不存在"));
 
-        // 两次失败都不得留下持久化痕迹。
+        // round-32 评审 m1b：discard_plan 是第五条模式写命令，同样过存在性门
+        // （此前是唯一漏门的面——IPC 直调任意 id 可铸幻影条目）。
+        let error = ensure_mode_target_session("discard_plan", "ghost-session", &store)
+            .expect_err("a nonexistent session must be rejected");
+        assert!(error.contains("会话不存在"));
+
+        // 以上失败都不得留下持久化痕迹。
         let mode_map_after = std::fs::read_to_string(&mode_map).ok();
         assert_eq!(
             mode_map_before, mode_map_after,
