@@ -19,7 +19,7 @@ import { isNeutralEndingStatus } from './overlay-model.mjs';
 // timeline: subagents call the same model API, so billing/auth failures must
 // not put raw provider bodies (potentially credential-bearing) on screen.
 import { timelineDisplayError, timelineUserError } from '../conversation/deepseek-conversation.js';
-import { isInternalUserMessage } from '../../shared/internal-message.mjs';
+import { isInternalUserMessage, isToolResultCarrierBlocks } from '../../shared/internal-message.mjs';
 
 const FILE_CHANGE_TOOLS = new Set([
   'write',
@@ -53,7 +53,9 @@ function textBlocksOf(blocks) {
 /** 含正文且不含 tool_result 的 user 消息才是任务指令。 */
 function isTaskInstruction(message, blocks) {
   if (!message || message.role !== 'user') return false;
-  if (blocks.some((block) => block && block.type === 'tool_result')) return false;
+  // r25 MAJOR-2 同族集合传播（r26 minor 5，display-only）：与共享重载投影
+  // 同集，tool_search/code_execution 变体同样不构成任务指令。
+  if (isToolResultCarrierBlocks(blocks)) return false;
   return textBlocksOf(blocks).length > 0;
 }
 

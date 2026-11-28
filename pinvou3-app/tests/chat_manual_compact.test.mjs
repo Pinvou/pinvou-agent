@@ -168,16 +168,28 @@ assert.equal(state.tokens.input, 131072, 'accumulated input during a compaction 
 // forwards. The body pins below therefore live on the shared source (the
 // single body both lanes execute), and the two shell pins guarantee neither
 // lane silently drops the registration.
-const tauriCompactionShell = 'listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });';
+// Round-52 main integration: the payload bodies stay in the shared module
+// (#889), while the per-lane registration shell regains the PR's r40-M1
+// pre-capture (activity ownership + pre-swap-in cache invalidation with the
+// r46 refuseWhenBusy refusal) and forwards through the hooks parameter —
+// absent hooks keep the main semantics (web primitives absent; direct test
+// callers). The pins re-anchor to the forwarding call plus the pre-capture.
+const tauriCompactionShell = 'handleChatCompactionEvent(e, compactionHooks);';
+const tauriPreCapture = 'invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true })';
 const webSource = read('src', 'platform', 'web', 'bridge.js');
 const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
 const sharedCompactionBody = sharedSource.slice(sharedSource.indexOf('function handleChatCompactionEvent'));
+const tauriSource = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
 for (const [label, shell, laneSource] of [
-  ['tauri', tauriCompactionShell, read('src', 'platform', 'tauri', 'bridge', 'chat-events.js')],
-  ['web', 'listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });', webSource],
+  ['tauri', tauriCompactionShell, tauriSource],
+  ['web', 'pinvouSharedweb().handleChatCompactionEvent(e);', webSource],
 ]) {
   assert.ok(laneSource.includes(shell), `${label}: the chat:compaction registration must stay and keep forwarding to the shared payload body`);
 }
+assert.ok(
+  tauriSource.includes(tauriPreCapture),
+  'tauri: the r46-MAJOR-3 refuseWhenBusy pre-capture must stay in the compaction registration',
+);
 assert.ok(sharedCompactionBody.includes('state.compactingSessions[sid] = Date.now();'), 'start must set a timestamped marker (the read side heals off it)');
 assert.ok(sharedCompactionBody.includes('else delete state.compactingSessions[sid];'), 'the terminal must clear the marker via the else branch (done/fail/cancel all covered)');
 assert.ok(sharedCompactionBody.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), 'post_tokens must be written into the usage bar');

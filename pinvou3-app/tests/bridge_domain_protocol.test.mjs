@@ -242,6 +242,12 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
+  // Recomputed for the r41 minor-1 pre-swap invalidation: the chat:compaction
+  // handler now computes the shrink/ownership classification AND drops the
+  // cached buffer BEFORE onSessionEvent (inside runSyncOnSession's swap the
+  // invalidation's active leg would clear a background working set's array
+  // references — notices pushed into detached arrays). Same event set, no new
+  // invoke/listen entries — only the captured handler body changed.
   // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
   // edits inside the captured chat-events.js listener spans (stale tool_start
   // line number, three deleted English captions) — chat.js spans and the
@@ -272,13 +278,21 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
+  // Recomputed for the round-52 main integration (main #889 dedup sweep +
+  // release 1.0.3 rebased on the r52 fix wave): the compaction listener
+  // registration shell is restored per lane (pre-capture + hooks delegation
+  // to the shared handler — PR r40-M1/r41-minor-1/r46-MAJOR-3 pre-capture
+  // ported onto the #889 shared-module refactor); invoke payloads and event
+  // names are unchanged. Recomputed again when the registration shell's
+  // comment wording moved to English per CONTRIBUTING (listener bodies and
+  // comment wording are part of the digest).
   // Recomputed for the debtsweep L4 dedup rebased on the streaming htmlSource
   // addition: the payload bodies moved verbatim into bridge-shared-helpers.js
   // while the delta listener gained the htmlSource provenance cell; both
   // recomputations are combined below. Re-verified on the usage-meter
   // occupancy fix rebased on top: the per-request context_input_tokens
   // consumption rides in the shared payload body, so no lane signature moved.
-  chat: 'ff28e11c9e8a17c95a5425ab18b992517e13411a0553f4577f49dd0e2d2b4705',
+  chat: 'd20512971494971c792d8f8d814e8cbe70100da4f22b7271e1c00c18a95097f6',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -547,6 +561,20 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
+// r47 minor 3 (checkpoints review): the curated-map VALUES for the two
+// sessions functions are pinned callable the same way - the presence-only
+// key assert above cannot see the r8 shape where the factory exports the
+// function but the curated map points at `undefined`.
+assert.equal(typeof api.sessions.switchToSessionInternal, 'function',
+  'sessions factory must export callable switchToSessionInternal (r47 minor 3)');
+assert.equal(typeof api.sessions.invalidateSessionBuffer, 'function',
+  'sessions factory must export callable invalidateSessionBuffer (r47 minor 3)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {

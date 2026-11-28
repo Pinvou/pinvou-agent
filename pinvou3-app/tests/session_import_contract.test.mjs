@@ -11,7 +11,7 @@ const settings = readFileSync(new URL('../src/features/settings/SettingsView.jsx
 const chatView = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
 const timeline = readFileSync(new URL('../src/features/conversation/ConversationTimeline.jsx', import.meta.url), 'utf8');
 const forkEntries = readFileSync(new URL('../src/features/chat/forkTurnEntries.js', import.meta.url), 'utf8');
-const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js', import.meta.url), 'utf8');
+const checkpoints = readFileSync(new URL('../src/features/conversation/checkpoints.js', import.meta.url), 'utf8');
 
 // 1. 导入处理器住在懒加载的 SettingsView：bridge 守卫、in-flight 早退、
 // 取消（null）静默返回、成功/失败 toast 组成，主入口不再携带导入面。

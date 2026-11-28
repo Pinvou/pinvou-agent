@@ -61,6 +61,12 @@ function pinvouSharedtauriChatEvents() {
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
     const normalizedPath = context.normalizedPath;
+    // r39 M1：压缩收缩重同步原语（bridge.js 注入；desktop only）。失效原语与
+    // rewind 重载共用（bridge.sessions.invalidateSessionBuffer / 回退重载走的
+    // switchToSessionInternal forceDurableLoad 变体），缺席时（旧桥壳/异常装配）
+    // 退化为现状——不失效、调和门诚实隐藏，不新增崩溃面。
+    const invalidateSessionBuffer = context.invalidateSessionBuffer;
+    const switchToSessionInternal = context.switchToSessionInternal;
 
     // Stream text can arrive much faster than a WebView can paint. Publish at
     // most once per animation frame, with a bounded timer fallback for hidden
@@ -83,7 +89,12 @@ function pinvouSharedtauriChatEvents() {
     // usage/compaction/plan 事件 payload 处理体统一在 shared/bridge-shared-helpers.js
     // （web 车道同段逐字一致）；lane 只保留 listen/onSessionEvent 注册壳并转发。
     function handleChatUsageEvent(e) { return pinvouSharedtauriChatEvents().handleChatUsageEvent(e); }
-    function handleChatCompactionEvent(e) { return pinvouSharedtauriChatEvents().handleChatCompactionEvent(e); }
+    // r52 P2 (review): forward the hooks parameter - the listener's
+    // pre-capture results (r40-M1 capture, refuseWhenBusy verdict, the
+    // foreground force-durable-reload closure) ride hooks into the shared
+    // handler; dropping the argument here left doneNotice dead-on-wire on
+    // the desktop lane.
+    function handleChatCompactionEvent(e, hooks) { return pinvouSharedtauriChatEvents().handleChatCompactionEvent(e, hooks); }
     function handleChatPlanSnapshotEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanSnapshotEvent(e); }
     function handleChatPlanReadyEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanReadyEvent(e); }
     function handleChatPlanResolvedEvent(e) { return pinvouSharedtauriChatEvents().handleChatPlanResolvedEvent(e); }
@@ -1259,7 +1270,92 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () { handleChatUsageEvent(e); }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });
+  listen("chat:compaction", function (e) {
+    // r40 M1 (PR): the real activity ownership must be captured BEFORE
+    // entering onSessionEvent - runSyncOnSession temporarily rewrites
+    // state.activeSessionId to the event's sid for background sessions
+    // (restored in finally), so anything read inside the handler is always
+    // the swapped-in value. The r39 first version classified inside the
+    // handler: background compactions always took the active arm, yanking a
+    // user who was reading or typing into the just-compacted background
+    // session (the foreground-steal regression) while the "background arm"
+    // became dead code. This captured value is true if and only if the
+    // compacted session was the foreground session at dispatch time (events
+    // without a sid do no resync; they only hang the notice).
+    const compactionSid = e.payload && e.payload.session_id;
+    const prePhase = e.payload && e.payload.phase;
+    const preBefore = Number(e.payload && e.payload.messages_before);
+    const preAfter = Number(e.payload && e.payload.messages_after);
+    const compactionOuterActive =
+      !!compactionSid && compactionSid === state.activeSessionId;
+    // r41 minor 1: the cache invalidation must likewise run BEFORE the
+    // swap-in domain - invalidateSessionBuffer's active leg (clearing the
+    // live working-set array references) misfires for a background sid
+    // inside the swap-in domain: after state.messages/chatItems are cleared
+    // they lose touch with the working-set objects, the following
+    // addSystemItem pushes into the detached arrays, and finally persists the
+    // detached content into orphan objects with nowhere to render. The
+    // pre-swap invalidation makes both legs route naturally: the active
+    // session clears the live projection + stashes the draft, a background
+    // session deletes the cache + stashes the draft. The shrink verdict is
+    // computed here too (the payload is available verbatim); the handler
+    // only consumes the results.
+    const compactionShrank = prePhase === "done" &&
+      (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
+    const compactionResync = compactionShrank && !!compactionSid &&
+      typeof invalidateSessionBuffer === "function" &&
+      (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
+    // r46 MAJOR-3: refuseWhenBusy feeds the compaction arm - when
+    // busy/queued (a queued follow-up waits to be sent) is present the
+    // invalidation is refused and the cache is deliberately kept (the queued
+    // messages and busy state are untouched by the compaction window), and
+    // the foreground arm's forced reload is skipped with it (the reload's
+    // working-set save/replace would wipe queued/busy, exactly bypassing the
+    // refusal). On refusal the reconciliation gate keeps honestly hiding the
+    // entries; the notice still mounts (the cache is intact, so the mount
+    // lands correctly).
+    const compactionInvalidated =
+      compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
+    onSessionEvent(e, function () {
+      // r44 integration (main's #834 union, extracted into the shared
+      // handler by #889): the compaction handler body lives in the shared
+      // module (bridge-shared-helpers); the PR's pre-swap capture and
+      // invalidation plus the foreground force-durable-reload arm are
+      // injected via hooks - without hooks the shared handler keeps main's
+      // semantics (zero change for the web/test callers).
+      const compactionHooks = compactionInvalidated ? {
+        // r39 M1: after a real shrink (the cache was already invalidated
+        // before the swap-in) the foreground session immediately force-reloads
+        // from disk: the timeline rebuilds from the post-shrink transcript,
+        // ordinals realign with the ledger count, and the chips render again.
+        // The done notice attaches after the reload completes (a durable load
+        // rebuilds the whole timeline; mounting first would be swallowed).
+        // r42 minor 9: boolean contract (true on success, false on failure,
+        // never rejects) - a failed or superseded reload still runs then(),
+        // so the gate attaches the notice only when the reload actually
+        // succeeded. A background shrink (already invalidated) mounts the
+        // notice as usual - r41 minor 1, stated honestly: a mount inside the
+        // swap-in domain is best-effort for background sessions (a stub
+        // buffer's notice is not picked up by the switch fast path and
+        // disappears once the durable load lands); the background user's
+        // source of truth is the persisted timeline after switching back.
+        doneNotice: function () {
+          if (compactionOuterActive && typeof switchToSessionInternal === "function") {
+            Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
+              .then(function (reloaded) {
+                if (reloaded === true) {
+                  addSystemItem(bt("compactDone") + (e.payload && e.payload.auto ? bt("compactAuto") : "") + " " + (e.payload && e.payload.message || ""));
+                }
+              })
+              .catch(function () {});
+          } else {
+            addSystemItem(bt("compactDone") + (e.payload && e.payload.auto ? bt("compactAuto") : "") + " " + (e.payload && e.payload.message || ""));
+          }
+        },
+      } : undefined;
+      handleChatCompactionEvent(e, compactionHooks);
+    });
+  });
 
   // Sub-agent tool gates happen inside the foundation and do not produce an
   // approval card. Project the final allow/deny decision into the visible

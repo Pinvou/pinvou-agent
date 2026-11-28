@@ -8,6 +8,12 @@ import { turnHasUserText } from '../conversation/deepseek-conversation.js';
  * fork_session 的底座 user_turn_prompt_indices（Editable 分类）对齐：
  * - 纯图片 turn 与压缩摘要头 turn（stamped 载体/粘贴摘要头，见
  *   turnHasUserText）不计序号；
+ * - frontendEcho turns (frontend-only echoes of card answers) hold no
+ *   ordinal (r52 M6, review): rewindEntriesByTurnId has skipped that shape
+ *   since review r5 (the backend count_user_turns does not count ToolResult
+ *   echoes), but this table did not - from the first echo onward fork
+ *   ordinals ran +1, so "fork from this turn" forked one turn too many or
+ *   errored; the parity both headers claim holds true again from now on;
  * - 引擎 `<context_update>` 运行时消息（pinned 上下文漂移，投影层不产生
  *   turn）按后端 era 口径计边界：bridge 层在投递/重放两路把每个落下的
  *   context_update 计入待消费计数、随下一个用户气泡下发
@@ -25,6 +31,10 @@ export function forkEntriesByTurnId(turns) {
   let ordinal = 0;
   for (const turn of turns || []) {
     if (!turn || turn.id == null || !turnHasUserText(turn)) continue;
+    // r52 M6 (review): a frontendEcho (card-answer echo) is not a backend
+    // turn - align with rewindEntriesByTurnId's r5 skip, or every ordinal
+    // after an echo runs +1.
+    if (turn.userItem && turn.userItem.frontendEcho) continue;
     ordinal += 1 + ((turn.userItem && turn.userItem.runtimeContextUpdatesBefore) || 0);
     entries.set(turn.id, ordinal);
   }

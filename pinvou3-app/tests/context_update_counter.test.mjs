@@ -305,8 +305,8 @@ assert.ok(
   '共享 compaction 体的 done 腿必须以完整 if 行接线计数基线重置（r7 M2 + r8 完整行针）',
 );
 assert.ok(
-  chatEventsJs.includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });'),
-  'tauri 车道必须保留 chat:compaction 注册壳并转发共享体',
+  chatEventsJs.includes('handleChatCompactionEvent(e, compactionHooks);'),
+  'the tauri lane must keep its chat:compaction registration shell forwarding to the shared body through hooks (the post-round-52-integration shell shape)',
 );
 const bridgeMessagesJs = read('src', 'shared', 'bridge-messages.js');
 assert.ok(
@@ -319,7 +319,7 @@ assert.ok(
 );
 const webBridgeJs = read('src', 'platform', 'web', 'bridge.js');
 assert.ok(
-  webBridgeJs.includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });'),
+  webBridgeJs.includes('pinvouSharedweb().handleChatCompactionEvent(e);'),
   'web 车道必须保留 chat:compaction 注册壳并转发共享体（r8：完整行针在共享体上同时咬住删除与 if false && 禁用——裸调用名针会被禁用突变骗绿）',
 );
 assert.ok(

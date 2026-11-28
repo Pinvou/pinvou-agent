@@ -840,11 +840,25 @@ pub async fn edit_last_turn(
     expected_transcript_revision: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<(), String> {
     if new_message.trim().is_empty() {
         return Err("empty new_message".into());
     }
     let sid = require_active_sid(session_id, &store)?;
+    // 车道门（与 chat()/accept_plan/compact_now 同口径）：edit_last_turn 在 web 侧
+    // access-policy allowlist 内，ACP 会话 id 直发会被 reserve→truncate→resend
+    // 以原生引擎改写该会话历史；桌面 work 侧调用方只面向原生会话，不受影响。
+    if acp_pool.is_acp(&sid) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
+    // r52 minor 4 (review): aux side-chats (fork's refusal shape) - the
+    // native lane's reserve/truncate/resend history rewrite is not covered
+    // by the aux engine semantics, so raw IPC could rewrite aux history via
+    // the native lane.
+    if crate::features::sessions::validators::is_aux_session_id(&sid) {
+        return Err("aux side-chats do not support edit_last_turn".to_string());
+    }
     let reservation = pool.reserve_turn(&sid).map_err(|e| {
         crate::platform::paths::redact_storage_prefix(&format!("reserve edit_last_turn: {e:#}"))
     })?;

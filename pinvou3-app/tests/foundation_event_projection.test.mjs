@@ -106,9 +106,9 @@ assert.match(gateNotice.text, /outside delegated scope/);
 const sharedCompactionSource = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(sharedCompactionSource.includes('phase === "cancel"'));
 assert.ok(sharedCompactionSource.includes('bt("compactCancel")'));
-assert.ok(read('src', 'platform', 'web', 'bridge.js').includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });'),
+assert.ok(read('src', 'platform', 'web', 'bridge.js').includes('pinvouSharedweb().handleChatCompactionEvent(e);'),
   'the web lane must keep its chat:compaction registration forwarding to the shared payload body');
-assert.ok(read('src', 'platform', 'tauri', 'bridge', 'chat-events.js').includes('listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });'),
+assert.ok(read('src', 'platform', 'tauri', 'bridge', 'chat-events.js').includes('handleChatCompactionEvent(e, compactionHooks);'),
   'the tauri lane must keep its chat:compaction registration forwarding to the shared payload body');
 // chat:tool_gate_decision 是 Web lane 的 never-emitted 事件（不在 access-policy
 // allowed_events / RUST_FORWARDED_EVENTS），其监听器已随 dead-code sweep 移除；

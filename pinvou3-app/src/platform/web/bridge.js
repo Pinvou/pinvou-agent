@@ -4447,7 +4447,16 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // （tauri 车道同段逐字一致）；此处仅保留 listen/onSessionEvent 注册壳。
   listen("chat:usage", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatUsageEvent(e); }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });
+  listen("chat:compaction", function (e) {
+    // The web lane has no desktop-only invalidation/reload primitives (the
+    // rewind/undo rehydration seam in work-mode ChatView is desktop-only),
+    // so the tauri lane's pre-capture collapses to a no-op here and no hooks
+    // are injected - the shared handler keeps main semantics (the plain done
+    // notice).
+    onSessionEvent(e, function () {
+      pinvouSharedweb().handleChatCompactionEvent(e);
+    });
+  });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
@@ -4802,6 +4811,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
 function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
+    // 与 tauri 车道同款标记：前端-only 回显不计后端 turn（回退序号剔除用）。
+    if (!persist) item.frontendEcho = true;
     let message = null;
     addChatItem(item);
     if (persist) {

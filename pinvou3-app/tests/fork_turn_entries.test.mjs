@@ -116,3 +116,17 @@ assert.equal(forkEntriesByTurnId(null).size, 0);
   assert.equal(entries.get('t2'), 2);
 }
 
+
+// 9. A frontendEcho turn (a frontend-only card-answer echo) holds no
+// ordinal (r52 M6, review): the backend count_user_turns does not count
+// ToolResult echoes, and rewindEntriesByTurnId has skipped the shape since
+// review r5; fork did not - from the first echo onward fork ordinals ran
+// +1, so "fork from this turn" forked one turn too many or errored. The
+// parity both headers claim holds true again from now on.
+{
+  const echoTurn = { id: 'echo', userItem: { type: 'user', text: '卡片答案', frontendEcho: true } };
+  const entries = forkEntriesByTurnId([textTurn('t1'), echoTurn, textTurn('t2')]);
+  assert.equal(entries.has('echo'), false, 'frontendEcho turn must not render a fork entry');
+  assert.equal(entries.get('t1'), 1);
+  assert.equal(entries.get('t2'), 2, 't2 keeps ordinal 2 after the echo (was 3 before the skip)');
+}

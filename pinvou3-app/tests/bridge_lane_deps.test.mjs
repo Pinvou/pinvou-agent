@@ -230,7 +230,11 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages readers above; its sole caller
   // rerenderFromMessagesCore resolves it as a base-local declaration —
   // count only.
-  sharedFnCount: 330,
+  // Re-measured for the round-52 main integration (#889's shared-base
+  // surface rebased on the r52 fix wave; the compaction registration shell
+  // stays lane-local so the shared-base function count follows #889's
+  // measurement).
+  sharedFnCount: 331,
 };
 
 assert.equal(
