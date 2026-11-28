@@ -1613,6 +1613,20 @@ try {
       assert.equal(inter.settleModeSwitchSuccess('m2', inter.beginModeSwitchAttempt('m2')), true);
       assert.equal(inter.editResendSyncBlocked('m2'), false,
         '跨实例成功切换解除守卫（一次成功发布即收敛）');
+      // purge=真实删除契约（review P2）：purge 清全部栅栏态；驱逐路径
+      // （宿主钩子 reason==="evict"）不得调用 purge——守卫必须存活。
+      const failAttempt3 = sess.beginModeSwitchAttempt('m3');
+      modeReadGate2 = () => Promise.resolve({ mode: 'yolo' });
+      await sess.handleModeSwitchFailure('m3', new Error('boom3'), 'switchModeFailed: ', failAttempt3, 'plan', 'yolo');
+      assert.equal(inter.editResendSyncBlocked('m3'), true, 'm3 守卫已武装');
+      inter.purgeModeSyncStateForSession('m3');
+      assert.equal(inter.editResendSyncBlocked('m3'), false,
+        'purge（真实删除）清栅栏态——这是它存在的唯一契约');
+      // 宿主钩子必须以 reason==="delete" 门控 purge：驱逐是容量回收（引擎
+      // 仍活着,重开只重载消息,没有成功发布来修复同步）,守卫必须存活。
+      const tauriMain = read('src', 'platform', 'tauri', 'bridge.js');
+      assert.match(tauriMain, /interactionFeature\.purgeModeSyncStateForSession && reason === "delete"\)/,
+        '宿主 purgeSessionBuffer 钩子必须在真实删除时才清 mode-sync 栅栏态（驱逐保留守卫）');
     }
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；

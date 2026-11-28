@@ -1066,13 +1066,19 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
     onSessionBufferPurged: function (id, reason) {
       delete modeStateEpochs[id];
       // The interaction cluster's mode-sync side tables (switch attempts,
-      // settlement fences, unresolved-edit guards) are per-closure state
-      // with no applyDeletedSession caller of their own; the shared base
-      // already sweeps its own tables inside applyDeletedSession, so this
-      // hook covers the remaining cluster (interactionFeature is declared
-      // later in this closure — same lazy-lookup shape as modeStateEpochs,
-      // and purges only run after setup).
-      if (interactionFeature && interactionFeature.purgeModeSyncStateForSession) {
+      // settlement fences, unresolved-edit guards) must survive an LRU
+      // capacity eviction ("evict") and clear only on real session
+      // deletion ("delete"): an idle session whose engine hot-sync failed
+      // keeps that engine across eviction (load_session preserves it), so
+      // reopening reloads messages and the store mode without any
+      // successful mode publication — purging the unresolved guard here
+      // would let editLastTurn resend through an engine whose live posture
+      // was never confirmed. Real deletion is covered twice (the shared
+      // base's applyDeletedSession sweep and the gated call below), so the
+      // tables stay bounded. The interaction cluster is declared later in
+      // this closure — same lazy-lookup shape as modeStateEpochs, and
+      // purges only run after setup.
+      if (interactionFeature && interactionFeature.purgeModeSyncStateForSession && reason === "delete") {
         interactionFeature.purgeModeSyncStateForSession(id);
       }
       // The localStorage cache of scene events is the only recovery copy
