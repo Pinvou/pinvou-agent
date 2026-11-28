@@ -765,9 +765,17 @@ impl SessionStore {
 
     pub(crate) fn claim_pending_plan(&self, id: &str, plan_id: &str) -> Result<PendingPlanClaim> {
         let accepted_state = {
-            let default_mode = self.resolved_default_mode(id);
             let mut states = self.mode_states.write();
-            let entry = self.mode_state_entry(&mut states, id, default_mode);
+            // Bail BEFORE minting (round-16 review): mode_state_entry inserts
+            // a resolved-default entry on first touch, so a claim against a
+            // bogus id used to leave a phantom entry behind despite the
+            // plan_not_active error — the documented accept_plan carve-out
+            // (docs §3.1 "同样不铸任意条目") requires no entry to be minted.
+            // A legitimate claim always finds an existing entry: entering
+            // Plan minted it and the plan snapshot ticketed it.
+            let Some(entry) = states.get_mut(id) else {
+                bail!("plan_not_active");
+            };
             if entry.mode != SerializableMode::Plan
                 || entry.pending_plan_id.as_deref() != Some(plan_id)
                 || entry.plan_claim_in_flight.is_some()
