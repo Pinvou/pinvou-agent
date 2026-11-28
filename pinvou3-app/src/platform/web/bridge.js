@@ -2479,7 +2479,15 @@ async function exitScheduledRunChat() { return pinvouSharedweb().exitScheduledRu
   // owns a separate presentation index. Apply the committed deletion event
   // idempotently in either client so a remote delete cannot leave an ENOENT
   // sidebar row behind in the other one.
-function applyDeletedSession(id) { return pinvouSharedweb().applyDeletedSession(id); }
+function applyDeletedSession(id) {
+  const result = pinvouSharedweb().applyDeletedSession(id);
+  // Web-local per-sid map sweep (round-32 review m): the shared base clears
+  // its own mode-sync tables; the web closure's notice/dedup/fence maps are
+  // cleared here (see sweepWebSessionScopedMaps — hoisted declaration at the
+  // approval replay fence block).
+  sweepWebSessionScopedMaps(id);
+  return result;
+}
 
 function onSessionDeleted(listener) { return pinvouSharedweb().onSessionDeleted(listener); }
 
@@ -3157,7 +3165,20 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     const displayText = item.displayText == null
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
-    notify();
+    // Entry-arm throw safety (round-32 review P2, symmetric with the round-20
+    // M3 enqueue arm): notify() deliberately rethrows subscriber exceptions,
+    // and the re-queue catch below only exists on the doSendFor chain created
+    // after the claim — a throw here escapes flushQueued with the head
+    // already shifted and unreferenced (never dispatched, never re-queued,
+    // silently lost). Park it back and rethrow; no admission owner exists at
+    // this point (the claim follows), so there is nothing to release and the
+    // next flush trigger re-runs from a full queue.
+    try {
+      notify();
+    } catch (error) {
+      q.unshift(item);
+      throw error;
+    }
     const admissionToken = claimAdmission(sid);
     if (admissionToken == null) {
       // Unreachable today (no await sits between the owner guard above and
@@ -4408,12 +4429,39 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // bound as the approval_required dedup above (the backend deny payload carries the stable key; the payload has no approval id).
   const webGuardrailNoticeKeys = new Map();
   const WEB_GUARDRAIL_NOTICE_CAP = 512;
+  // Per-sid key registry (round-32 review m): the flat dedup key carries no
+  // per-call id, so two genuinely distinct denials of the same
+  // session+tool+reason in DIFFERENT turns were swallowed for the tab's
+  // lifetime — while the desktop twin dedups not at all. The dedup exists
+  // for reconnect replays / remount re-feeds, which echo denials of the
+  // turn still in flight, so the keys are filed per sid and cleared at that
+  // sid's turn terminal (bumped next to the approval replay fence): a
+  // within-turn replay still dedups; a later turn's same-shaped denial
+  // notifies again (the deny itself was always enforced — this is notice
+  // visibility only).
+  const webGuardrailNoticeKeysBySid = new Map();
+  function fileWebGuardrailNoticeKey(sid, dedupKey) {
+    const key = String(sid || "");
+    if (!key) return;
+    let keys = webGuardrailNoticeKeysBySid.get(key);
+    if (!keys) { keys = new Set(); webGuardrailNoticeKeysBySid.set(key, keys); }
+    keys.add(dedupKey);
+  }
+  function clearWebGuardrailNoticeKeysForSession(sid) {
+    const key = String(sid || "");
+    if (!key) return;
+    const keys = webGuardrailNoticeKeysBySid.get(key);
+    if (!keys) return;
+    webGuardrailNoticeKeysBySid.delete(key);
+    keys.forEach(function (dedupKey) { webGuardrailNoticeKeys.delete(dedupKey); });
+  }
   listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const reason = String(p.reason || "");
     const dedupKey = String(p.session_id || "") + "\u0000" + String(p.tool_name || "") + "\u0000" + reason;
     if (webGuardrailNoticeKeys.has(dedupKey)) return;
     webGuardrailNoticeKeys.set(dedupKey, true);
+    fileWebGuardrailNoticeKey(p.session_id, dedupKey);
     if (webGuardrailNoticeKeys.size > WEB_GUARDRAIL_NOTICE_CAP) {
       webGuardrailNoticeKeys.delete(webGuardrailNoticeKeys.keys().next().value);
     }
@@ -4482,6 +4530,27 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   }
   function webApprovalReplayTerminalFence(sid) {
     return webApprovalReplayTerminalSeq.get(String(sid)) || 0;
+  }
+  // Round-32 review m: the web-local per-sid maps above (plus
+  // webAutoSendNoticeSids / webApprovalNoticeIds / the guardrail key tables)
+  // are closure state the shared applyDeletedSession cannot reach — without a
+  // sweep a deleted session leaves entries until LRU eviction. Harmless today
+  // (session ids are never reused, so a stale entry cannot alias a new
+  // session), but the desktop lane sweeps its counterpart maps on buffer
+  // purge and the web matches that hygiene. webPendingApprovalsInFlight is
+  // deliberately NOT swept: an in-flight replay RPC for a deleted session
+  // still needs its re-entry flag until the invoke settles (the cleanup twins
+  // self-clear; a leaked flag only costs that sid's replay).
+  function sweepWebSessionScopedMaps(id) {
+    const key = String(id || "");
+    if (!key) return;
+    webAutoSendNoticeSids.delete(key);
+    clearWebGuardrailNoticeKeysForSession(key);
+    webApprovalReplayTerminalSeq.delete(key);
+    const approvalPrefix = key + "\u0000";
+    for (const dedupKey of [...webApprovalNoticeIds.keys()]) {
+      if (dedupKey.startsWith(approvalPrefix)) webApprovalNoticeIds.delete(dedupKey);
+    }
   }
   function webReplayPendingApprovals(sid) {
     if (!sid || webPendingApprovalsInFlight[sid]) return;
@@ -4759,6 +4828,10 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // terminal advances this session's terminal sequence — if the catch-up snapshot is still in flight
     // across it, the sequence mismatch on return invalidates the whole batch; the waiting notice/busy face must not be re-inserted into a finished session.
     bumpWebApprovalReplayTerminalSeq(sid);
+    // Guardrail notice dedup keys are scoped to the turn (round-32 review m):
+    // clearing here lets a later turn's same session+tool+reason denial notify
+    // again, while reconnect replays of the just-finished turn still dedup.
+    clearWebGuardrailNoticeKeysForSession(sid);
     const doneBuffer = sid ? getBuffer(sid) : null;
     // Match the Tauri client: rejected optimistic edits must hydrate the
     // unchanged authoritative transcript before another local turn starts.

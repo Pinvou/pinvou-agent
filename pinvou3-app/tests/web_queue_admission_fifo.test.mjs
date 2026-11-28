@@ -1018,6 +1018,79 @@ test('web 排队受理 FIFO：直发面改入队臂的 notify 抛出不得泄漏
   await sendA;
 });
 
+// ── Round-32 P2: flush 入队臂 notify 抛出不得丢失队首（与 M3 入队臂对称）──
+// flushQueued 入队臂次序为 shift → notify → claim，而消息回退 catch 只存在
+// 于 doSendFor 链（claim 之后才创建）；notify() 刻意重抛订阅者异常
+// （immediateNotify "Preserve synchronous callback error propagation"），
+// 修复前异常从 flushQueued 逃逸时队首已 shift 且无任何引用——消息静默丢失
+// （不派发、不回队、无通告）。修复 = shift+notify 包 try，异常时 unshift
+// 回队再重抛（此点尚无受理拥有者，无需释放；fail-loud 语义不变）。触发面
+// 选用 chat:mode_changed 监听（同步体直呼 flushQueued）：异常同步传播出
+// rt.emit，测试用 try/catch 确定性接住，无 unhandled rejection 时序噪声。
+test('web 排队受理 FIFO：flush 入队臂 notify 抛出必须把队首放回队列（round-32 P2）', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+
+  // A 直发受理（plan）；B 排队后其 flush 撞 Auto 被拒回队（对照场景），
+  // 落定后 busy=false、B 在队首、无受理拥有者——mode_changed 的补排空即
+  // 入队臂的确定性触发点。
+  let autoNow = false;
+  rt.setHandler('get_mode_state', () => Promise.resolve({ mode: autoNow ? 'auto' : 'plan', multi_agent: false }));
+  const dispatchOrder = [];
+  rt.setHandler('web_access_chat', (args) => { dispatchOrder.push(args.message); return Promise.resolve({}); });
+  const sendA = rt.flat.sendMessage('A');
+  await tick(); await tick();
+  await sendA;
+  assert.equal(rt.view().busy, true, 'precondition: A 已受理');
+  await rt.flat.sendMessage('B');
+  assert.equal(rt.view().queued.length, 1, 'precondition: B 排队');
+
+  autoNow = true; // B 的 flush 撞 Auto → 拒绝回队
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 1301 });
+  await tick(); await tick();
+  assert.equal(rt.view().queued.length, 1, 'precondition: B 被拒回队');
+  assert.equal(rt.view().busy, false, 'precondition: busy 已落');
+  assert.equal(dispatchOrder.length, 1, 'precondition: B 未被派发');
+
+  let armed = true;
+  const unsubscribe = rt.flat.subscribe(function (snapshot) {
+    const queued = (snapshot && snapshot.queued) || [];
+    // 拒绝回队通知里 B 在队列（不命中）；mode_changed 触发的 flush 入队臂
+    // notify 在 shift 之后——busy=false 且 B 已离队，命中并抛出。
+    if (armed && snapshot && snapshot.busy === false &&
+        !queued.some(item => item && item.text === 'B')) {
+      armed = false;
+      throw new Error('subscriber boom on the flush-entry notify');
+    }
+  });
+
+  let caught = null;
+  autoNow = false; // 让位后若重排，B 可正常受理（恢复阶段用）
+  try {
+    rt.emit('chat:mode_changed', { session_id: 'chat-a', mode: 'plan' });
+  } catch (error) {
+    caught = error;
+  }
+  await tick(); await tick();
+  unsubscribe();
+
+  assert.ok(caught && String(caught.message).includes('subscriber boom on the flush-entry notify'),
+    '异常必须同步传播（fail-loud 契约不变）');
+  const viewAfterThrow = rt.view();
+  assert.equal(viewAfterThrow.queued.length, 1,
+    '队首 B 必须被 flush 入队臂放回队列（修复前：已 shift 且无引用，静默丢失）');
+  assert.equal(viewAfterThrow.queued[0].text, 'B', '回队的是 B 本身');
+  assert.equal(dispatchOrder.length, 1, '异常路径不得产生任何派发');
+
+  // 机器未冻结：再次 mode_changed 触发补排空，B 照常起姿态查询并 FIFO 派发
+  // （受理拥有者未泄漏——异常点在 claim 之前）。
+  rt.emit('chat:mode_changed', { session_id: 'chat-a', mode: 'plan' });
+  await tick(); await tick();
+  assert.deepEqual(dispatchOrder, ['A', 'B'], 'B 照常 FIFO 派发');
+  assert.equal(rt.view().queued.length, 0, '队列不冻结');
+  await tick(); await tick();
+});
+
 
 // ── Structural pins (review 5812242993: asymmetric red arms of the direct-send fence)────────────────────────
 // The direct-send fence is defense in depth: deleting either of the two

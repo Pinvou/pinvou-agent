@@ -443,7 +443,12 @@ const expectedProtocolHashes = {
   // cumulative-input dirty guard); the extracted call set is unchanged
   // (98 invoke/listen entries both sides) — no new command or event
   // surface.
-  webWireSurface: 'e5be4957949f23b6acb00a29a77ac16bd34ed55c4f66291e04164cded2ae39fd',};
+  // Recomputed for the round-32 review fix wave: the flushQueued entry-arm
+  // throw-safety try/catch, the turn-scoped guardrail notice dedup (per-sid
+  // key registry cleared at the terminal bump), and the web-local per-sid
+  // table sweep on applyDeletedSession — string/closure edits only, the
+  // invoke/listen call surface is unchanged (no new command or event).
+  webWireSurface: '1ae3c087b480d2a590c62809f1969408188ff8abffbe78c8e0a1db1f2db9cc1d',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
