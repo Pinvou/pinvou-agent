@@ -383,6 +383,14 @@ pub fn browser_workspace_restore_dir() -> PathBuf {
 pub fn browser_workspace_restore_json(session_token: &str) -> PathBuf {
     browser_workspace_restore_dir().join(format!("{session_token}.json"))
 }
+/// Staging directory for in-app browser downloads: `~/.pinvou3/browser/downloads/`.
+///
+/// The system WebView streams each transfer into a private subdirectory here
+/// until the user picks a destination in the OS save dialog. It holds no state
+/// worth keeping: whatever an earlier process left is deleted at startup.
+pub fn browser_download_staging_dir() -> PathBuf {
+    browser_home().join("downloads")
+}
 /// Most recent native-host or app-owned CDP connection failure: `{ reason, at }`. The
 /// wrapper writes it and Rust may inject an allowlisted model-visible explanation while it
 /// remains fresh for 24 hours. It never describes external Chrome state.

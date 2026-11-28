@@ -14,10 +14,19 @@
 //! and are not forwarded to the remote Web UI (the relay `access-policy.json`
 //! allowlist contains no `browser:*` events or commands). Web/mobile browser tabs
 //! and interaction remain future work and must not be documented as supported.
+//!
+//! File downloads from a page stream into private staging and are placed only
+//! where the user chooses through the OS save dialog; see [`downloads`].
 
 mod cdp;
 mod core;
+mod downloads;
 mod platform;
+
+// Targeted re-export: the composition root registers the download coordinator
+// as its own managed state, so it never waits on the browser-state lock while a
+// WebView callback reports a download.
+pub(crate) use downloads::{BrowserDownloads, DownloadPage};
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};

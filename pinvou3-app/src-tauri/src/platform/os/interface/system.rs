@@ -194,6 +194,12 @@ pub fn try_make_private_dir(path: &Path) -> Result<(), std::io::Error> {
     super::super::platform::try_make_private_dir(path)
 }
 
+/// Creates the directory already restricted through the active OS adapter,
+/// so no permissive window exists between creation and restriction.
+pub fn create_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    super::super::platform::create_private_dir(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,6 +27,15 @@ import {
   shouldShowNativeBrowserSurface,
 } from './browser-display.mjs';
 import {
+  DOWNLOAD_NOT_RETRYABLE,
+  downloadFinishedNotice,
+  downloadNoticeCanDiscard,
+  downloadNoticeCanSaveAs,
+  downloadNoticesReducer,
+  downloadStartedNotice,
+  latestDownloadNotice,
+} from './download-notice.mjs';
+import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -107,6 +116,7 @@ export function BrowserView({
     persistenceWarningReducer,
     EMPTY_PERSISTENCE_WARNING,
   );
+  const [downloadNotices, dispatchDownloadNotice] = useReducer(downloadNoticesReducer, {});
   const [controlOwner, setControlOwner] = useState(null);
   const [controlRevision, setControlRevision] = useState(null);
   const wheelRef = useRef(null);
@@ -166,6 +176,7 @@ export function BrowserView({
     return true;
   }, []);
   const persistenceWarning = visiblePersistenceWarning(persistenceWarningState);
+  const downloadNotice = latestDownloadNotice(downloadNotices);
   const showingNewTab = running && isInternalBlankPageUrl(url);
   const nativeSurfaceReady = shouldShowNativeBrowserSurface({
     statusResolved: initialStatusResolved,
@@ -197,6 +208,12 @@ export function BrowserView({
     setUrl('');
     setUrlInput('');
     setActiveSession(null);
+    // Defensive: every mount site keys this component by session id, so the
+    // reducer state dies with the unmount. If a future site ever reuses the
+    // component across sessions, the previous session's notices — including
+    // an `unsaved` one whose resolution event the old listeners can no
+    // longer deliver — must not leak into the new session's workspace.
+    dispatchDownloadNotice({ type: 'reset' });
   }, [sessionId]);
 
   useEffect(() => {
@@ -552,6 +569,7 @@ export function BrowserView({
       setControlOwner(null);
       setControlRevision(null);
       dispatchPersistenceWarning({ type: 'clear' });
+      dispatchDownloadNotice({ type: 'reset' });
       setInitialStatusResolved(true);
     }));
     guard('browser:control-changed', listenTauri('browser:control-changed', (event) => {
@@ -602,7 +620,32 @@ export function BrowserView({
       const payload = event.payload || {};
       if (payload.sessionId !== sessionId) return;
       errorEventEpochRef.current += 1;
-      setError(t.browserDownloadBlocked(payload.source || ''));
+      // `limit` means too many downloads are live and `unavailable` that the
+      // download surface is out of service; `staging` means no staging file
+      // could be created. Anything else is an unknown future reason, so its
+      // copy stays generic instead of claiming a staging failure.
+      setError(payload.reason === 'limit'
+        ? t.browserDownloadBusy(payload.source || '')
+        : payload.reason === 'unavailable'
+          ? t.browserDownloadUnavailable(payload.source || '')
+          : payload.reason === 'staging'
+            ? t.browserDownloadBlocked(payload.source || '')
+            : t.browserDownloadBlockedGeneric(payload.source || ''));
+    }));
+    // A download streams into private staging while the OS save dialog asks
+    // where it belongs. Events carry the file name and outcome only.
+    guard('browser:download-started', listenTauri('browser:download-started', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      const payload = event.payload || {};
+      if (payload.sessionId !== sessionId) return;
+      dispatchDownloadNotice({ type: 'report', notice: downloadStartedNotice(t, payload) });
+    }));
+    guard('browser:download-finished', listenTauri('browser:download-finished', (event) => {
+      if (disposed || !browserViewMountedRef.current) return;
+      const payload = event.payload || {};
+      if (payload.sessionId !== sessionId) return;
+      const notice = downloadFinishedNotice(t, payload);
+      if (notice) dispatchDownloadNotice({ type: 'report', notice });
     }));
     guard('browser:persistence-warning', listenTauri('browser:persistence-warning', (event) => {
       if (disposed || !browserViewMountedRef.current) return;
@@ -633,6 +676,23 @@ export function BrowserView({
         listenerRegistrationFailed = true;
         console.error('[browser] listener registration timed out; enabling reconciliation');
       }
+      // An `unsaved` notice whose event landed while this workspace was not
+      // mounted (view switch, background session) would otherwise strand its
+      // record with no UI to save or discard it: re-report the live ones on
+      // mount, once the listeners above have settled so nothing can fall into
+      // the gap between the static answer and the events it missed. The
+      // command answers for every session, so this workspace keeps only its
+      // own records — the same scoping the listeners enforce. The reducer
+      // keeps entries this session already knows, so a stale snapshot cannot
+      // resurrect a dismissed or updated notice.
+      invokeTauri('browser_download_pending').then((payloads) => {
+        if (disposed || !Array.isArray(payloads)) return;
+        const notices = payloads
+          .filter((payload) => payload?.sessionId === sessionId)
+          .map((payload) => downloadFinishedNotice(t, payload))
+          .filter(Boolean);
+        if (notices.length) dispatchDownloadNotice({ type: 'backfill', notices });
+      }).catch(() => {});
       const hydrateInitialStatus = async (failedAttempt = 0) => {
         // ok is false only when refreshStatus's own status RPC threw; stale
         // rounds resolve true and must not schedule a bounded retry.
@@ -776,6 +836,32 @@ export function BrowserView({
       reportErrorForOperation(errorOperationEpoch, e);
     }
   }, [beginErrorOperation, reportErrorForOperation, url]);
+
+  // ---- Downloads ----
+  const saveDownloadAs = useCallback(async () => {
+    if (!downloadNoticeCanSaveAs(downloadNotice)) return;
+    const operationEpoch = beginErrorOperation();
+    try {
+      await invokeTauri('browser_download_save_as', { downloadId: downloadNotice.downloadId });
+    } catch (e) {
+      // The host rejects a retry with a bare code when the record left the
+      // retryable state (another placement already finished, for example);
+      // surface it in the user's language instead of the raw code.
+      reportErrorForOperation(
+        operationEpoch,
+        String(e).includes(DOWNLOAD_NOT_RETRYABLE) ? t.browserDownloadNotRetryable : e,
+      );
+    }
+  }, [beginErrorOperation, downloadNotice, reportErrorForOperation, t.browserDownloadNotRetryable]);
+  const discardDownload = useCallback(async () => {
+    if (!downloadNoticeCanDiscard(downloadNotice)) return;
+    const operationEpoch = beginErrorOperation();
+    try {
+      await invokeTauri('browser_download_discard', { downloadId: downloadNotice.downloadId });
+    } catch (e) {
+      reportErrorForOperation(operationEpoch, e);
+    }
+  }, [beginErrorOperation, downloadNotice, reportErrorForOperation]);
 
   // ---- Tabs ----
   const createTab = useCallback(async () => {
@@ -1122,6 +1208,58 @@ export function BrowserView({
             </button>
           </div>
           <div className="mt-1" style={{ opacity: 0.75, wordBreak: 'break-all' }}>{persistenceWarning}</div>
+        </div>
+      )}
+      {running && downloadNotice && (
+        <div
+          data-testid="browser-download-notice"
+          role="status"
+          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-sm"
+          style={{
+            background: isDark ? '#1C2530' : '#EDF3FB',
+            border: `1px solid ${isDark ? '#2E4258' : '#C3D5EC'}`,
+            color: isDark ? '#C3D9F2' : '#1F4E79',
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1" style={{ wordBreak: 'break-word' }}>{downloadNotice.message}</div>
+            {downloadNoticeCanSaveAs(downloadNotice) && (
+              <button
+                type="button"
+                data-testid="browser-download-save-as"
+                className="shrink-0 rounded border border-current px-2 py-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={saveDownloadAs}
+              >
+                {t.browserDownloadSaveAs}
+              </button>
+            )}
+            {downloadNoticeCanDiscard(downloadNotice) && (
+              <button
+                type="button"
+                data-testid="browser-download-discard"
+                className="shrink-0 rounded border border-current px-2 py-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={discardDownload}
+              >
+                {t.browserDownloadDiscard}
+              </button>
+            )}
+            {/* An `unsaved` notice has no X: dismissing it would orphan the
+                record, which keeps holding a live slot and its staged file
+                with no event to ever re-raise it. Discard download is the
+                designed exit and reports the cancellation itself. */}
+            {downloadNotice.status !== 'unsaved' && (
+              <button
+                type="button"
+                data-testid="browser-download-notice-dismiss"
+                title={t.winClose}
+                aria-label={t.winClose}
+                className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                onClick={() => dispatchDownloadNotice({ type: 'dismiss', downloadId: downloadNotice.downloadId })}
+              >
+                <XIcon size={13} />
+              </button>
+            )}
+          </div>
         </div>
       )}
 

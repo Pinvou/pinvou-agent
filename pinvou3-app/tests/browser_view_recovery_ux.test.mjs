@@ -197,7 +197,9 @@ test('BrowserView invalidates async work and ignores queued events after unmount
   const queuedEventGuards = browserView.match(
     /if \(disposed \|\| !browserViewMountedRef\.current\) return;/g,
   ) || [];
-  assert.equal(queuedEventGuards.length, 11);
+  // Every browser:* listener queues through this guard, including the two
+  // download listeners.
+  assert.equal(queuedEventGuards.length, 13);
   assert.match(
     browserView,
     /await invokeTauri\('browser_activate_tab'[\s\S]*?!browserViewMountedRef\.current/,

@@ -161,6 +161,19 @@ pub fn try_make_private_dir(path: &Path) -> Result<(), std::io::Error> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
+/// Creates `path` (with parents) directly in owner-only mode, so no window
+/// exists in which another local user could reach into it. `mkdir` applies
+/// the umask to this mode, and `0o700` survives every umask that only
+/// removes bits.
+pub fn create_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(path)
+}
+
 /// 连接器 CLI 命令构造（linux 与 macOS 同策略，收口于此；unsupported.rs 的
 /// 兜底桩仅在非 unix 目标保留）。优先级：
 /// 1. `npm` 优先走随包 Node + npm-cli.js（GUI 无系统 PATH 保证）；

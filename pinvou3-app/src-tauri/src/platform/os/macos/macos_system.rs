@@ -14,7 +14,7 @@ pub fn current_system_locale() -> Option<String> {
 
 // Shared Unix helpers come from the same posix.rs implementation as Linux.
 pub use super::super::posix::{
-    bundled_node, make_private_dir, process_alive, try_make_private_dir,
+    bundled_node, create_private_dir, make_private_dir, process_alive, try_make_private_dir,
 };
 
 /// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。

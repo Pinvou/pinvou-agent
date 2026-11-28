@@ -69,7 +69,7 @@ A popup caused by an already-started dispatch may retain Agent ownership only by
 _Avoid_: treating page focus as ownership, concurrent user and Agent input
 
 **Protected browser capability request**:
-A browser side-panel flow that presents a request and waits for the user before a page or Agent may use files, media devices, location, notifications, or another protected capability. This PR does not implement a general approval broker. Embedded downloads are denied by default and instruct the user to open the page in the system browser. No file-upload tool is exposed, and direct calls or workarounds are forbidden. Other capabilities retain the engine's default deny-or-prompt behavior and must never be granted silently.
+A browser flow that presents a request and waits for the user before a page or Agent may use files, media devices, location, notifications, or another protected capability. This PR does not implement a general approval broker. For an embedded download the request is the OS save dialog: the system WebView streams the transfer into private staging, and the file is placed only where the user chooses. No file-upload tool is exposed, and direct calls or workarounds are forbidden. Other capabilities retain the engine's default deny-or-prompt behavior and must never be granted silently.
 _Avoid_: silent permission grant, model-approved permission
 
 **Semantic high-risk approval**:

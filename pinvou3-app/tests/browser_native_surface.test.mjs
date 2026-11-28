@@ -61,6 +61,10 @@ const browserPaths = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'platform', 'paths.rs'),
   'utf8',
 );
+const browserDownloads = readFileSync(
+  path.join(projectRoot, 'src-tauri', 'src', 'features', 'browser', 'downloads.rs'),
+  'utf8',
+);
 const browserCommands = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'app', 'commands', 'browser.rs'),
   'utf8',
@@ -1072,15 +1076,381 @@ test('one global native surface prevents background Agent activation stealing th
   assert.match(nativeHost, /session_owns_visible_surface && workspace_visible/);
 });
 
-test('remote pages lack global clipboard access and downloads fail closed without path leakage', () => {
+test('remote pages lack global clipboard-read access', () => {
   assert.doesNotMatch(nativeHost, /enable_clipboard_access/);
-  assert.match(nativeHost, /\.on_download\(/);
-  assert.match(nativeHost, /"browser:download-blocked"/);
-  assert.match(nativeHost, /"sessionId": download_session_id/);
-  assert.match(nativeHost, /"tab": download_tab_token/);
-  assert.match(nativeHost, /let source = match \(url\.scheme\(\), url\.host_str\(\)\)/);
-  assert.doesNotMatch(nativeHost, /"destination"|"path": destination/);
+});
+
+test('embedded downloads stage privately and ask the user through a deferred OS dialog', () => {
+  // The engine callback answers at once: it only routes both events to the
+  // coordinator and never opens a dialog or touches a file on its stack.
+  // Every build shares one typed router, and on Linux the per-tab handler is
+  // not attached at all (see the download-surface pins below), so the
+  // never-closed surface owns the only context-level handler.
+  assert.match(nativeHost, /builder\.on_download\(handle_download_event\)/);
+  assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)/);
+  const downloadCallback = nativeHost.match(
+    /fn handle_download_event\(webview: tauri::Webview<tauri::Wry>, event: DownloadEvent<'_>\) -> bool \{([\s\S]*?)\n\}/,
+  );
+  assert.ok(downloadCallback, 'host wires on_download to the coordinator');
+  assert.doesNotMatch(
+    downloadCallback[1],
+    /dialog\(|save_file\(|create_dir|remove_dir|fs::/,
+  );
+  // The owning page is resolved from the webview label at event time and
+  // falls back to the shown workspace: on Linux every download arrives
+  // through the always-live download surface, so the label there is the
+  // surface's own and cannot name the requesting tab.
+  assert.match(
+    nativeHost,
+    /DownloadEvent::Requested \{ url, destination \} => \{\s*match downloads\.page_for_request\(webview\.label\(\)\) \{\s*Some\(page\) => downloads\.requested\(app, page, &url, destination\),\s*\/\/ No shown workspace[\s\S]{0,340}?None => \{\s*eprintln!\("\[browser\] Download denied: no shown workspace to attribute it to"\);\s*downloads\.note_refusal\(&url\);\s*false\s*\}\s*\}\s*\}/,
+  );
+  assert.doesNotMatch(downloadCallback[1], /download_session_id|download_tab_token/);
+  assert.match(nativeHost, /app\.state::<super::super::BrowserDownloads>\(\)\.register_page\(\s*&label,\s*super::super::DownloadPage \{\s*session_id: session_id\.to_string\(\),\s*tab: tab_token\.to_string\(\),\s*\},\s*\);/);
+  assert.match(
+    nativeHost,
+    /DownloadEvent::Finished \{ url, path, success \} => \{\s*downloads\.finished\(app, &url, path\.as_deref\(\), success\);/,
+  );
+
+  // Linux: one never-closed download surface owns the single context-level
+  // handler. wry registers one per build with no dedupe, tauri resolves each
+  // handler's webview from its build-time label, and tauri-runtime-wry keeps
+  // the shared context alive for the process — so the first-built tab's
+  // handler answered everything and, once closed, cancelled every download
+  // before any app code ran. The surface removes both failure modes.
+  assert.match(nativeHost, /const DOWNLOAD_SURFACE_LABEL: &str = "agent-browser-download-surface";/);
+  assert.match(
+    nativeHost,
+    /let attach_per_tab_download_handler =\s*attach_per_tab_download_handler\(app, &window, platform, data_directory\);/,
+  );
+  assert.match(
+    nativeHost,
+    /let builder = if attach_per_tab_download_handler \{\s*builder\.on_download\(handle_download_event\)\s*\} else \{\s*builder\s*\};/,
+  );
+  assert.match(
+    nativeHost,
+    /fn ensure_download_surface<P: PlatformWebviewConfig>\(\s*app: &tauri::AppHandle,\s*window: &tauri::Window,\s*platform: &P,\s*data_directory: &Path,\s*\) -> bool \{/,
+  );
+  assert.match(
+    nativeHost,
+    /#\[cfg\(target_os = "linux"\)\]\s*fn ensure_download_surface/,
+  );
+  assert.match(
+    nativeHost,
+    /if app\.get_webview\(DOWNLOAD_SURFACE_LABEL\)\.is_some\(\) \{\s*return true;\s*\}/,
+  );
+  // The download surface never registers a page: its requests resolve
+  // through the shown workspace.
+  assert.doesNotMatch(
+    nativeHost,
+    /register_page\(\s*DOWNLOAD_SURFACE_LABEL/,
+  );
+  // Closed tabs drop their attribution pages with their core binding, and a
+  // closed session drops all of them at once.
+  assert.match(nativeHost, /fn forget_tab_surface\(app: Option<&tauri::AppHandle>, label: &str\) \{\s*super::unregister_browser_core_webview_binding\(label\);/);
+  assert.match(nativeHost, /\.unregister_page\(label\);/);
+  assert.match(nativeHost, /\.forget_all_pages\(\);/);
+  assert.match(nativeHost, /\.forget_session_pages\(session_id\);/);
+  // On macOS and Windows the download delegate dies with the webview, so a
+  // closed tab's in-flight downloads can never report: forget settles them
+  // (freeing the live slot) and releases their seat in the URL's completion
+  // batch. Linux rides the never-closed surface and keeps reporting.
+  assert.match(
+    nativeHost,
+    /#\[cfg\(not\(target_os = "linux"\)\)\]\s*if let Some\(page\) = downloads\.page_for_label\(label\) \{\s*downloads\.reports_lost\(Some\(app\), &page\);\s*\}/,
+  );
+  // The shown workspace is mirrored into the coordinator at every visibility
+  // transition — including closing the shown session while others remain and
+  // quarantining a failed restore, where a stale mirror would admit
+  // downloads into a dead session and every notice would be dropped.
+  assert.match(nativeHost, /fn sync_shown_download_page\(&self, app_handle: &tauri::AppHandle\) \{/);
+  assert.match(nativeHost, /\.set_shown_page\(page\);/);
+  assert.match(
+    nativeHost,
+    /self\.active_session = None;\s*\/\/ The mirror must stop naming the closed session[\s\S]{0,220}?self\.sync_shown_download_page\(app\);/,
+  );
+  assert.match(
+    nativeHost,
+    /let quarantine_result = self\.quarantine_workspace_for_failed_restore\(session_id\);\s*\/\/ Quarantine revokes[\s\S]{0,400}?self\.sync_shown_download_page\(app\);\s*quarantine_result\?;/,
+  );
+  // Compensation that removes a tab can change the active tab; the mirror
+  // follows there too.
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, &workspace\.active_tab, control\.snapshot\(\)\);\s*\/\/ The compensation can change the active tab[\s\S]{0,120}?self\.sync_shown_download_page\(app\);/,
+  );
+  // A tab webview that is closed without reaching the workspace (insert
+  // failure, staged-create rollback) still forgets its attribution page.
+  assert.match(
+    nativeHost,
+    /if let Err\(error\) = workspace\.tabs\.insert\(entry\) \{\s*if let Some\(webview\) = app\.get_webview\(&created_label\) \{\s*let _ = webview\.close\(\);\s*\}\s*forget_tab_surface\(Some\(app\), &created_label\);/,
+  );
+  assert.match(
+    nativeHost,
+    /if let Some\(label\) = staged_label \{\s*if let Some\(webview\) = app\.get_webview\(label\) \{\s*let _ = webview\.close\(\);\s*\}\s*forget_tab_surface\(Some\(app\), label\);/,
+  );
+
+  // Without a staging file the download is still denied, and the notice
+  // exposes the origin of a URL that may carry one-time tokens.
+  assert.match(browserDownloads, /const EVENT_BLOCKED: &str = "browser:download-blocked";/);
+  // The refusal notice exposes the origin of a URL that may carry one-time
+  // tokens and says why: unavailable staging (`staging`) or the live cap
+  // (`limit`), so one page cannot grow staging without bound.
+  assert.match(browserDownloads, /const MAX_LIVE_DOWNLOADS: usize = 16;/);
+  assert.match(browserDownloads, /fn has_capacity\(&self\) -> bool \{\s*self\.downloads\.len\(\) < MAX_LIVE_DOWNLOADS\s*\}/);
+  // The cap is enforced where downloads are admitted, so every caller is
+  // refused at exactly MAX live records.
+  assert.match(
+    browserDownloads,
+    /fn begin\(&mut self, download: Download\) -> Result<Vec<Effect>, CapacityFull> \{\s*if !self\.has_capacity\(\) \{\s*return Err\(CapacityFull\);\s*\}/,
+  );
+  // Pathless completions are attributed through one per-URL batch that counts
+  // its members down; a member resolved through its written path votes too,
+  // so no stale batch survives a mixed generation.
+  assert.match(
+    browserDownloads,
+    /struct UrlBatch \{[\s\S]*?remaining: usize,[\s\S]*?outcomes: Vec<bool>,[\s\S]*?anonymous_votes: usize,\s*\}/,
+  );
+  assert.match(browserDownloads, /fn vote_pathless_finish\(&mut self, url: &str, success: bool\) -> Vec<Effect> \{/);
+  assert.match(browserDownloads, /fn resolve_finished_batch\(&mut self, url: &str\) -> Vec<Effect> \{/);
+  assert.match(
+    browserDownloads,
+    /fn emit_blocked\(app: &AppHandle, page: &DownloadPage, url: &Url, reason: &str\) \{[\s\S]{0,420}EVENT_BLOCKED,\s*json!\(\{\s*"sessionId": page\.session_id,\s*"tab": page\.tab,\s*\/\/[^\n]*\n\s*"source": download_source\(url\),\s*"reason": reason,\s*\}\),/,
+  );
+  assert.match(browserDownloads, /if !self\.registry\.lock\(\)\.has_capacity\(\) \{\s*eprintln!\("\[browser\] Download denied: too many live downloads"\);\s*emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/);
+  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);\s*return false;/);
+  assert.match(browserDownloads, /\(scheme, Some\(host\)\) => format!\("\{scheme\}:\/\/\{host\}\{port\}"\)/);
+
+  // The engine streams into a fresh private directory under the staging root.
+  assert.match(
+    browserDownloads,
+    /let id = new_download_id\(\);\s*let staging_dir = self\.staging_root\.join\(&id\);/,
+  );
+  assert.match(browserDownloads, /let file_name = sanitize_file_name\(destination\.file_name\(\)\);/);
+  assert.match(browserDownloads, /\*destination = staged_file\.clone\(\);/);
+
+  // A blocking dialog must not run on the UI thread, so the prompt is
+  // deferred and non-blocking.
+  assert.match(
+    browserDownloads,
+    /tauri::async_runtime::spawn\(async move \{\s*app\.state::<BrowserDownloads>\(\)\s*\.prompt\(&app, &notice\.id, &notice\.file_name\);/,
+  );
+  assert.match(browserDownloads, /\.save_file\(move \|picked\|/);
+  assert.doesNotMatch(browserDownloads, /blocking_save_file|blocking_show/);
+
+  // Placement and cleanup never block the UI thread, and the staging-root
+  // containment check — whose filesystem-resolved comparison stats the
+  // destination's parent — runs on the blocking thread next to the placement.
+  assert.match(
+    browserDownloads,
+    /let staging_root = self\.staging_root\.clone\(\);\s*let app = app\.clone\(\);\s*tauri::async_runtime::spawn_blocking\(move \|\| \{\s*let rejected =\s*destination_inside_staging\(&destination, &staging_root\);\s*let placed =\s*!rejected && place_staged_file\(&staged_file, &destination, &id\)\.is_ok\(\);/,
+  );
+  // The containment guard resolves the destination's parent through the
+  // filesystem (the resolver is injected so tests can stand in for a
+  // symlinked or case-insensitive folder): a destination that reaches the
+  // root through such a spelling must fail the placement too, or a saved
+  // file would land inside the root and be swept away at the next startup.
+  assert.match(
+    browserDownloads,
+    /fn destination_inside_staging_with<R>\(destination: &Path, staging_root: &Path, resolve: R\) -> bool\s*where\s*R: Fn\(&Path\) -> io::Result<PathBuf>,\s*\{\s*if destination\.starts_with\(staging_root\) \{\s*return true;\s*\}\s*let resolved_destination = destination\.parent\(\)\.and_then\(\|parent\| resolve\(parent\)\.ok\(\)\);\s*let resolved_root = resolve\(staging_root\)\.ok\(\);/,
+  );
+  // A cross-volume copy streams through a sibling named after the download,
+  // so a process killed mid-copy leaves one attributable `.part` behind, and
+  // the copied-error guard keeps a truncated transfer out of the destination.
+  assert.match(browserDownloads, /&format!\("\.pinvou-\{id\}\.part"\)/);
+  // The staged bytes are flushed before the destination name can appear —
+  // for the same-volume rename and for the copy's swap alike.
+  assert.match(browserDownloads, /sync\(staged_file\)\?;\s*match rename\(staged_file, destination\)/);
+  assert.match(
+    browserDownloads,
+    /let copied = copy\(&mut source, &mut target\)\.and_then\(\|_\| target\.sync_all\(\)\);\s*\/\/ Windows refuses to rename a file that is still open\.\s*drop\(target\);\s*copied\?;/,
+  );
+  assert.match(
+    browserDownloads,
+    /spawn_blocking\(move \|\| discard_directory\(&staging_dir\)\);/,
+  );
+
+  // An earlier process's own staging leftovers cannot survive a restart,
+  // entries the coordinator does not own are never swept, and the coordinator
+  // is created before any browser WebView exists.
+  assert.match(
+    browserDownloads,
+    /pub\(crate\) fn new\(staging_root: PathBuf\) -> Self \{\s*discard_staging_leftovers\(&staging_root\);/,
+  );
+  assert.match(
+    browserDownloads,
+    /fn is_staging_entry_id\(name: &OsStr\) -> bool \{[\s\S]{0,320}?name\.len\(\) == 32[\s\S]{0,320}?matches!\(byte, b'0'\.\.=b'9' \| b'a'\.\.=b'f'\)/,
+  );
+  assert.match(
+    browserDownloads,
+    /fn discard_staging_leftovers\(root: &Path\) \{\s*let Ok\(entries\) = std::fs::read_dir\(root\) else \{\s*return;\s*\};/,
+  );
+  assert.match(
+    browserPaths,
+    /pub fn browser_download_staging_dir\(\) -> PathBuf \{\s*browser_home\(\)\.join\("downloads"\)/,
+  );
+  assert.match(
+    tauriApp,
+    /app\.manage\(features::browser::BrowserDownloads::new\(\s*crate::platform::paths::browser_download_staging_dir\(\),\s*\)\);/,
+  );
+  assert.match(
+    tauriApp,
+    /commands::browser::browser_download_save_as,\s*commands::browser::browser_download_discard,\s*commands::browser::browser_download_pending,\s*commands::startup::report_frontend_startup,/,
+  );
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_save_as\(/,
+  );
+  // A stranded `unsaved` download can be given up on; its staged file is
+  // deleted and the notice reads as cancelled.
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_discard\(\s*app: tauri::AppHandle,\s*download_id: String,\s*downloads: State<'_, BrowserDownloads>,\s*\) -> Result<\(\), String> \{\s*downloads\.discard\(&app, &download_id\);\s*Ok\(\(\)\)\s*\}/,
+  );
+  // A notice whose event landed while the workspace was not mounted is
+  // re-reported on mount from the backend's live `unsaved` records.
+  assert.match(
+    browserCommands,
+    /#\[tauri::command\(async\)\]\s*pub fn browser_download_pending\(downloads: State<'_, BrowserDownloads>\) -> Vec<Value> \{\s*downloads\.pending_unsaved\(\)\s*\}/,
+  );
+  // A deferred prompt whose record left the asking state before the spawned
+  // task runs (a lost-tab settle, a failed transfer) releases the serialized
+  // dialog slot instead of opening a dialog nothing will ever answer.
+  assert.match(
+    browserDownloads,
+    /fn prompt\(&self, app: &AppHandle, id: &str, file_name: &str\) \{\s*\{\s*let mut registry = self\.registry\.lock\(\);\s*if !registry\.is_asking\(id\) \{\s*let effects = registry\.abandon_prompt\(id\);\s*drop\(registry\);\s*self\.perform\(app, effects\);\s*return;\s*\}\s*\}/,
+  );
+  // Refusal credits are bounded, so a storm of refused distinct URLs cannot
+  // grow them without limit.
+  assert.match(browserDownloads, /const MAX_REFUSAL_CREDITS: usize = 1024;/);
+  // A staged download waits in an owner-only directory: another local user
+  // on a shared host cannot read an in-flight transfer, and a directory that
+  // cannot be restricted refuses the download.
+  assert.match(
+    browserDownloads,
+    /if let Err\(error\) = crate::platform::os::try_make_private_dir\(&staging_dir\) \{[\s\S]{0,240}?emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);\s*return false;/,
+  );
+  // A staging root that cannot be made absolute (no working directory) puts
+  // downloads out of service instead of sending the engine to a
+  // cwd-relative path.
+  assert.match(
+    browserDownloads,
+    /let staging_root = absolute_staging_root_with\(\s*staging_root\.as_path\(\),\s*std::env::current_dir\(\)\.ok\(\)\.as_deref\(\),\s*\);\s*let usable = staging_root\.is_some\(\);[\s\S]{0,400}?unavailable: std::sync::atomic::AtomicBool::new\(!usable\),/,
+  );
+  // Per-tab engines lose completions when the owning webview dies; the
+  // coordinator settles such records and releases their batch seats.
+  assert.match(browserDownloads, /fn report_lost\(&mut self, id: &str, url: &str\) -> Vec<Effect> \{/);
+  assert.match(browserDownloads, /pub\(crate\) fn reports_lost\(&self, app: Option<&tauri::AppHandle>, page: &DownloadPage\) \{/);
+});
+
+test('download events and notices carry names and outcomes but no URL or local path', () => {
+  assert.match(
+    browserDownloads,
+    /"downloadId": self\.id,\s*"fileName": self\.file_name,/,
+  );
+  assert.match(browserDownloads, /fields\.insert\("outcome"\.into\(\), json!\(outcome\.as_str\(\)\)\);/);
+  assert.doesNotMatch(browserDownloads, /"(destination|path|url)": /);
+  // The retry only re-opens the dialog for a transfer that is still staged,
+  // and a repeated request never queues a second dialog.
+  const askAgain = browserDownloads.match(/fn ask_again\([^]*?\n {4}\}/);
+  assert.ok(askAgain, 'the coordinator implements the retry');
+  assert.match(
+    askAgain[0],
+    /download\.transfer != Transfer::Succeeded \|\| download\.intent != Intent::Unsaved \{\s*return Err\(DOWNLOAD_NOT_RETRYABLE\);/,
+  );
+  assert.match(
+    askAgain[0],
+    /matches!\(download\.intent, Intent::Asking \{ again: true \}\) \{\s*return Ok\(Vec::new\(\)\);/,
+  );
+  assert.match(
+    askAgain[0],
+    /download\.intent = Intent::Asking \{ again: true \};\s*self\.waiting\.push_back\(id\.to_string\(\)\);/,
+  );
+
   assert.match(browserView, /listenTauri\('browser:download-blocked'/);
-  assert.match(browserView, /if \(payload\.sessionId !== sessionId\) return;/);
-  assert.match(browserView, /t\.browserDownloadBlocked\(payload\.source \|\| ''\)/);
+  assert.match(
+    browserView,
+    /payload\.reason === 'limit'\s*\? t\.browserDownloadBusy\(payload\.source \|\| ''\)\s*: payload\.reason === 'unavailable'\s*\? t\.browserDownloadUnavailable\(payload\.source \|\| ''\)\s*: payload\.reason === 'staging'\s*\? t\.browserDownloadBlocked\(payload\.source \|\| ''\)\s*: t\.browserDownloadBlockedGeneric\(payload\.source \|\| ''\)/,
+  );
+  assert.match(browserView, /listenTauri\('browser:download-started', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice: downloadStartedNotice\(t, payload\) \}\);/);
+  assert.match(browserView, /listenTauri\('browser:download-finished', \(event\) => \{[\s\S]{0,160}if \(payload\.sessionId !== sessionId\) return;[\s\S]{0,160}dispatchDownloadNotice\(\{ type: 'report', notice \}\);/);
+  assert.match(
+    browserView,
+    /invokeTauri\('browser_download_save_as', \{ downloadId: downloadNotice\.downloadId \}\)/,
+  );
+  assert.match(browserView, /downloadNoticeCanSaveAs\(downloadNotice\) && \(/);
+  assert.match(browserView, /data-testid="browser-download-notice"[\s\S]{0,60}role="status"/);
+  // A stopped browser drops its notices with the rest of its UI state.
+  assert.match(
+    browserView,
+    /dispatchPersistenceWarning\(\{ type: 'clear' \}\);\s*dispatchDownloadNotice\(\{ type: 'reset' \}\);/,
+  );
+});
+
+test('download round-3 fixes are pinned: writable-handle sync, refusal accounting, unavailable degradation, placement guard', () => {
+  // The placement flush opens the staged file for writing: Windows refuses
+  // FlushFileBuffers on a read-only handle, so a plain File::open would fail
+  // every placement there.
+  assert.match(browserDownloads, /fn sync_staged_bytes\(staged: &Path\) -> io::Result<\(\)> \{\s*std::fs::OpenOptions::new\(\)\s*\.read\(true\)\s*\.write\(true\)\s*\.open\(staged\)/);
+  assert.doesNotMatch(browserDownloads, /File::open\(staged\)\.and_then/);
+
+  // A refused download's engine-side cancellation report is spent on a
+  // per-URL credit instead of voting in the batch; every refusal path notes
+  // the credit, and the no-shown-workspace refusal in the host does too.
+  assert.match(browserDownloads, /refusal_credits: HashMap<String, usize>,/);
+  assert.match(browserDownloads, /fn note_refusal\(&mut self, url: &str\) \{/);
+  assert.match(
+    browserDownloads,
+    /pub\(crate\) fn requested\([\s\S]{0,1300}?emit_blocked\(app, &page, url, "limit"\);\s*self\.note_refusal\(url\);\s*return false;/,
+  );
+  assert.match(browserDownloads, /emit_blocked\(app, &page, url, "staging"\);\s*self\.note_refusal\(url\);/);
+  assert.match(browserDownloads, /registry\.note_refusal\(url\.as_str\(\)\);/);
+  assert.match(
+    browserDownloads,
+    /if !success \{[\s\S]{0,200}?refusal_credits[\s\S]{0,600}?return Vec::new\(\);\s*\}\s*\}/,
+  );
+  assert.match(nativeHost, /None => \{[\s\S]{0,220}?downloads\.note_refusal\(&url\);\s*false\s*\}/);
+
+  // A Linux download surface that cannot be created puts downloads out of
+  // service (fail closed) instead of attaching per-tab handlers that would
+  // mis-attribute and later cancel everything silently.
+  assert.match(
+    nativeHost,
+    /fn ensure_download_surface[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,900}?mark_unavailable\(\);[\s\S]{0,600}?true\s*\}/,
+  );
+  assert.match(
+    browserDownloads,
+    /unavailable\s*\.load\(std::sync::atomic::Ordering::Relaxed\)\s*\{\s*eprintln!\("\[browser\] Download denied: downloads are unavailable"\);\s*let page = self\.shown_page\.lock\(\)\.clone\(\)\.unwrap_or\(page\);\s*emit_blocked\(app, &page, url, "unavailable"\);\s*self\.note_refusal\(url\);/,
+  );
+  assert.match(nativeHost, /WebviewBuilder::new\(DOWNLOAD_SURFACE_LABEL, WebviewUrl::External\(url\)\)\.focused\(false\);/);
+
+  // The device check repeats on the final stem: a cut can strip padding
+  // around a reserved name, and Windows ignores trailing spaces before the
+  // dot when it reads the device segment.
+  assert.match(
+    browserDownloads,
+    /!stem\.starts_with\('_'\) && starts_with_reserved_device_name\(stem\)/,
+  );
+  assert.match(browserDownloads, /is_reserved_device_name\(segment\.trim_end\(\)\)/);
+
+  // A destination under the staging root — lexically or resolved through
+  // the filesystem — fails the placement instead of being renamed into a
+  // directory the cleanup then deletes.
+  assert.match(browserDownloads, /fn destination_inside_staging\(destination: &Path, staging_root: &Path\) -> bool \{/);
+  assert.match(
+    browserDownloads,
+    /let rejected =\s*destination_inside_staging\(&destination, &staging_root\);/,
+  );
+
+  // The shown workspace mirror is refreshed when a tab switch commits, not
+  // only at session visibility transitions.
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, tab_token, control\.snapshot\(\)\);\s*self\.sync_shown_download_page\(app\);/,
+  );
+  assert.match(
+    nativeHost,
+    /emit_control_changed\(app, session_id, &workspace\.active_tab, snapshot\);\s*self\.sync_shown_download_page\(app\);/,
+  );
+  // Every tab close routes the attribution page away with the binding.
+  assert.doesNotMatch(nativeHost, /super::unregister_browser_core_webview_binding\(&entry\.label\)/);
 });
