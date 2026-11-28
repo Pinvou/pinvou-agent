@@ -1711,7 +1711,10 @@ export function CodexAcpView({
         ? await invoke('set_session_mode', { sessionId, mode: 'auto' })
         : null;
       if (modeOutcome && modeOutcome.persist_error) {
-        appendNativeSystemItem(getNativeLane(sessionId), codexCopy.modePersistFailed + modeOutcome.persist_error);
+        // durabilityNotice: session creation hydrates immediately after this append,
+        // and hydration wipes live-only system items — the unsaved-write fact must
+        // survive the wipe (round-32 m3).
+        appendNativeSystemItem(getNativeLane(sessionId), codexCopy.modePersistFailed + modeOutcome.persist_error, { durabilityNotice: true });
         // Materialization happens before any turn, so without the bump the
         // unsaved note only appears once a later lane event happens to fire
         // (round-16 review).
@@ -1900,11 +1903,11 @@ export function CodexAcpView({
         ? await invoke('set_session_mode', { sessionId: sid, mode: 'auto' })
         : null;
       if (switchOutcome && switchOutcome.persist_error) {
-        appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error);
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modePersistFailed + switchOutcome.persist_error, { durabilityNotice: true });
         setNativeLaneTick(tick => tick + 1);
       }
       if (switchOutcome && switchOutcome.ask_error) {
-        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeAskPersistFailed + switchOutcome.ask_error);
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeAskPersistFailed + switchOutcome.ask_error, { durabilityNotice: true });
         setNativeLaneTick(tick => tick + 1);
       }
       if (isActiveTarget) await refreshNativeControls(sid);
@@ -1918,7 +1921,7 @@ export function CodexAcpView({
       try {
         await invoke('get_mode_state', { sessionId: sid });
         if (isActiveTarget) await refreshNativeControls(sid);
-        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeSyncFailedEffective + err);
+        appendNativeSystemItem(getNativeLane(sid), codexCopy.modeSyncFailedEffective + err, { durabilityNotice: true });
         // A standalone switch triggers no follow-up lane event, so without
         // this bump the notice sits unrendered until an unrelated event
         // (round-16 review: the tick only moves when applyNativeChatEvent
@@ -2996,6 +2999,7 @@ export function CodexAcpView({
         // Authoritative mode broadcast (fired by both local and remote switches): the lane holds no mode
         // display of its own; the footer chip's mode/askOnGuardrail is refreshed authoritatively via
         // refreshNativeControls (internal request sequence + session ownership guard, the same path as a regular refresh).
+        // A failed re-read is tolerated here (no retry machinery): the next loadSession / lane event re-converges the chip authoritatively.
         refreshNativeControls(sessionId).catch(() => {});
       }
       if (changed && sessionId === activeIdRef.current) {
@@ -3603,6 +3607,8 @@ export function CodexAcpView({
       // dispatch a redundant decide_approval the backend must reject and flash an error notice.
       if (card.submitting || card.resolved) return;
       card.submitting = true;
+      // The visual half must not depend on memo-comparator identity: bump the tick so the in-place submitting flag reliably renders the disabled/Submitting row (round-32 n).
+      setNativeLaneTick(tick => tick + 1);
     }
     setRespondingSessionId(sid); setError('');
     try {

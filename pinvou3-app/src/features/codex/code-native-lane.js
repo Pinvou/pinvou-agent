@@ -132,8 +132,12 @@ export function composeNativePlanMarkdown(snapshots) {
 }
 
 /// 渲染层往 lane 追加系统提示项（accept/discard 失败等），对齐 bridge addSystemItem。
-export function appendNativeSystemItem(lane, text) {
-  lane.items.push({ id: nextId(lane), type: 'system', text: String(text || '') });
+/// Optional `extra` merges additional properties onto the pushed item (the same
+/// inline-attachment style as the guardrail item's guardrailDenied flag): append
+/// sites carrying durability facts pass { durabilityNotice: true } so the
+/// hydrateNativeLane preserve keeps them across a SavedSession rehydrate.
+export function appendNativeSystemItem(lane, text, extra) {
+  lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), ...extra });
 }
 
 /// Index where the current turn starts (right after the last user item).
@@ -879,8 +883,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   // system items in its session buffer; otherwise a reconnect immediately
   // erases the decision (guardrail notices carry the same live-only shape —
   // round-9 extends the toolGateDecision preserve to chat:guardrail_denied).
+  // durabilityNotice (round-32) covers host-side persist/sync failure facts
+  // (mode persist_error / ask_error / sync-failed-effective): session creation
+  // hydrates immediately after appending them, so without the preserve the
+  // unsaved-write note is wiped one frame after it renders.
   const liveAuditNotices = lane.items
-    .filter(item => item && item.type === 'system' && (item.toolGateDecision || item.guardrailDenied))
+    .filter(item => item && item.type === 'system'
+      && (item.toolGateDecision || item.guardrailDenied || item.durabilityNotice))
     .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
@@ -1029,14 +1038,17 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     item.success = item.success === null ? false : item.success;
   }
   for (const notice of liveAuditNotices) {
-    // Dedup only against same-kind markers (saved session messages never restore these two
+    // Dedup only against same-kind markers (saved session messages never restore these
     // live-only system item kinds, so the comparison here is defensive): tool-gate by
-    // toolId+decision, guardrail hard deny by toolName+reason.
+    // toolId+decision, guardrail hard deny by toolName+reason, durability notice by text.
     const duplicate = lane.items.some(item => {
       if (!item || item.type !== 'system') return false;
       if (notice.toolGateDecision) {
         return item.toolGateDecision
           && item.toolId === notice.toolId && item.decision === notice.decision;
+      }
+      if (notice.durabilityNotice) {
+        return item.durabilityNotice && item.text === notice.text;
       }
       return item.guardrailDenied
         && item.toolName === notice.toolName && item.reason === notice.reason;
